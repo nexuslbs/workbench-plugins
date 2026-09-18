@@ -19,6 +19,16 @@ sources:
   - kind: path
     id: workbench-plugins
     path: ./plugins
+  # An EXTERNAL git source, the production shape: this repository is cloned from
+  # GitHub into the core's cache (`WORKBENCH_CACHE_DIR`, /var/lib/workbench/sources
+  # in the service image) and the `examples` subtree is scanned for plugins. The
+  # plugin under examples/ is therefore reachable ONLY after a real clone, which
+  # is what makes "external git plugin sources work" observable in dev.
+  - kind: git
+    id: workbench-plugins-git
+    url: https://github.com/nexuslbs/workbench-plugins
+    ref: main
+    subdir: examples
 
 plugins:
   hello-world:
@@ -39,4 +49,9 @@ web:
   # 127.0.0.1 and the dev service opts into 0.0.0.0 explicitly (and still needs
   # a published port to be reachable from the host).
   host: 0.0.0.0
-  port: 12348
+  # 12347 is the ONE port the dev overlay publishes (`12347:12347`) and the port
+  # the compose healthcheck probes (`/health`). When the web port equals the
+  # status port, `workbench serve` starts ONE listener that serves the browser UI
+  # and answers `/health` on the same port, so the operator-visible URL is the
+  # documented workbench port and nothing else has to be published.
+  port: 12347
