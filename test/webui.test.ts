@@ -44,7 +44,14 @@ const INVENTORY = {
   sources: [{ id: 'core', kind: 'path', dir: '/w/workbench/plugins', external: false, plugins: 2 }],
 }
 
-function fakeContext() {
+interface FakeOptions {
+  /** Replaces the raw config value the fake config seam serves (unexpanded). */
+  configValue?: Record<string, unknown>
+  /** Per plugin name: what the fake EXPANDED accessor returns (values resolved). */
+  expanded?: Record<string, Record<string, unknown>>
+}
+
+function fakeContext(options: FakeOptions = {}) {
   const routes = new Map<string, RouteSpec>()
   const assets: string[] = []
   const pages: PageSpec[] = []
@@ -54,7 +61,10 @@ function fakeContext() {
     inventory: () => INVENTORY,
     configFilePath: () => INVENTORY.configFile,
     canPersist: () => true,
-    pluginConfigView: (name: string) => ({ name, config: { message: 'Hi' }, written: { message: 'Hi' }, disabled: false }),
+    // Models the core's EXPANDED per-plugin accessor: `${env:VAR}` is resolved
+    // there, which is exactly why no read surface may take its data from it.
+    pluginConfigView: (name: string) =>
+      options.expanded?.[name] ?? { name, config: { message: 'Hi' }, written: { message: 'Hi' }, disabled: false },
     load: async (name: string) => ({ ok: true, action: 'load', target: name, message: `loaded ${name}`, persisted: false }),
     unload: async (name: string) => ({ ok: true, action: 'unload', target: name, message: `unloaded ${name}`, persisted: false }),
     reload: async (name: string) => ({ ok: true, action: 'reload', target: name, message: `reloaded ${name}`, persisted: false }),
@@ -68,7 +78,11 @@ function fakeContext() {
     file: INVENTORY.configFile,
     format: 'yaml',
     text: 'sources:\n  - kind: path\n    id: core\n    path: ./plugins\n',
-    value: { sources: [{ kind: 'path', id: 'core', path: './plugins' }], plugins: { 'plugin-inventory': { page: 'Inventory' } }, web: { enabled: true } },
+    value: options.configValue ?? {
+      sources: [{ kind: 'path', id: 'core', path: './plugins' }],
+      plugins: { 'plugin-inventory': { page: 'Inventory' } },
+      web: { enabled: true },
+    },
   }
 
   const ctx = {
@@ -168,6 +182,32 @@ test('plugin-inventory reads the loader inventory through the contract (no scrap
   const payload = (typeof response.body === 'string' ? JSON.parse(response.body) : response.body) as { entries: unknown[]; loaded: number }
   assert.equal(payload.loaded, INVENTORY.loaded)
   assert.deepEqual(payload.entries, INVENTORY.discovered, 'the page serves the loader inventory verbatim')
+})
+
+test('settings: a config reference is served BY NAME - the `${env:VAR}` value is never resolved', async () => {
+  const entry = await import('../plugins/settings/index.ts')
+  const reference = '${env:DEMO_TOKEN}'
+  const value = 's3cr3t-DO-NOT-LEAK-42'
+  const { ctx, routes } = fakeContext({
+    configValue: {
+      sources: [{ kind: 'path', id: 'core', path: './plugins' }],
+      plugins: { 'hello-world': { message: `env ref ${reference}`, other: 'cred ref ${secret:DEMO_TOKEN}' } },
+    },
+    // What the core's expanded accessor answers (the shape the leak came from).
+    expanded: { 'hello-world': { message: `env ref ${value}`, other: 'cred ref ${secret:DEMO_TOKEN}' } },
+  })
+
+  entry.apply(ctx as never, {})
+
+  const reads = [...routes.values()].filter((route) => route.method === 'GET')
+  assert.ok(reads.length >= 2, `settings must expose its read routes (got ${reads.length})`)
+  for (const route of reads) {
+    const response = (await route.handler(request)) as { status: number; body: unknown }
+    assert.equal(response.status, 200, `${route.path} must answer 200`)
+    const body = typeof response.body === 'string' ? response.body : JSON.stringify(response.body)
+    assert.ok(body.includes(reference), `${route.path} must show the reference by name`)
+    assert.ok(!body.includes(value), `${route.path} must never return the referenced value`)
+  }
 })
 
 test('every web UI plugin declares the services it consumes in inject', async () => {

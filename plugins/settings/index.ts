@@ -9,7 +9,9 @@
  *      what is on disk;
  *   2. values are read UNEXPANDED. A `${cred:NAME}` / `${env:VAR}` reference is
  *      shown BY NAME and its VALUE is never resolved, returned, logged or
- *      rendered - the plugin only ever sees the raw config text.
+ *      rendered - the plugin only ever sees the raw config text. The per-plugin
+ *      config therefore comes from `configApi.view().value` (the file as
+ *      written), never from the core's expanded per-plugin accessor.
  *
  * Endpoints:
  *   GET  /api/settings                     the config file, its raw view, the
@@ -87,9 +89,9 @@ interface RawConfigView {
 
 interface ConfigApi {
   file(): string
+  /** The active config file AS WRITTEN: the parsed text, no expansion applied. */
   view(): RawConfigView
   update(patch: ConfigPatch[]): RawConfigView
-  pluginConfig(name: string): Record<string, unknown>
 }
 
 interface WorkbenchService {
@@ -146,6 +148,21 @@ function referencesIn(view: RawConfigView): { path: string; kind: string; name: 
   return collectReferences(view.value)
 }
 
+/**
+ * One plugin's config EXACTLY AS WRITTEN: taken from the raw view, so every
+ * reference (`${env:VAR}` and `${cred:NAME}`) comes back BY NAME and none is
+ * resolved. The core's expanded per-plugin accessor is deliberately NOT used
+ * here - it returns the config a plugin was INSTANTIATED with, which would
+ * resolve `${env:VAR}` and leak its value into a response.
+ */
+export function writtenPluginConfig(view: RawConfigView, name: string): Record<string, unknown> {
+  const plugins = view.value.plugins
+  if (plugins === null || typeof plugins !== 'object' || Array.isArray(plugins)) return {}
+  const entry = (plugins as Record<string, unknown>)[name]
+  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return {}
+  return { ...(entry as Record<string, unknown>) }
+}
+
 export const name = PAGE_ID
 
 export function apply(ctx: PluginContext, config: SettingsConfig = {}): void {
@@ -163,7 +180,7 @@ export function apply(ctx: PluginContext, config: SettingsConfig = {}): void {
         const view = configApi.view()
         const pluginNames = Object.keys((view.value.plugins as Record<string, unknown> | undefined) ?? {}).sort()
         const plugins: Record<string, unknown> = {}
-        for (const name of pluginNames) plugins[name] = configApi.pluginConfig(name)
+        for (const name of pluginNames) plugins[name] = writtenPluginConfig(view, name)
         return json({
           contract: 'settings@1',
           file: configApi.file(),
@@ -186,10 +203,10 @@ export function apply(ctx: PluginContext, config: SettingsConfig = {}): void {
       description: 'the per-plugin config as written',
       handler: () => {
         const configApi = ctx.workbench.config()
-        const value = configApi.view().value
-        const names = Object.keys((value.plugins as Record<string, unknown> | undefined) ?? {}).sort()
+        const view = configApi.view()
+        const names = Object.keys((view.value.plugins as Record<string, unknown> | undefined) ?? {}).sort()
         const plugins: Record<string, unknown> = {}
-        for (const name of names) plugins[name] = configApi.pluginConfig(name)
+        for (const name of names) plugins[name] = writtenPluginConfig(view, name)
         return json({ file: configApi.file(), plugins })
       },
     }),
@@ -206,9 +223,9 @@ export function apply(ctx: PluginContext, config: SettingsConfig = {}): void {
         const name = request.query.get('name') ?? ''
         if (name.length === 0) return json({ error: 'a plugin name is required (?name=<plugin>)' }, 400)
         const configApi = ctx.workbench.config()
-        const view = configApi.pluginConfig(name)
-        const value = configApi.view().value
-        const declared = Object.keys((value.plugins as Record<string, unknown> | undefined) ?? {})
+        const rawView = configApi.view()
+        const view = writtenPluginConfig(rawView, name)
+        const declared = Object.keys((rawView.value.plugins as Record<string, unknown> | undefined) ?? {})
         const known = ctx.workbench.inventory().discovered.map((entry) => entry.name)
         if (!declared.includes(name) && !known.includes(name)) {
           return json({ error: `unknown plugin '${name}': it has no 'plugins.${name}' entry and no source declares it`, file: configApi.file(), plugin: name }, 404)
