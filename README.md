@@ -18,18 +18,33 @@ plugins/
 
 ## Adding this source to the core
 
-Default core config (`workbench.config.json` in the core repo) already points at
-a sibling checkout:
+The core repo is core-only by default (it has no dependency on this repository):
+declare this source in YOUR config - a sibling checkout during development or a
+git coordinate in production:
 
-```json
-{ "kind": "path", "id": "workbench-plugins", "path": "../workbench-plugins/plugins" }
+```yaml
+sources:
+  - kind: path
+    id: workbench-plugins
+    path: ../workbench-plugins/plugins   # local checkout (development)
+  # production form:
+  # - kind: git
+  #   id: workbench-plugins
+  #   url: https://github.com/nexuslbs/workbench-plugins
+  #   ref: main
+  #   subdir: plugins
 ```
 
-Git coordinate alternative:
+## config.yml - development config for the workbench service
 
-```json
-{ "kind": "git", "id": "workbench-plugins", "url": "https://github.com/nexuslbs/workbench-plugins.git", "ref": "main", "subdir": "plugins" }
-```
+The repository also carries `config.yml`, the DEV config of the compose
+workbench service (omni-stack / omni-root `docker-compose.dev.yml` passes it as
+`CONFIG_FILE=/opt/workspace/workbench-plugins/config.yml`). It loads the core
+plugins from the sibling core checkout and the plugins of THIS repository from
+the local `./plugins` directory, so a plugin under development is picked up at
+the next boot with no clone and no push. Production uses the tracked
+`config/workbench.yml` of the omni-root stack, where this repository is a remote
+git source.
 
 No core change is needed to add a plugin here: create the plugin directory, and
 the next boot of the core picks it up.

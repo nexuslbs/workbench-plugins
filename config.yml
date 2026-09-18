@@ -1,0 +1,27 @@
+# Development config for the workbench SERVICE (docker compose, dev).
+#
+# The dev overlay passes this file as CONFIG_FILE
+# (docker-compose.dev.yml: CONFIG_FILE=/opt/workspace/workbench-plugins/config.yml)
+# and the service maps /opt in-and-out, so this path resolves identically inside
+# and outside the container.
+#
+# In production the service uses the tracked omni-root config
+# (config/workbench.yml -> /opt/omni/config/workbench.yml), where this repository
+# is a REMOTE git source instead of the local checkout used here.
+sources:
+  # core plugins: the sibling core checkout, edited live during development
+  - kind: path
+    id: core
+    path: ../workbench/plugins
+    external: false
+  # THIS repository, referenced LOCALLY: a plugin under development is picked up
+  # at the next boot, with no clone and no push.
+  - kind: path
+    id: workbench-plugins
+    path: ./plugins
+
+plugins:
+  hello-world:
+    message: Hello World
+  hello-otherworld:
+    message: Hello Otherworld
