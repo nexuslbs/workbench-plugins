@@ -1,0 +1,13 @@
+{
+  "name": "hello-otherworld",
+  "version": "0.1.0",
+  "description": "External test plugin: registers the 'hello otherworld' command",
+  "entry": "index.ts",
+  "capabilities": ["command:hello otherworld"],
+  "config": {
+    "type": "object",
+    "properties": {
+      "message": { "type": "string", "default": "Hello Otherworld" }
+    }
+  }
+}
