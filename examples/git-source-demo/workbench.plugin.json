@@ -1,6 +1,6 @@
 {
   "name": "git-source-demo",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "External plugin loaded from a GIT source: proves clone/fetch/subdir discovery end-to-end",
   "entry": "index.ts",
   "capabilities": ["command:git source demo"],

@@ -25,7 +25,7 @@ interface PluginContext {
 export const name = 'git-source-demo'
 
 /** Set from the manifest version at load time; part of the command output. */
-export const VERSION = '0.1.0'
+export const VERSION = '0.1.1'
 
 export interface Config {
   message?: string
