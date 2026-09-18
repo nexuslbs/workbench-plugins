@@ -207,7 +207,10 @@ function fiberOf(item: unknown): RuntimeFiber | undefined {
   } else {
     return undefined
   }
-  const name = (plugin?.name ?? runtime?.name) as string | undefined
+  // The registry KEY is the plugin itself (a function), whose `name` is only the
+  // JS function name; the runtime carries the plugin's declared name. Prefer the
+  // runtime, fall back to the key's function name.
+  const name = (runtime?.name ?? plugin?.name) as string | undefined
   if (name === undefined || name.length === 0) return undefined
   const fiber = pickFiber(runtime)
   let effects: number | undefined

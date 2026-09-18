@@ -49,6 +49,8 @@ interface FakeOptions {
   configValue?: Record<string, unknown>
   /** Per plugin name: what the fake EXPANDED accessor returns (values resolved). */
   expanded?: Record<string, Record<string, unknown>>
+  /** Replaces the fake cordis registry service (what `entries()` yields). */
+  registry?: { size?: number; entries?: () => Iterable<unknown> }
 }
 
 function fakeContext(options: FakeOptions = {}) {
@@ -119,7 +121,7 @@ function fakeContext(options: FakeOptions = {}) {
         pluginConfig: (name: string) => host.pluginConfigView(name),
       }),
     },
-    registry: { available: false, size: 0, entries: () => [] },
+    registry: options.registry ?? { available: false, size: 0, entries: () => [] },
     effect(callback: () => () => void): void {
       disposers.push(callback())
     },
@@ -208,6 +210,29 @@ test('settings: a config reference is served BY NAME - the `${env:VAR}` value is
     assert.ok(body.includes(reference), `${route.path} must show the reference by name`)
     assert.ok(!body.includes(value), `${route.path} must never return the referenced value`)
   }
+})
+
+test('cordis-ui: a registry fiber is named by the RUNTIME, not by the plugin function key', async () => {
+  const entry = await import('../plugins/cordis-ui/index.ts')
+  // What `registry.entries()` yields for a plugin registered as a plain function:
+  // the key is that function (its `.name` is the JS function name), the value is
+  // the Runtime that carries the plugin's declared name.
+  function namedByFunction() {}
+  const runtime = { name: 'hello-world', fibers: [{ state: 'active', getEffects: () => [1, 2] }] }
+  const { ctx, routes } = fakeContext({ registry: { size: 1, entries: () => [[namedByFunction, runtime]] } })
+
+  entry.apply(ctx as never, {})
+
+  const read = [...routes.values()].find((route) => route.method === 'GET' && route.path.endsWith('/runtime'))
+  assert.ok(read, 'cordis-ui must expose its runtime read route')
+  const response = (await read.handler(request)) as { status: number; body: string }
+  assert.equal(response.status, 200)
+  const payload = JSON.parse(response.body) as { registry: { fibers: unknown[] } }
+  assert.deepEqual(
+    payload.registry.fibers,
+    [{ name: 'hello-world', state: 'active', effects: 2 }],
+    'the fiber must be named after the runtime, never after the plugin function key',
+  )
 })
 
 test('every web UI plugin declares the services it consumes in inject', async () => {
