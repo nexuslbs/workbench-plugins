@@ -29,8 +29,39 @@ sources:
     url: https://github.com/nexuslbs/workbench-plugins
     ref: main
     subdir: examples
+  # A PRIVATE repository, the shape the operator asked for: the config carries a
+  # credential REFERENCE BY NAME (never a value). It is resolved BEFORE any
+  # plugin is loaded - a source is fetched before plugin discovery, so the
+  # credential can only come from the BOOTSTRAP set below (core providers, no
+  # plugin). See docs/CREDENTIALS.md (layering) and docs/PLUGIN-CONTRACT.md.
+  - kind: git
+    id: workbench-plugins-private
+    url: https://github.com/nexuslbs/workbench-plugins-private
+    ref: main
+    subdir: plugins
+    auth:
+      # github-app: the credential value is an App PRIVATE KEY (PEM); the core
+      # mints a short-lived installation token from it (RS256 JWT) for the fetch.
+      type: github-app
+      credential: GITHUB_APP_KEY
+      appId: 3967918
+      installationId: 138119822
+
+# Credentials provider SELECTION. `bootstrap` is the set usable BEFORE any
+# plugin is loaded: exactly what a source fetch needs. `env` is listed first (a
+# directly exported value beats a file), then `file` for the PEM (a multiline
+# value is awkward in an env var).
+credentials:
+  bootstrap:
+    - env
+    - file
 
 plugins:
+  credentials-file:
+    # Operator-provided and gitignored, OUTSIDE both repositories (see
+    # .env.example). Absent file = "not found": the private source then reports a
+    # clear auth error and every OTHER source still loads.
+    path: /opt/workspace/workbench-secrets/credentials.yml
   hello-world:
     message: Hello World
   hello-otherworld:
