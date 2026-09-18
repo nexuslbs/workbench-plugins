@@ -1,0 +1,14 @@
+{
+  "name": "plugin-inventory",
+  "version": "0.1.0",
+  "description": "Web UI: the Host Loader's live plugin inventory (read-only, loader data only)",
+  "entry": "index.ts",
+  "capabilities": ["web:page:plugin-inventory"],
+  "config": {
+    "type": "object",
+    "properties": {
+      "page": { "type": "string", "default": "Plugin Inventory" },
+      "path": { "type": "string", "default": "/plugin-inventory" }
+    }
+  }
+}

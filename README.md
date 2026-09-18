@@ -54,6 +54,29 @@ the next boot of the core picks it up.
 | Plugin | Capability | Output |
 | --- | --- | --- |
 | `hello-otherworld` | `command:hello otherworld` | `Hello Otherworld` |
+| `credentials-stub` | `credentials:vault` | example credential provider |
+
+### Web UI plugins (M1-M4)
+
+The browser-based workbench UI is composed **only** of plugins: each one
+registers its HTTP routes, its page module and its nav entry through the core's
+`ctx.web` seam (`docs/PLUGIN-CONTRACT.md`, section 7). Removing a plugin from
+the config removes its surface; the server keeps booting and serving the rest.
+
+| Plugin | Surface | Page | API |
+| --- | --- | --- | --- |
+| `plugin-inventory` | loader inventory (read-only) | `/plugin-inventory` | `GET /api/plugin-inventory[/plugins]` |
+| `plugin-manager` | install / enable / disable / retry / reload / compose | `/plugin-manager` | `GET /api/plugin-manager/state`, `POST /api/plugin-manager/action` |
+| `settings` | active config file + per-plugin config, edit + persist | `/settings` | `GET /api/settings`, `GET /api/settings/plugins`, `GET /api/settings/plugin-config?name=`, `POST /api/settings/patch` |
+| `cordis-ui` | live cordis runtime (services, fibers, loader) + manage | `/cordis-ui` | `GET /api/cordis-ui/runtime`, `POST /api/cordis-ui/action` |
+
+The UI is served by the core (`npm run web`, or `workbench serve` with
+`web.enabled: true`); the plugins only contribute routes, assets and pages. No
+framework, no bundler, no build step at runtime: the page modules are plain ES
+modules served from the plugin directory.
+
+**Secrets**: the `settings` surface shows config references BY NAME only
+(`$secret:NAME`, `${env:VAR}`, `${cred:NAME}`) and never resolves them.
 
 ## Develop / verify
 

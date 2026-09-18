@@ -25,3 +25,18 @@ plugins:
     message: Hello World
   hello-otherworld:
     message: Hello Otherworld
+
+# Web UI (M1 Plugin Inventory, M2 Plugin Manager, M3 Settings, M4 Cordis UI).
+# The UI is composed ONLY of plugins: the list below is discovered from the
+# sources above, nothing is hardcoded in the core. Remove `web.enabled` (or set
+# it to false) and the service keeps its pre-Web-UI behaviour; `workbench web`
+# is the explicit serve entrypoint, `workbench serve` starts the listener too
+# when it is enabled.
+web:
+  enabled: true
+  # Inside the compose service the listener must not bind the container's
+  # loopback only: the UI has no auth in this round, so the DEFAULT is
+  # 127.0.0.1 and the dev service opts into 0.0.0.0 explicitly (and still needs
+  # a published port to be reachable from the host).
+  host: 0.0.0.0
+  port: 12348

@@ -1,0 +1,14 @@
+{
+  "name": "plugin-manager",
+  "version": "0.1.0",
+  "description": "Web UI: install, enable, disable, retry and compose plugins through the loader API",
+  "entry": "index.ts",
+  "capabilities": ["web:page:plugin-manager"],
+  "config": {
+    "type": "object",
+    "properties": {
+      "page": { "type": "string", "default": "Plugin Manager" },
+      "path": { "type": "string", "default": "/plugin-manager" }
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "name": "cordis-ui",
+  "version": "0.1.0",
+  "description": "Web UI: inspect and manage the live cordis runtime (fibers, services, effects)",
+  "entry": "index.ts",
+  "capabilities": ["web:page:cordis-ui"],
+  "config": {
+    "type": "object",
+    "properties": {
+      "page": { "type": "string", "default": "Cordis UI" },
+      "path": { "type": "string", "default": "/cordis-ui" }
+    }
+  }
+}

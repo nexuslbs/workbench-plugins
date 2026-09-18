@@ -1,0 +1,14 @@
+{
+  "name": "settings",
+  "version": "0.1.0",
+  "description": "Web UI: view and edit the active workbench config, secrets by name only",
+  "entry": "index.ts",
+  "capabilities": ["web:page:settings"],
+  "config": {
+    "type": "object",
+    "properties": {
+      "page": { "type": "string", "default": "Settings" },
+      "path": { "type": "string", "default": "/settings" }
+    }
+  }
+}
