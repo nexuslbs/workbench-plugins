@@ -63,21 +63,26 @@ The source `auth` block carries the per-source fields:
     installationId: 138119822
 ```
 
-## Why it declares no capability provider id
+## Why it declares the capability WITHOUT a provider id
 
 It implements **no** `credentials@1` provider (`resolve` / `explain` / `list`):
 the App private key is resolved by the ordinary providers (env / file /
 project-env / user-env in `plugins/credentials-basic`), and this plugin only
-turns that value into a token. A credential-dependent source therefore still
-needs a credentials PROVIDER plugin loaded - which is exactly what the core's
-deferral gate checks (`hasProvider()`) - and this strategy is an ADD-ON on top
-of it. Declaring a provider id here would claim an implementation that does not
-exist.
+turns that value into a token. Declaring a provider id here would claim an
+implementation that does not exist.
 
-Load order: the plugin is listed in the config roster (`plugins:`). A
-credential-dependent git source is deferred until a credentials provider plugin
-is registered, so a config that loads `credentials-basic` from a
-credential-free source and names `credentials-github-app` resolves the private
+It still declares the capability - `{ "id": "credentials", "version": 1 }`, no
+`provider` - because that is what makes the core load it in its CREDENTIALS
+phase, together with the providers, BEFORE any credential-dependent source is
+resolved. A `git` source with `auth.type: github-app` needs the `github-app` git
+auth handler to be registered already; a strategy plugin that arrived later
+could not serve the source it exists for.
+
+Load order: the plugin is listed in the config roster (`plugins:`) and must be
+reachable from a source that needs no credential (a `path` source or the PUBLIC
+`git` source). The source `auth` still needs a VALUE provider: a config that
+loads `credentials-basic` (and this plugin) from credential-free sources and
+names a credential-free `auth`-bearing source resolves and fetches the private
 source afterwards, in the same boot.
 
 ## Tests

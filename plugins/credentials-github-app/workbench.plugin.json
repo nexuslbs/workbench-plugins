@@ -1,8 +1,11 @@
 {
   "name": "credentials-github-app",
   "version": "0.1.0",
-  "description": "The `github-app` git auth STRATEGY, moved out of the core: it turns a GitHub App private key resolved through `credentials@1` into a short-lived installation access token (RS256 JWT + the GitHub REST endpoint, cached in memory) and hands the core the `git -c ...` arguments. Registers NO provider id: the credential VALUE comes from the ordinary providers (`credentials-basic`), this plugin only mints from it.",
+  "description": "The `github-app` git auth STRATEGY, moved out of the core: it turns a GitHub App private key resolved through `credentials@1` into a short-lived installation access token (RS256 JWT + the GitHub REST endpoint, cached in memory) and hands the core the `git -c ...` arguments. Declares the `credentials` capability WITHOUT a provider id: it implements no provider (the credential VALUE comes from `credentials-basic`), but that declaration is what makes the core load it in its credentials phase, before any credential-dependent source is resolved.",
   "entry": "index.ts",
+  "capabilities": [
+    { "id": "credentials", "version": 1 }
+  ],
   "config": {
     "type": "object",
     "properties": {

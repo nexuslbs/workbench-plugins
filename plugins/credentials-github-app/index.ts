@@ -18,7 +18,9 @@
 // credential into `git -c ...` arguments it asks the credentials service for a
 // handler of that type and dispatches.
 //
-// Placement note: it deliberately declares NO capability provider id. It
+// Placement note: it declares the credentials CAPABILITY without a provider id,
+// so the core loads it in its credentials phase - before any credential-dependent
+// source is resolved - while implementing no provider itself. It
 // implements no `credentials@1` provider (`resolve`/`explain`/`list`): the
 // VALUE of the App private key is resolved by the ordinary providers
 // (`plugins/credentials-basic`: env / file / ...), and this plugin only turns

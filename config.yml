@@ -117,8 +117,10 @@ plugins:
   # THE github-app GIT AUTH STRATEGY (moved out of the core in v0.0.4): it turns
   # the App PRIVATE KEY that a credentials PROVIDER resolved for
   # `auth.credential` into a short-lived installation token and hands the core
-  # the `git -c ...` arguments. No provider id: the VALUE comes from the
-  # providers above, this plugin only mints from it.
+  # the `git -c ...` arguments. It declares the `credentials` capability WITHOUT a
+  # provider id - that declaration is what loads it in the core's credentials
+  # phase, BEFORE any gated source is resolved - because the VALUE comes from the
+  # providers above and this plugin only mints from it.
   credentials-github-app: {}
   # The WEB-PAGE reader: ONE-call JS-aware read of a page that needs JavaScript.
   # The plugin renders through playwright-core chromium (the browser is provided
