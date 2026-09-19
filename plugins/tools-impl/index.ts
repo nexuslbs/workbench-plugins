@@ -35,6 +35,7 @@ import {
   type ToolInfo,
 } from '../../definitions/tools.ts'
 import { provideService } from '../../definitions/support.ts'
+import { loggerOf } from '../../definitions/logger.ts'
 
 /** The HOST service slice this plugin uses (commands + plugin attribution). */
 interface WorkbenchLike {
@@ -271,6 +272,10 @@ export async function toolCommand(tools: Tools, args: string[]): Promise<string 
     return JSON.stringify({ status: 'ok', tool: toolName, result }, null, 2)
   } catch (error) {
     if (error instanceof ToolArgsError) {
+      // CLI UX, NOT a log line: this is the ANSWER of `workbench tool` to an
+      // invalid call (the host prints command results and errors itself), so it
+      // stays on stderr and sets the exit code. The logger service carries this
+      // plugin's own diagnostics below, never the command's answer.
       process.stderr.write(`${error.message}\n`)
       for (const violation of error.violations) process.stderr.write(`  - ${violation}\n`)
       process.exitCode = 2
@@ -291,12 +296,17 @@ function answered(web: WebSeam, method: string, path: string): boolean {
 }
 
 export function apply(ctx: PluginContext, config: Config = {}): void {
+  // Every diagnostic of this plugin goes through the logger SERVICE
+  // (definitions/logger.ts), never a bare stream write: with no sink plugin
+  // mounted the deployment prints nothing, and each line carries this plugin's
+  // name and a level.
+  const log = loggerOf(ctx, name)
   const tools = new Tools({
     // Attribution: the host marks the plugin it is applying, so a tool reports
     // the CONSUMER plugin that registered it (not this provider).
     owner: () => ctx.workbench?.attribution?.(),
     fallbackOwner: 'unknown',
-    log: (message) => process.stderr.write(`[tools-impl] ${message}\n`),
+    log: (message) => log.debug(message),
   })
 
   // THE SERVICE: a consumer registers through `ctx.tools`, never by importing
@@ -316,7 +326,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
   if (ctx.inject) {
     ctx.inject(['web'], (injected) => {
       if (!injected.web) return
-      process.stderr.write('[tools-impl] web@1 provider loaded: registering the /api/tools seams\n')
+      log.info('web@1 provider loaded: registering the /api/tools seams')
       registerOn(injected.web)
     })
   } else if (ctx.web) {
@@ -342,7 +352,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
   )
 
   if (config.log !== false) {
-    process.stderr.write(`[tools-impl] tools@1 provider 'registry' loaded (${tools.tools().length} tool(s) registered so far)\n`)
+    log.info(`tools@1 provider 'registry' loaded (${tools.tools().length} tool(s) registered so far)`)
   }
 }
 

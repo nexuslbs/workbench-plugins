@@ -78,11 +78,10 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
     for (const level of LEVELS) emit(level, defaultName, `on-load@${new Date().toISOString()}`)
   }
 
-  const web = ctx.get?.('web', false) as WebService | undefined
-  if (web !== undefined && typeof web.route === 'function') {
+  const registerOn = (seam: WebService): void => {
     ctx.effect(() => {
       const disposers = [
-        web.route({
+        seam.route({
           method: 'GET',
           path: basePath,
           description: 'emit N log Messages through the logger service (the logging drive surface)',
@@ -101,7 +100,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
             return json({ plugin: name, basePath, emitted: emitted.length, total: emits.total, messages: emitted })
           },
         }),
-        web.route({
+        seam.route({
           method: 'GET',
           path: `${basePath}/audit`,
           description: 'what a plugin sees of the logger service (the service, its exporters and the buffer)',
@@ -127,5 +126,20 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
     })
   }
 
-  logger.info(`logger-demo ready (levels=${LEVELS.join(',')}, drive=${basePath}, web=${web === undefined ? 'absent' : 'present'})`)
+  // The seam is provided by a `web@1` PROVIDER plugin, which may load before or
+  // after this one, so it is acquired through cordis' `inject` (the pattern of
+  // tools-impl). A bare property read sees `undefined` at apply time and the
+  // drive surface would never exist; with no provider there is simply no
+  // surface, and every service call keeps working.
+  if (typeof ctx.inject === 'function') {
+    ctx.inject(['web'], (injected) => {
+      const seam = injected.web as WebService | undefined
+      if (seam !== undefined && typeof seam.route === 'function') registerOn(seam)
+    })
+  } else {
+    const seam = ctx.get?.('web', false) as WebService | undefined
+    if (seam !== undefined && typeof seam.route === 'function') registerOn(seam)
+  }
+
+  logger.info(`logger-demo ready (levels=${LEVELS.join(',')}, drive=${basePath}, web=${typeof ctx.inject === 'function' ? 'injected' : 'direct'})`)
 }

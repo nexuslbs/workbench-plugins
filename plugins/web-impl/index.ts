@@ -32,6 +32,7 @@ import {
   Web,
 } from '../../definitions/web.ts'
 import { provideService, serviceOf, type ServiceContext } from '../../definitions/support.ts'
+import { loggerOf } from '../../definitions/logger.ts'
 import { createWebServer, MAX_BODY_BYTES, type WebServer } from './server.ts'
 
 export const name = 'web-impl'
@@ -113,9 +114,10 @@ export function resolvePort(config: WebImplConfig): number {
  */
 export async function apply(ctx: ServiceContext, config: WebImplConfig = {}): Promise<void> {
   const host = ctx as unknown as HostContext
-  const log = (message: string): void => {
-    process.stderr.write(`[web-impl] ${message}\n`)
-  }
+  // Lifecycle output goes through the logger SERVICE (definitions/logger.ts):
+  // with no sink mounted the deployment prints nothing, and every line carries
+  // this plugin's own name and a LEVEL instead of an ad-hoc bracket prefix.
+  const log = loggerOf(ctx, name).info
 
   // Registration attribution: the host's loader marker while a plugin applies,
   // this plugin's own name when the provider registers for itself.

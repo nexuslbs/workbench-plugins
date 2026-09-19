@@ -50,6 +50,14 @@ export interface ServiceContext {
   on?(event: string, listener: (...args: unknown[]) => void): unknown
   /** Register a disposer with the owning plugin fiber. */
   effect?(callback: () => () => void): unknown
+  /**
+   * Deferred dependency declaration: `ctx.inject(['web'], (injected) => ...)`.
+   * A service named in the list may be provided LATER (a provider plugin loads
+   * after the consumer), so a consumer never reads it as a bare property;
+   * `injected.<name>` is the seam once cordis has it. Absent on a bare test
+   * context, which hands the seam in directly instead.
+   */
+  inject?(deps: string[], callback: (injected: ServiceContext) => void): unknown
   /** The credentials capability, when the deployment has it. */
   credentials?: CredentialsLike
   /**

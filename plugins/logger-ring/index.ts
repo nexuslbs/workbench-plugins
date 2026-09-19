@@ -125,11 +125,10 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
   // The READ side, through the seam: a plugin reads the `logs` service, a human
   // reads the routes. Both disappear with this plugin's fiber.
   provideService(ctx, 'logs', reader)
-  const web = serviceOf<WebService>(ctx, 'web')
-  if (web !== undefined && config.routes !== false) {
+  const registerOn = (seam: WebService): void => {
     ctx.effect(() => {
       const disposers = [
-        web.route({
+        seam.route({
           method: 'GET',
           path: basePath,
           description: 'the bounded in-memory log ring (the logger-ring sink)',
@@ -139,7 +138,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
             return json({ plugin: name, contract, path: basePath, ...reader.tail(wanted) })
           },
         }),
-        web.route({
+        seam.route({
           method: 'GET',
           path: `${basePath}/tail`,
           description: 'the last <count> log Messages (oldest first)',
@@ -149,7 +148,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
             return json({ plugin: name, ...reader.tail(wanted) })
           },
         }),
-        web.route({
+        seam.route({
           method: 'POST',
           path: `${basePath}/clear`,
           description: 'drop the log ring history',
@@ -169,5 +168,20 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
         }
       }
     })
+  }
+
+  // Same acquisition rule as the other web consumers (tools-impl, logger-demo):
+  // the `web@1` provider may load AFTER this plugin, so the seam comes from
+  // cordis' `inject`; with no provider the read side does not exist.
+  if (config.routes !== false) {
+    if (typeof ctx.inject === 'function') {
+      ctx.inject(['web'], (injected) => {
+        const seam = injected.web as WebService | undefined
+        if (seam !== undefined && typeof seam.route === 'function') registerOn(seam)
+      })
+    } else {
+      const seam = serviceOf<WebService>(ctx, 'web')
+      if (seam !== undefined && typeof seam.route === 'function') registerOn(seam)
+    }
   }
 }
