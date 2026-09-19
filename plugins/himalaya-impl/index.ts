@@ -219,13 +219,16 @@ export function toEnvelope(raw: unknown): HimalayaEnvelope {
 
 /** The `himalaya@1` service bound to ONE general-service instance. */
 export function createHimalayaService(
-  general: GeneralServiceInstance,
+  general: GeneralServiceInstance | (() => GeneralServiceInstance),
   options: { binary?: string } = {},
 ): HimalayaService {
   const binary = himalayaBinary(options.binary)
+  // A FUNCTION means "resolve the instance on first need": the general-service
+  // instance is then created at CALL time rather than at load (see createLateBinding).
+  const target = (): GeneralServiceInstance => (typeof general === 'function' ? general() : general)
 
   const invoke = async (argv: string, label: string, account?: string): Promise<string> => {
-    const result = await general.call(argv)
+    const result = await target().call(argv)
     if (result.code !== 0) {
       throw new ServiceError('non-zero-exit', `himalaya: '${label}' exited ${String(result.code)}: ${(result.stderr ?? result.output).trim().slice(0, 400)}`, {
         stage: 'himalaya.call',
@@ -325,6 +328,46 @@ export function createNotConfiguredService(reason: string): HimalayaService {
   }
 }
 
+/**
+ * Instance-style binding that tolerates a LATE-arriving transport.
+ *
+ * The core loader is SEQUENTIAL and walks the plugin directories of a source in
+ * SORTED order (`workbench/src/loader.ts`: `discoverPluginDirs(...).sort()` then
+ * `for (const discovery of ...) await loadDiscovered(...)`), so a transport
+ * provider whose plugin directory sorts AFTER this one is simply not loaded yet
+ * when `apply()` runs - the same reality `email-himalaya` handles by resolving
+ * the himalaya service at CALL time. The FIRST attempt happens at load, so the
+ * config is validated before any call and a transport that is genuinely ABSENT
+ * is reported then; but it is not fatal: every call retries the factory, so a
+ * provider that loads milliseconds later is picked up, while a missing one keeps
+ * failing with the SAME named error. No fallback transport, no host run.
+ */
+export interface LateBinding {
+  /** The bound instance; creates it on first need and throws the create error when it cannot. */
+  instance(): GeneralServiceInstance
+  /** The first create error while unbound (null once bound) - the load-time report. */
+  error(): unknown
+}
+
+/** Wraps a general-service instance FACTORY in the retrying binding above. */
+export function createLateBinding(factory: () => GeneralServiceInstance): LateBinding {
+  let bound: GeneralServiceInstance | undefined
+  let firstError: unknown
+  return {
+    instance: (): GeneralServiceInstance => {
+      if (bound !== undefined) return bound
+      try {
+        bound = factory()
+      } catch (error) {
+        firstError = error
+        throw error
+      }
+      return bound
+    },
+    error: () => (bound === undefined ? firstError : null),
+  }
+}
+
 export async function apply(ctx: ServiceContext, config: HimalayaImplConfig = {}): Promise<void> {
   assertPolicyDeclared(import.meta.url, { execution: 'remote', capabilities: [HIMALAYA] })
   if (config.general === undefined) {
@@ -339,15 +382,32 @@ export async function apply(ctx: ServiceContext, config: HimalayaImplConfig = {}
   })
   const general: GeneralService | undefined = serviceOfGeneralService(ctx)
   if (general === undefined) {
-    throw new ServiceError(
-      'missing-service',
-      `himalaya: the '${GENERAL_SERVICE}' service is not loaded (enable plugins/general-service-impl)`,
-      { stage: 'himalaya.apply', details: { missing: GENERAL_SERVICE } },
+    // The GENERAL SERVICE being absent is NOT a load failure (R4-11): report
+    // loaded/not-configured and answer calls with a structured error.
+    provideService(
+      ctx,
+      HIMALAYA,
+      createNotConfiguredService(`the '${GENERAL_SERVICE}' service is not loaded (enable plugins/general-service-impl)`),
+    )
+    console.error(`himalaya-impl: not configured (the '${GENERAL_SERVICE}' service is not loaded); calls answer a structured error`)
+    return
+  }
+  const transport = config.general
+  // Instance-style: the transport is validated HERE, at load, BEFORE any call
+  // (a type whose service is missing fails the creation - never a fallback), but
+  // the binding is RETRIED per call so a provider that loads LATER is picked up
+  // while an absent capability keeps failing with the same named error.
+  const binding = createLateBinding(() => general.create(transport))
+  try {
+    binding.instance()
+  } catch (error) {
+    console.error(
+      `himalaya-impl: the configured '${String(transport.type)}' transport is not ready (${messageOf(error)}); ` +
+        'the general-service instance is re-created on the next call - a provider that loads later is picked up, ' +
+        'a missing capability keeps failing with this error (never a host fallback)',
     )
   }
-  // Instance-style: the transport is validated HERE, at load, BEFORE any call.
-  const instance = general.create(config.general)
-  provideService(ctx, HIMALAYA, createHimalayaService(instance, { binary: config.binary }))
+  provideService(ctx, HIMALAYA, createHimalayaService(() => binding.instance(), { binary: config.binary }))
 }
 
 export default { name, inject: [], apply }

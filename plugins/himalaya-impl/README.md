@@ -56,9 +56,30 @@ A malformed answer throws a structured `malformed-output` error carrying a
 With no `general` row the plugin still LOADS, logs the reason, and provides a
 service whose every call answers a structured `not-configured` error. It never
 appears under `failures`. The same is true when the general service itself is
-absent (`missing-service`) or when the configured transport service is not
-loaded: `create()` throws at LOAD - the transport is validated before any call,
-and there is no fallback to another transport and none to the host.
+absent (`missing-service`), and when the configured transport service is not
+loaded yet.
+
+### Load order: validated at load, bound per call (SOFT, never a dependency)
+
+The core loader is SEQUENTIAL and walks the plugin directories of a source in
+SORTED order, so a transport provider whose directory sorts after this one
+(`shell-impl`, `ssh-impl`) is simply not loaded yet when `apply()` runs - even
+though the config row is correct. Therefore:
+
+1. the transport is validated AT LOAD: `general.create(<config>)` is called once,
+   so a wrong type or a genuinely missing capability is reported immediately with
+   the named error (`the config type 'local' needs the 'shell' service, which is
+   not loaded (enable a plugin providing shell@1)`);
+2. that first failure is NOT fatal: the instance is re-created on the next call,
+   so a provider that loads milliseconds later is picked up and the first call
+   after it succeeds;
+3. a capability that stays missing keeps failing with the SAME named error - the
+   plugin never lands under `failures`, never falls back to another transport and
+   never runs on the host (`local`/`shell` is the only host transport, and it has
+   to be the transport named in the config).
+
+`createLateBinding()` in `index.ts` implements this; `test/himalaya-impl.test.ts`
+covers it (the load-time error is kept, the next call binds, no fallback).
 
 ## Credentials
 

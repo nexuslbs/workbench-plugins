@@ -22,6 +22,7 @@ import {
   buildArgv,
   buildRunArgv,
   createHimalayaService,
+  createLateBinding,
   himalayaBinary,
   parseJson,
   toEnvelope,
@@ -193,4 +194,38 @@ test('send evidence: the -a flag lands in the SUBCOMMAND option list of a heredo
   assert.equal(line.split('\n')[0], "himalaya message send -a hostinger <<'WB_HIMALAYA_MESSAGE_EOF'")
   assert.ok(line.includes('From: hermes@nexuslbs.org'))
   assert.ok(line.trimEnd().endsWith('WB_HIMALAYA_MESSAGE_EOF'))
+})
+
+test('a LATE transport provider is tolerated: the load-time create failure is reported, the next call binds', async () => {
+  // The core loader is SEQUENTIAL in directory-sort order, so a transport whose
+  // provider directory sorts AFTER himalaya-impl (shell-impl, ssh-impl) is not
+  // loaded yet when apply() runs. The binding must retry per call instead of
+  // failing the plugin load (R4-11: a not-ready backend never lands under
+  // `failures`), while STILL reporting the named error at load.
+  const general = fakeGeneral(() => ({ output: '[]', code: 0 }))
+  let ready = false
+  const factory = (): GeneralServiceInstance => {
+    if (!ready) {
+      throw new ServiceError(
+        'missing-service',
+        "general-service: the config type 'local' needs the 'shell' service, which is not loaded",
+      )
+    }
+    return general.instance
+  }
+  const binding = createLateBinding(factory)
+  // The FIRST attempt is the load-time validation: it fails and the error is kept.
+  assert.throws(
+    () => binding.instance(),
+    (error: unknown) => (error as { code?: string }).code === 'missing-service',
+  )
+  assert.ok(binding.error() !== null && binding.error() !== undefined, 'the load-time failure is reported, never swallowed')
+  // The provider loads a moment later: the very next call binds and works.
+  ready = true
+  const service = createHimalayaService(() => binding.instance())
+  assert.deepEqual(await service.accounts(), [])
+  assert.equal(binding.error(), null)
+  // No fallback: the input still travels to the (now bound) general service.
+  assert.equal(general.calls.length, 1)
+  assert.equal(general.calls[0].startsWith('himalaya account list'), true)
 })
