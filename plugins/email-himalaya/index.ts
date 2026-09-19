@@ -51,6 +51,7 @@ import {
   credentialsOf,
   messageOf,
   provideService,
+  serviceOf,
   shellQuote,
   waitForServices,
   type ServiceContext,
@@ -124,16 +125,16 @@ export function buildRawMessage(input: EmailSendInput): string {
 }
 
 /**
- * The himalaya argv for one send. himalaya v1.2 takes the RAW message (headers
- * and body) as its positional argument, so the message travels as ONE
- * single-quoted argument: the transport hands it to the target shell, which
- * never word-splits or globs inside the quotes.
+ * The himalaya ARGV FRAGMENT for one send: everything AFTER the himalaya
+ * binary. The binary and the account flag are owned by the himalaya service
+ * (`buildRunArgv`), so the account travels as the `account` field of the call.
+ * himalaya v1.2 takes the RAW message (headers and body) as its positional
+ * argument, so the message travels as ONE single-quoted argument: the transport
+ * hands it to the target shell, which never word-splits or globs inside the
+ * quotes.
  */
-export function sendArgv(account: string | undefined, raw: string): string {
-  const argv = ['himalaya']
-  if (account !== undefined) argv.push('-a', shellQuote(account))
-  argv.push('message', 'send', shellQuote(raw))
-  return argv.join(' ')
+export function sendArgv(raw: string): string {
+  return ['message', 'send', shellQuote(raw)].join(' ')
 }
 
 /**
@@ -248,7 +249,7 @@ export function createEmailProvider(himalaya: HimalayaService, config: EmailHima
       const target = resolve(input.ref)
       await checkCredential(target.row)
       const raw = buildRawMessage(input)
-      const result = await himalaya.run({ args: sendArgv(target.accountName, raw), account: undefined })
+      const result = await himalaya.run({ args: sendArgv(raw), account: target.accountName })
       return {
         account: target.label,
         accepted: [typeof input.to === 'string' ? input.to : input.to.join(', ')],
@@ -274,52 +275,114 @@ export function createNotConfiguredService(reason: string): EmailService {
   })
 }
 
+/**
+ * Binds to the `himalaya@1` service LAZILY: `apply` must not depend on the LOAD
+ * ORDER. himalaya-impl is loaded AFTER this provider (it injects the general
+ * service), so resolving the backend at apply time would freeze the provider in
+ * the `not configured` state forever. The service is provided IMMEDIATELY and
+ * the backend is resolved at the FIRST CALL with a bounded, soft wait.
+ *
+ * An absent/unconfigured himalaya stays a VALID state: the plugin loads (never a
+ * failure), `describe()` reports `not configured`, and a call answers with a
+ * structured `missing-service` error.
+ */
+function createLazyEmailService(ctx: ServiceContext, config: EmailHimalayaConfig): EmailService {
+  const labels = Object.keys(config.accounts ?? {})
+  const defaultLabel = config.defaultAccount ?? labels[0]
+  let bound: EmailService | undefined
+  const missing = (reason: string): ServiceError =>
+    new ServiceError('not-configured', `email: ${reason}`, { stage: 'email.apply' })
+
+  const bind = async (): Promise<EmailService> => {
+    if (bound !== undefined) return bound
+    await waitForServices(ctx, [HIMALAYA], {
+      timeoutMs: config.himalayaWaitMs ?? DEFAULT_HIMALAYA_WAIT_MS,
+      pollMs: 25,
+    })
+    const himalaya = serviceOfHimalaya(ctx)
+    if (himalaya === undefined) throw missing("the 'himalaya' service is not loaded (enable plugins/himalaya-impl)")
+    if (himalaya.describe?.()?.startsWith('not configured') === true) throw missing('the himalaya service is not configured')
+    bound = withDerivedEmailCommands(createEmailProvider(himalaya, config, ctx))
+    return bound
+  }
+
+  return withDerivedEmailCommands({
+    id: providerId,
+    describe: () => {
+      const himalaya = serviceOfHimalaya(ctx)
+      if (himalaya === undefined || himalaya.describe?.()?.startsWith('not configured') === true) {
+        return "not configured (the 'himalaya' service is not loaded)"
+      }
+      return `himalaya (${labels.length} account(s), default '${defaultLabel ?? 'none'}')`
+    },
+    accounts: async () => (await bind()).accounts(),
+    list: async (ref?: EmailRef, options?: EmailListOptions) => (await bind()).list(ref, options),
+    get: async (ref: EmailRef | undefined, id: string, options?: EmailGetOptions) => (await bind()).get(ref, id, options),
+    send: async (input: EmailSendInput) => (await bind()).send(input),
+  })
+}
+
+/**
+ * The kernel-hosted `email@1` service (the core capability host), when present.
+ *
+ * Read through a GUARDED property access first (a plain `email` handle, as in a
+ * test harness), then through the NON-STRICT store lookup (`ctx.get('email',
+ * false)`): this plugin deliberately does NOT declare `email` in its inject list
+ * (it must load even when the kernel capability is absent), and a cordis
+ * property access without inject throws.
+ */
+function kernelEmailOf(ctx: ServiceContext): { register?: (descriptor: unknown) => unknown } | undefined {
+  try {
+    const direct = (ctx as { email?: { register?: (descriptor: unknown) => unknown } }).email
+    if (direct !== undefined && typeof direct.register === 'function') return direct
+  } catch {
+    // Not injectable here: fall through to the non-strict lookup.
+  }
+  const viaStore = serviceOf<{ register?: (descriptor: unknown) => unknown }>(ctx, 'email')
+  return viaStore !== undefined && typeof viaStore.register === 'function' ? viaStore : undefined
+}
+
 export async function apply(ctx: ServiceContext, config: EmailHimalayaConfig = {}): Promise<void> {
   assertPolicyDeclared(import.meta.url, {
     execution: 'remote',
     capabilities: [EMAIL, HIMALAYA],
   })
 
-  // SOFT, BOUNDED ordering hint: the himalaya service is this provider's backend.
-  await waitForServices(ctx, [HIMALAYA], {
-    timeoutMs: config.himalayaWaitMs ?? DEFAULT_HIMALAYA_WAIT_MS,
-    pollMs: 25,
-  })
-  const himalaya = serviceOfHimalaya(ctx)
-  if (himalaya === undefined || himalaya.describe?.()?.startsWith('not configured') === true) {
-    const reason = himalaya === undefined ? "the 'himalaya' service is not loaded (enable plugins/himalaya-impl)" : 'the himalaya service is not configured'
-    provideService(ctx, MAIL, createNotConfiguredService(reason))
-    ctx.logger?.info?.(`email-himalaya: not configured (${reason})`)
-    return
-  }
-
-  const provider = createEmailProvider(himalaya, config, ctx)
-  const service = withDerivedEmailCommands(provider)
+  const service = createLazyEmailService(ctx, config)
   // The plugins-repo service name (it has `send`, which the kernel copy lacks).
   provideService(ctx, MAIL, service)
+  const himalaya = serviceOfHimalaya(ctx)
+  const himalayaReady = himalaya !== undefined && himalaya.describe?.()?.startsWith('not configured') !== true
+  ctx.logger?.info?.(
+    himalayaReady
+      ? `email-himalaya: bound to the himalaya service (${service.describe?.()})`
+      : "email-himalaya: not configured (the 'himalaya' service is not loaded; it is resolved at call time, never a hard dependency)",
+  )
 
   // Backward compatibility: when the kernel hosts `email@1` (a core service),
   // feed it too, so consumers using `ctx.email` keep working. A kernel whose
   // service is absent or already taken must not break this provider.
-  if (config.registerWithKernel !== false) {
-    const kernel = (ctx as { email?: { register?: (descriptor: unknown) => unknown } }).email
-    if (kernel !== undefined && typeof kernel.register === 'function') {
+  // The kernel service is read through the NON-STRICT lookup
+  // (`ctx.get('email', false)` inside `serviceOf`): this plugin does not declare
+  // `email` in its inject list, so a direct `ctx.email` access is rejected by
+  // cordis before this code even runs.
+  const kernel = kernelEmailOf(ctx)
+  if (himalayaReady && config.registerWithKernel !== false && kernel !== undefined && typeof kernel.register === 'function') {
       try {
         kernel.register({
           id: providerId,
           version: 1,
           descriptor: {
-            accounts: provider.accounts,
-            list: provider.list,
-            get: provider.get,
-            send: provider.send,
+            accounts: service.accounts,
+            list: service.list,
+            get: service.get,
+            send: service.send,
           },
         })
         ctx.logger?.info?.('email-himalaya: also registered with the kernel-hosted email service')
       } catch (error) {
         ctx.logger?.warn?.(`email-himalaya: the kernel email service refused the provider (${messageOf(error)})`)
       }
-    }
   }
   void EMAIL
 }

@@ -197,8 +197,37 @@ plugins:
         address: me@work.example
         accountName: work
   email-tools:
-    defaultListLimit: 10
-    maxListLimit: 50
+    defaultLimit: 10
+
+  # THE TRANSPORT PROVIDERS of the general-service stack (definitions/*.ts +
+  # docs/SERVICES.md): ONE plugin per transport, each declaring its capability
+  # provider id in its manifest. They are independent: a deployment loads only
+  # the transports it uses, the config-driven dispatcher below resolves by type.
+  # `shell-impl` is the ONLY provider that executes on the WORKBENCH HOST and it
+  # is OPT-IN: drop its row and `local` stops working while every remote type
+  # keeps working (plugins/shell-impl/README.md).
+  shell-impl: {}
+  ssh-impl: {}
+  docker-impl: {}
+  http-impl: {}
+  # THE CONFIG-DRIVEN DISPATCHER (general-service@1): resolves the transport
+  # service from the configured `type` (local -> shell, container -> docker,
+  # ssh -> ssh, ssh+container -> ssh + docker, http -> http) and calls it. NO
+  # hard injection: transports it does not use need not be loaded at all.
+  general-service-impl: {}
+  # THE HIMALAYA PROVIDER (himalaya@1): it owns the TRANSPORT and never the mail
+  # accounts (those belong to the email plugin). `type: container` runs himalaya
+  # INSIDE the omni toolbox of this stack; project_dir/service come from HERE,
+  # never from code: `${env:OMNI_DIR}` is the omni root of the deployment (the
+  # container transport needs docker@1 + a reachable compose project).
+  himalaya-impl:
+    general:
+      type: container
+      params:
+        engine: docker-compose
+        compose:
+          project_dir: ${env:OMNI_DIR}
+          service: toolbox
 
   # The TOTP capability (core docs/PLUGIN-CONTRACT.md 4f): the PROVIDER below
   # implements `totp@1` with RFC 4226 (HOTP) + RFC 6238 (TOTP) on `node:crypto`

@@ -413,4 +413,4 @@ export function apply(ctx: EmailToolsContext, config: Config = {}): void {
   else install()
 }
 
-export default { name, inject: [], apply }
+export default { name, inject: ['workbench'], apply }

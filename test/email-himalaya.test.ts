@@ -31,6 +31,7 @@ interface HimalayaCall {
   method: string
   query?: Record<string, unknown>
   args?: string
+  account?: string
 }
 
 /** A recording FAKE `himalaya@1` service: the typed surface, no CLI at all. */
@@ -76,7 +77,7 @@ function fakeHimalaya(describe = 'fake himalaya (test)'): {
       return { text: 'Your code is 123456', raw: '{"text":"Your code is 123456"}' }
     },
     run: async (input: { args: string; account?: string }) => {
-      calls.push({ method: 'run', args: input.args })
+      calls.push({ method: 'run', args: input.args, account: input.account })
       return { output: 'message sent', code: 0 }
     },
   }
@@ -272,9 +273,14 @@ test('send() builds the RFC 5322 message and hands ONE quoted argv string to him
   assert.equal(result.account, 'work')
   assert.deepEqual(result.accepted, ['hermes@nexuslbs.org'])
   const argv = String(fake.calls[0]?.args)
-  assert.ok(argv.startsWith("himalaya -a 'work' message send "))
+  assert.equal(
+    fake.calls[0]?.account,
+    'work',
+    'the account travels as the account field (himalaya-impl prepends the binary and -a)',
+  )
+  assert.ok(!argv.includes('himalaya'), 'the fragment carries NO binary: the himalaya service owns it')
   assert.ok(
-    argv.startsWith("himalaya -a 'work' message send '"),
+    argv.startsWith("message send '"),
     'the raw RFC 5322 message is handed over as ONE single-quoted argument',
   )
   assert.ok(argv.endsWith("'"), 'the quoted message closes at the very end of the argv string')
@@ -292,8 +298,8 @@ test('the argv builders are pure: headers, quoting and the account flag', () => 
   const html = buildRawMessage({ to: 'a@x.test', subject: "it's here", body: 'b', html: true })
   assert.ok(html.includes("Subject: it's here"))
   assert.ok(html.includes('Content-Type: text/html'))
-  const argv = sendArgv(undefined, html)
-  assert.ok(argv.startsWith('himalaya message send '), 'no account flag when none is given')
+  const argv = sendArgv(html)
+  assert.ok(argv.startsWith('message send '), 'the fragment starts AFTER the binary and carries no account flag')
   assert.ok(argv.includes("'Subject: it's here'") === false, 'the message is ONE quoted word')
   assert.deepEqual(toSummary({ id: '1', flags: [], subject: 's', from: 'f', to: '', date: 'd', hasAttachment: false }).to, [])
 })

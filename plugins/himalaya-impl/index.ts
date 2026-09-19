@@ -74,18 +74,85 @@ export const MAX_FETCH = 200
 export interface HimalayaImplConfig {
   /** The transport himalaya runs in: a `general-service@1` config. */
   general?: GeneralServiceConfig
+  /**
+   * The himalaya COMMAND the transport runs (default 'himalaya'). A plain name
+   * or an absolute path (e.g. a binary outside the PATH of the target), never a
+   * credential value.
+   */
+  binary?: string
   /** Optional per-call timeout override (ms). */
   timeoutMs?: number
   /** Bound of the soft wait for the general service (ms). */
   generalWaitMs?: number
 }
 
-/** Assembles a himalaya argv STRING from already-validated pieces. */
-export function buildArgv(parts: { account?: string; args: readonly string[] }): string {
-  const argv: string[] = []
-  if (parts.account !== undefined) argv.push('-a', parts.account)
-  argv.push(...parts.args)
-  return argv.map((part) => shellQuote(part)).join(' ')
+/** The himalaya command an argv line starts with. */
+export const DEFAULT_BINARY = 'himalaya'
+
+/** Validates the configured binary token (a command name or an absolute path). */
+export function himalayaBinary(value: unknown, field = 'binary'): string {
+  if (value === undefined || value === null || value === '') return DEFAULT_BINARY
+  const binary = typeof value === 'string' ? value.trim() : ''
+  if (binary.length === 0) return DEFAULT_BINARY
+  if (!/^[A-Za-z0-9_./:@+-]+$/.test(binary)) {
+    throw new ServiceError('invalid-config', `himalaya: '${field}' must be a plain command name or path`, {
+      stage: 'himalaya.config',
+      details: { field },
+    })
+  }
+  return binary
+}
+
+/** Plain tokens the target shell cannot mangle: they travel unquoted. */
+const SAFE_WORD = /^[A-Za-z0-9_./:@%+=,-]+$/
+
+/** Quotes a token only when the target shell would otherwise change it. */
+export function word(value: string): string {
+  return SAFE_WORD.test(value) ? value : shellQuote(value)
+}
+
+/** The `<command> <subcommand>` words every typed himalaya command starts with. */
+const SUBCOMMAND_WORDS = 2
+
+/**
+ * himalaya v1.2 declares `-a/--account` on the SUBCOMMANDS, not globally:
+ * `himalaya -a x envelope list` is rejected with `unexpected argument '-a'
+ * found`, while `himalaya envelope list -a x -o json` works. A subcommand's
+ * options PRECEDE its positional query, so the flag is inserted right AFTER the
+ * `<command> <subcommand>` words and before the rest of the option list.
+ */
+export function withAccount(args: readonly string[], account?: string): string[] {
+  const list = [...args]
+  if (account === undefined) return list
+  const at = Math.min(SUBCOMMAND_WORDS, list.length)
+  return [...list.slice(0, at), '-a', account, ...list.slice(at)]
+}
+
+/**
+ * Assembles a himalaya COMMAND LINE from already-validated pieces. The line
+ * STARTS WITH THE HIMALAYA BINARY: the general service hands the input to the
+ * shell of the TARGET (container / ssh'd machine) exactly once, so the input
+ * must be a complete command there - a bare `account list -o json` is not.
+ * Every token is quoted only when the target shell would change it.
+ */
+export function buildArgv(parts: { binary?: string; account?: string; args: readonly string[] }): string {
+  const argv = withAccount(parts.args, parts.account).map((part) => word(part))
+  return `${himalayaBinary(parts.binary)} ${argv.join(' ')}`.trim()
+}
+
+/**
+ * The command line of the ESCAPE HATCH: `args` is an ALREADY-BUILT, already
+ * quoted ARGV FRAGMENT (everything AFTER the binary), so it is appended
+ * verbatim; only the binary and the account flag are added here - the flag goes
+ * into the SUBCOMMAND option list (see `withAccount`), before the positionals.
+ */
+export function buildRunArgv(parts: { binary?: string; account?: string; args: string }): string {
+  const binary = himalayaBinary(parts.binary)
+  if (parts.account === undefined) return `${binary} ${parts.args}`.trim()
+  const flag = `-a ${word(parts.account)}`
+  const match = /^\s*(\S+)\s+(\S+)([\s\S]*)$/.exec(parts.args)
+  if (match === null) return `${binary} ${flag} ${parts.args}`.trim()
+  return `${binary} ${match[1]} ${match[2]} ${flag}${match[3]}`
 }
 
 /** Parses a himalaya `-o json` answer (a JSON document or a JSON string). */
@@ -151,18 +218,30 @@ export function toEnvelope(raw: unknown): HimalayaEnvelope {
 }
 
 /** The `himalaya@1` service bound to ONE general-service instance. */
-export function createHimalayaService(general: GeneralServiceInstance): HimalayaService {
-  const call = async (args: readonly string[], account?: string): Promise<string> => {
-    const argv = buildArgv({ ...(account === undefined ? {} : { account }), args })
+export function createHimalayaService(
+  general: GeneralServiceInstance,
+  options: { binary?: string } = {},
+): HimalayaService {
+  const binary = himalayaBinary(options.binary)
+
+  const invoke = async (argv: string, label: string, account?: string): Promise<string> => {
     const result = await general.call(argv)
     if (result.code !== 0) {
-      throw new ServiceError('non-zero-exit', `himalaya: '${args.join(' ')}' exited ${String(result.code)}: ${(result.stderr ?? result.output).trim().slice(0, 400)}`, {
+      throw new ServiceError('non-zero-exit', `himalaya: '${label}' exited ${String(result.code)}: ${(result.stderr ?? result.output).trim().slice(0, 400)}`, {
         stage: 'himalaya.call',
-        details: { args: [...args], code: result.code, account: account ?? null },
+        details: { label, code: result.code, account: account ?? null },
       })
     }
     return result.output
   }
+
+  /** Typed path: the pieces are assembled into a COMPLETE command line. */
+  const call = (args: readonly string[], account?: string): Promise<string> =>
+    invoke(buildArgv({ binary, ...(account === undefined ? {} : { account }), args }), args.join(' '), account)
+
+  /** ESCAPE HATCH: `args` is an argv fragment (everything after the binary). */
+  const callRaw = (args: string, account?: string): Promise<string> =>
+    invoke(buildRunArgv({ binary, ...(account === undefined ? {} : { account }), args }), args, account)
 
   const service: HimalayaInstance = {
     contract: HIMALAYA_CONTRACT,
@@ -222,7 +301,7 @@ export function createHimalayaService(general: GeneralServiceInstance): Himalaya
     },
     run: async (input: HimalayaRunInput): Promise<HimalayaRunResult> => {
       const account = himalayaAccount(input.account)
-      const output = await call([input.args], account)
+      const output = await callRaw(input.args, account)
       return { output, code: 0 }
     },
   }
@@ -268,7 +347,7 @@ export async function apply(ctx: ServiceContext, config: HimalayaImplConfig = {}
   }
   // Instance-style: the transport is validated HERE, at load, BEFORE any call.
   const instance = general.create(config.general)
-  provideService(ctx, HIMALAYA, createHimalayaService(instance))
+  provideService(ctx, HIMALAYA, createHimalayaService(instance, { binary: config.binary }))
 }
 
 export default { name, inject: [], apply }

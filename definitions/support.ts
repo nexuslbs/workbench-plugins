@@ -249,10 +249,12 @@ export async function waitForServices(
       if (pending.size === 0) finish()
     }
     ctx.on?.('internal/service', check)
+    // NOT unref'd on purpose: an unref'd timer lets the event loop drain while
+    // boot is still awaiting a service that is about to be provided, and Node
+    // then aborts the whole process with "unsettled top-level await"
+    // (exit code 13) instead of performing the BOUNDED wait below.
     interval = setInterval(check, pollMs)
-    ;(interval as { unref?: () => void }).unref?.()
     timer = setTimeout(finish, timeoutMs)
-    ;(timer as { unref?: () => void }).unref?.()
     check()
   })
   return reportOf()

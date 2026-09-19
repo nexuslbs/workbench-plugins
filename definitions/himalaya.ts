@@ -116,9 +116,19 @@ export interface HimalayaMessageQuery extends HimalayaAccountQuery {
 }
 
 export interface HimalayaRunInput {
-  /** A himalaya ARGV string, built by plugin code from typed inputs. */
+  /**
+   * A himalaya ARGV FRAGMENT (everything AFTER the himalaya binary), built by
+   * plugin code from typed inputs and already shell-quoted where needed. The
+   * binary (and the account flag below) are prepended by the implementation, so
+   * the command line the transport executes is complete.
+   */
   args: string
-  /** Optional account (`-a <name>`), prepended by the implementation. */
+  /**
+   * Optional account (`-a <name>`). himalaya v1.2 takes the flag at the
+   * SUBCOMMAND level, so the implementation places it in the subcommand option
+   * list (after `<command> <subcommand>`, before the positional query) and
+   * never as a global option before the command.
+   */
   account?: string
 }
 
