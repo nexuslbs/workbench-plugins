@@ -1,0 +1,13 @@
+{
+  "name": "hello-tool",
+  "version": "0.1.0",
+  "description": "External plugin: registers the 'hello greet' TOOL - a named tool with a parameter schema, invoked by name over HTTP (POST /api/tools/<name>) or from the CLI",
+  "entry": "index.ts",
+  "capabilities": ["tool:hello greet"],
+  "config": {
+    "type": "object",
+    "properties": {
+      "greeting": { "type": "string", "default": "Hello" }
+    }
+  }
+}

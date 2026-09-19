@@ -90,6 +90,7 @@ the plugins of this checkout plus the Web UI plugins (`plugin-inventory`,
 | --- | --- | --- |
 | `hello-otherworld` | `command:hello otherworld` | `Hello Otherworld` |
 | `credentials-stub` | `credentials:vault` | example credential provider |
+| `hello-tool` | `tool:hello greet` | by-name tool over HTTP: `POST /api/tools/hello%20greet`, `POST /api/tool/call` (core contract, section 4d) |
 
 ### Web UI plugins (M1-M4)
 
@@ -112,6 +113,22 @@ modules served from the plugin directory.
 
 **Secrets**: the `settings` surface shows config references BY NAME only
 (`${cred:NAME}`, `${env:VAR}`) and never resolves them.
+
+### Tool plugins (by-name invocation)
+
+A plugin can register a named **tool** (a description, the parameters it expects
+and a handler) through `ctx.workbench.registerTool`; the core then exposes it for
+invocation BY NAME over HTTP with the parameters as the request body. This is
+NOT a model/agent feature: the callers are plugins and operators. The contract is
+`docs/PLUGIN-CONTRACT.md` section 4d of the core.
+
+| Plugin | Tool | Parameters | Routes |
+| --- | --- | --- | --- |
+| `hello-tool` | `hello greet` | `name` (string, required), `greeting` (string), `times` (integer) | `GET /api/tools`, `POST /api/tools/hello%20greet`, `POST /api/tool/call` |
+
+The smoke for this end-to-end (the plugin registers a tool, the core lists it
+with its schema, invokes it, validates the body and returns 400/404/500 without
+restarting) is `test/hello-tool.test.ts` here plus the core's `test/tools.test.ts`.
 
 ## Develop / verify
 

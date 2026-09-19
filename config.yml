@@ -74,6 +74,12 @@ plugins:
   hello-otherworld:
     message: Hello Otherworld
 
+  # The TOOL consumer: registers the by-name tool `hello greet` through
+  # `ctx.workbench.registerTool` (core docs/PLUGIN-CONTRACT.md, section 4d), so
+  # the dev service answers GET /api/tools, POST /api/tools/hello%20greet and
+  # POST /api/tool/call (the shape the omniagent `workbench` MCP plugin sends).
+  hello-tool: {}
+
   # Web UI (M1 Plugin Inventory, M2 Plugin Manager, M3 Settings, M4 Cordis UI).
   # The UI is composed ONLY of plugins: they are discovered in the sources above
   # and named here, nothing is hardcoded in the core. Drop a row (or set
