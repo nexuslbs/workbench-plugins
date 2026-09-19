@@ -121,6 +121,37 @@ plugins:
     defaultListLimit: 10
     maxListLimit: 50
 
+  # The TOTP capability (core docs/PLUGIN-CONTRACT.md 4f): the PROVIDER below
+  # implements `totp@1` with RFC 4226 (HOTP) + RFC 6238 (TOTP) on `node:crypto`
+  # HMAC only (no dependency), the CONSUMER exposes it as the tools
+  # 'totp list' (labels + metadata, never a secret) and 'totp code'.
+  #
+  # NO KEY VALUE IS IN THIS FILE. `credential: NAME` is a credential NAME,
+  # resolved at CALL time through ctx.credentials, so a credential that is not in
+  # the store leaves the plugin LOADED and only THAT entry 'not configured' (a
+  # call for it reports the reason). The `${cred:NAME}` spelling is supported too
+  # and is the PREFERRED form when the credential is guaranteed to exist: the
+  # core expands it BEFORE the plugin loads (plugin README, "Configuration").
+  # `rfc-test-vector` carries the PUBLIC RFC 6238 appendix B test key, which is
+  # not a credential at all: it keeps the seam demonstrable with an empty store.
+  totp-rfc6238:
+    entries:
+      github:
+        credential: TOTP_GITHUB_KEY
+        issuer: GitHub
+        account: me@example.com
+      aws-root:
+        credential: TOTP_AWS_ROOT_KEY
+        issuer: AWS
+        account: root
+      rfc-test-vector:
+        secret: GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ
+        issuer: RFC 6238
+        account: appendix-b
+        digits: 8
+  totp-tools:
+    reportEntryMetadata: true
+
 web:
   enabled: true
   # Inside the compose service the listener must not bind the container's
