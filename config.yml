@@ -94,6 +94,18 @@ plugins:
   # credentials-stub: the dev credential provider plugin (the stub vault the docs
   # use to show the Provider -> Definition <- Consumer seam end to end).
   credentials-stub: {}
+  # The WEB-PAGE reader: ONE-call JS-aware read of a page that needs JavaScript.
+  # The plugin renders through playwright-core chromium (the browser is provided
+  # by the deployment: `PLAYWRIGHT_BROWSERS_PATH` here points at the browser
+  # installed for local runs, config `executablePath` overrides it), distils the
+  # page to compact markdown IN CODE, caps the result with spill to a file and
+  # caches it by URL + content hash. Two CONSUMER tools through
+  # `ctx.workbench.registerTool`: 'page read' and 'page map'. It holds no
+  # credential of its own - the optional `proxy.credential` is a NAME resolved
+  # through ctx.credentials and never written or logged.
+  web-page:
+    cacheDir: /opt/workspace/workbench-plugins/.workbench/web-page-cache
+    cacheTtlSeconds: 900
 
   # The plugin of the EXTERNAL GIT source (`workbench-plugins-git`, subdir
   # `examples`): cloned from GitHub at boot, so naming it here is what keeps the

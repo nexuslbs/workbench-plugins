@@ -1,0 +1,37 @@
+{
+  "name": "web-page",
+  "version": "0.1.0",
+  "description": "External web-page CONSUMER: one-call JS-aware page read (playwright-core chromium render, main-content to compact markdown, URL+content-hash cache, char cap with spill) exposed as the tools 'page read' and 'page map'",
+  "entry": "index.ts",
+  "capabilities": ["tool:page read", "tool:page map"],
+  "config": {
+    "type": "object",
+    "properties": {
+      "cacheDir": { "type": "string", "description": "where the page cache and the spill files live (default: <tmp>/workbench-web-page)" },
+      "cacheTtlSeconds": { "type": "number", "default": 900, "description": "how long a cache entry counts as fresh" },
+      "maxChars": { "type": "number", "default": 8000, "description": "default cap of a returned body" },
+      "hardMaxChars": { "type": "number", "default": 60000, "description": "cap a caller can never exceed" },
+      "spillDir": { "type": "string", "description": "where the full text of a capped page is written (default: <cacheDir>/spill)" },
+      "navigationTimeoutMs": { "type": "number", "default": 20000, "description": "page.goto timeout" },
+      "actionTimeoutMs": { "type": "number", "default": 6000, "description": "bounded secondary wait budget (network idle, first paint)" },
+      "retries": { "type": "number", "default": 1, "description": "extra navigation attempts after a transport failure" },
+      "waitUntil": { "type": "string", "enum": ["domcontentloaded", "load", "networkidle"], "default": "domcontentloaded" },
+      "executablePath": { "type": "string", "description": "chromium binary; absent: playwright resolves it (PLAYWRIGHT_BROWSERS_PATH)" },
+      "browserArgs": { "type": "array", "items": { "type": "string" }, "description": "extra chromium argv" },
+      "userAgent": { "type": "string" },
+      "maxContexts": { "type": "number", "default": 2, "description": "reusable browser contexts kept warm" },
+      "blockResourceTypes": { "type": "array", "items": { "type": "string" }, "description": "resource types never downloaded (default image, media, font)" },
+      "proxy": {
+        "type": "object",
+        "description": "per-request proxy; 'credential' is a credential NAME, never a value",
+        "properties": {
+          "server": { "type": "string" },
+          "username": { "type": "string" },
+          "credential": { "type": "string", "description": "credential NAME resolved through ctx.credentials at launch time" }
+        }
+      },
+      "mapMaxChars": { "type": "number", "default": 4000, "description": "default cap of the page map outline" },
+      "redact": { "type": "array", "items": { "type": "string" } }
+    }
+  }
+}
