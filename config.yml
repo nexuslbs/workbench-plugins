@@ -64,11 +64,14 @@ credentials:
 # A config written for the old scan-and-load semantics must therefore list every
 # plugin it wants loaded (see README.md, "The plugin roster").
 plugins:
-  credentials-file:
-    # Operator-provided and gitignored, OUTSIDE both repositories (see
-    # .env.example). Absent file = "not found": the private source then reports a
-    # clear auth error and every OTHER source still loads.
-    path: /opt/workspace/workbench-secrets/credentials.yml
+  credentials-basic:
+    # The credentials@1 PROVIDER (a plugin, since the core ships none): `file` is
+    # the file backend, `env` the direct process environment. The path is
+    # operator-provided and gitignored, OUTSIDE both repositories (see
+    # .env.example). An absent file = "not found": the private source then reports
+    # a clear auth error and every OTHER source still loads.
+    file:
+      path: /opt/workspace/workbench-secrets/credentials.yml
   hello-world:
     message: Hello World
   hello-otherworld:

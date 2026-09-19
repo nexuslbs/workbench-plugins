@@ -310,11 +310,19 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
     if (answered(seam, 'GET', '/api/tools')) return
     ctx.effect(() => registerToolRoutes(seam, tools))
   }
-  if (ctx.web) registerOn(ctx.web)
-  else ctx.inject?.(['web'], (injected) => {
-    process.stderr.write('[tools-impl] web@1 provider loaded: registering the /api/tools seams\n')
-    if (injected.web) registerOn(injected.web)
-  })
+  // Deferred dependency declaration: `web` may be provided LATER (a provider
+  // plugin loads after this one), so the seam is NEVER read as a bare property
+  // (cordis refuses a property access that is not declared in `inject`).
+  if (ctx.inject) {
+    ctx.inject(['web'], (injected) => {
+      if (!injected.web) return
+      process.stderr.write('[tools-impl] web@1 provider loaded: registering the /api/tools seams\n')
+      registerOn(injected.web)
+    })
+  } else if (ctx.web) {
+    // A bare context (unit test): the seam is handed in directly.
+    registerOn(ctx.web)
+  }
 
   // The CLI surface of the capability, registered through the HOST command
   // registry (the core CLI carries no tools code).
@@ -337,5 +345,12 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
     process.stderr.write(`[tools-impl] tools@1 provider 'registry' loaded (${tools.tools().length} tool(s) registered so far)\n`)
   }
 }
+
+/**
+ * The entry module: `workbench` (the host service: commands + attribution) is
+ * DECLARED, `web` is injected dynamically above. This plugin provides `tools`
+ * (the manifest capability), so consumers never import it.
+ */
+export default { name, inject: ['workbench'], apply }
 
 export type { ToolInfo }

@@ -92,6 +92,29 @@ test('file: YAML credentials files are accepted (mapping of names and scopes)', 
   assert.equal(await yamlProvider.resolve({ name: 'demo-token' }), 'from-the-yaml-file')
   assert.equal(await yamlProvider.resolve({ name: 'demo-token', scope: 'staging' }), 'from-the-yaml-scope')
 })
+test('file: YAML block scalars (| and >) resolve multi-line credentials such as a PEM', async () => {
+  const dir = tempDir()
+  const file = path.join(dir, 'block.yml')
+  fs.writeFileSync(
+    file,
+    [
+      'GITHUB_APP_KEY: |',
+      '  -----BEGIN PRIVATE KEY-----',
+      '  MIIEvQIBADANBg',
+      '  -----END PRIVATE KEY-----',
+      'FOLDED: >',
+      '  one',
+      '  two',
+      '',
+    ].join('\n'),
+  )
+  const blockProvider = providerFor('file', { file: { path: file } }, dir)
+  assert.equal(
+    await blockProvider.resolve({ name: 'GITHUB_APP_KEY' }),
+    '-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBg\n-----END PRIVATE KEY-----\n',
+  )
+  assert.equal(await blockProvider.resolve({ name: 'FOLDED' }), 'one two\n')
+})
 
 test('project-env: reads <dir>/.env relative to the given project directory', async () => {
   const dir = tempDir()

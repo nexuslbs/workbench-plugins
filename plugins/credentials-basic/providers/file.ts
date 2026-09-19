@@ -83,16 +83,57 @@ function stripComment(value: string): string {
 }
 
 /**
+ * Reads a YAML BLOCK SCALAR (`key: |`, `key: >`, optional `-`/`+` chomping)
+ * starting at the key line. A multi-line credential (a PEM private key) is
+ * written this way in a YAML file, so the block syntax is supported instead of
+ * being rejected as "not a general YAML document".
+ *
+ * Returns the scalar and the index of the last line it consumed.
+ */
+function readBlockScalar(
+  lines: string[],
+  keyIndex: number,
+  keyIndent: number,
+  header: string,
+): { value: string; lastIndex: number } {
+  const folded = header.startsWith('>')
+  const chomp = header.slice(1)
+  const content: string[] = []
+  let lastIndex = keyIndex
+  let blockIndent = -1
+  for (let index = keyIndex + 1; index < lines.length; index += 1) {
+    const raw = lines[index]
+    const trimmed = raw.trim()
+    const indent = raw.length - raw.trimStart().length
+    if (trimmed.length === 0) {
+      content.push('')
+      lastIndex = index
+      continue
+    }
+    if (indent <= keyIndent) break
+    if (blockIndent === -1) blockIndent = indent
+    content.push(raw.slice(Math.min(blockIndent, indent)))
+    lastIndex = index
+  }
+  while (content.length > 0 && content[content.length - 1] === '') content.pop()
+  const joined = folded ? content.join(' ').split('  ').join(' ') : content.join('\n')
+  const value = chomp === '-' ? joined : `${joined}\n`
+  return { value, lastIndex }
+}
+
+/**
  * Parses the documented YAML shape: a top-level mapping whose values are either
- * scalars or one-level nested mappings (scopes), 2-space indentation, `#`
- * comments. Anything else is a loud error - this is a credential file, not a
- * general YAML document.
+ * scalars, BLOCK scalars (multi-line credentials) or one-level nested mappings
+ * (scopes), 2-space indentation, `#` comments. Anything else is a loud error -
+ * this is a credential file, not a general YAML document.
  */
 export function parseYamlMapping(text: string): Record<string, unknown> {
   const root: Record<string, unknown> = {}
   let scope: Record<string, unknown> | undefined
   let scopeIndent = -1
-  for (const rawLine of text.split(/\r?\n/)) {
+  const lines = text.split(/\r?\n/)
+  for (let index = 0; index < lines.length; index += 1) {
+    const rawLine = lines[index]
     const line = rawLine.trim()
     if (line.length === 0 || line.startsWith('#')) continue
     const indent = rawLine.length - rawLine.trimStart().length
@@ -102,6 +143,14 @@ export function parseYamlMapping(text: string): Record<string, unknown> {
     }
     const key = unquote(line.slice(0, separator).trim())
     const rawValue = line.slice(separator + 1).trim()
+    const target = scope !== undefined && indent > scopeIndent ? scope : root
+    const header = stripComment(rawValue)
+    if (/^[|>][+-]?$/.test(header)) {
+      const block = readBlockScalar(lines, index, indent, header)
+      index = block.lastIndex
+      target[key] = block.value
+      continue
+    }
     if (rawValue.length === 0) {
       const nested: Record<string, unknown> = {}
       if (indent === 0 || scope === undefined || indent <= scopeIndent) {
@@ -113,9 +162,7 @@ export function parseYamlMapping(text: string): Record<string, unknown> {
       }
       continue
     }
-    const value = unquote(stripComment(rawValue))
-    const target = scope !== undefined && indent > scopeIndent ? scope : root
-    target[key] = value
+    target[key] = unquote(header)
   }
   return root
 }

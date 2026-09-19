@@ -121,7 +121,7 @@ ssh <host> -- docker compose -p <proj> exec -T <service> sh -c <quoted input>
 Credential VALUES live only in an unversioned artifact, resolved by NAME at call
 time through the core credentials capability (`ctx.credentials`):
 
-* the plugins repo dev config points `credentials-file` at
+* the plugins repo dev config points `credentials-basic` (the `file` backend) at
   `/opt/workspace/workbench-secrets/credentials.yml` (git-ignored, outside both
   repositories);
 * plugin configs carry NAMES (`credential:`, `privateKeyName:`,
