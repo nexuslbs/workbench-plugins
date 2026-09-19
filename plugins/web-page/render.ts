@@ -16,6 +16,7 @@
 // errors) instead of taking the whole workbench process down with an import
 // failure. The type-only import below is erased at run time.
 import type { Browser, BrowserContext, Page } from 'playwright-core'
+import { acquireSharedBrowser, releaseSharedBrowser } from '../web-shared/browser.ts'
 import type { ResolvedConfig } from './config.ts'
 import { PageError, browserFailure, messageOf, redactText } from './errors.ts'
 
@@ -73,7 +74,6 @@ function delay(ms: number): Promise<void> {
 export class BrowserPoolRenderer implements Renderer {
   private readonly config: ResolvedConfig
   private readonly resolveCredential: CredentialResolver
-  private modulePromise: Promise<typeof import('playwright-core')> | undefined
   private browser: Browser | undefined
   private launchPromise: Promise<Browser> | undefined
   private readonly idle: BrowserContext[] = []
@@ -163,27 +163,17 @@ export class BrowserPoolRenderer implements Renderer {
   async dispose(): Promise<void> {
     this.closed = true
     for (const context of this.idle.splice(0)) await context.close().catch(() => undefined)
-    const browser = this.browser
     this.browser = undefined
     this.launchPromise = undefined
-    if (browser !== undefined) await browser.close().catch(() => undefined)
+    // The browser is SHARED with the other plugins of this repository
+    // (plugins/web-shared/browser.ts): releasing the handle closes chromium only
+    // when this was the last holder, so unloading web-page never kills a browser
+    // a live web-session is still driving.
+    await releaseSharedBrowser()
     this.live = 0
   }
 
   // -- browser / context pool ------------------------------------------------
-
-  private async loadModule(): Promise<typeof import('playwright-core')> {
-    if (this.modulePromise === undefined) {
-      this.modulePromise = import('playwright-core').catch((error: unknown) => {
-        this.modulePromise = undefined
-        throw new PageError('browser_unavailable', 'the playwright-core module could not be loaded', {
-          detail: this.scrub(messageOf(error)),
-          hint: 'install the plugin dependencies (npm install) or run the plugin in an image that carries playwright-core',
-        })
-      })
-    }
-    return this.modulePromise
-  }
 
   private async ensureBrowser(): Promise<Browser> {
     if (this.browser !== undefined && this.browser.isConnected()) return this.browser
@@ -198,25 +188,27 @@ export class BrowserPoolRenderer implements Renderer {
     return browser
   }
 
+  /**
+   * The browser comes from the repository-wide SHARED launcher
+   * (plugins/web-shared/browser.ts): web-page and web-session share ONE chromium
+   * process instead of launching one each; the handle is released in `dispose()`.
+   */
   private async launch(): Promise<Browser> {
-    const playwright = await this.loadModule()
     const proxy = await this.proxyOptions()
-    const options: Parameters<typeof playwright.chromium.launch>[0] = {
-      headless: true,
-      args: this.config.browserArgs,
-      timeout: this.config.navigationTimeoutMs,
-    }
-    if (this.config.executablePath !== undefined) options.executablePath = this.config.executablePath
-    if (proxy !== undefined) options.proxy = proxy
     try {
-      const browser = await playwright.chromium.launch(options)
+      const browser = await acquireSharedBrowser({
+        args: this.config.browserArgs,
+        timeoutMs: this.config.navigationTimeoutMs,
+        ...(this.config.executablePath === undefined ? {} : { executablePath: this.config.executablePath }),
+        ...(proxy === undefined ? {} : { proxy }),
+      })
       this.launchCount += 1
       return browser
     } catch (error) {
       const text = this.scrub(messageOf(error))
       throw new PageError('browser_unavailable', 'chromium could not be launched', {
         detail: text,
-        hint: 'provide a chromium through executablePath or PLAYWRIGHT_BROWSERS_PATH (npx playwright-core install chromium)',
+        hint: 'provide a chromium through executablePath or PLAYWRIGHT_BROWSERS_PATH (npx playwright-core install chromium) and make sure playwright-core is installed',
       })
     }
   }

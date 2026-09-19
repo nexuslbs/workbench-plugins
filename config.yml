@@ -131,6 +131,49 @@ plugins:
     acceptRecords: true
     verifyTimeoutMs: 10000
 
+  # The SESSION tool (see plugins/web-session/README.md): ONE multiplexed
+  # browser tool `session` with an ACTION ENUM (open | act | read | close)
+  # instead of one tool per browser verb - the tool schema is paid for in every
+  # prompt, so the surface stays small. It keeps a per-site playwright context
+  # whose storage state (cookies + localStorage) is PERSISTED to
+  # `<stateDir>/state/<label>.json` (git-ignored, 0600) so a session survives a
+  # process restart; an expired session is re-established from the `credential`
+  # NAMEs of its declared login flow (resolved at login time through
+  # ctx.credentials, never logged, echoed or persisted). `act` answers a DELTA
+  # (what changed) instead of the page, `read` takes a CSS/XPath/role+name
+  # selector (or returns a bounded outline), and `read {api: "list"}` exposes the
+  # site's discovered JSON/XHR endpoints so a follow-up read can call the API
+  # directly. It shares chromium with web-page through plugins/web-shared, so the
+  # two plugins never launch two browsers. No per-site knowledge is hardcoded
+  # here: `sites` is the whole site table.
+  web-session:
+    stateDir: /opt/workspace/workbench-plugins/.workbench/web-session
+    idleTtlSeconds: 900
+    maxSessions: 4
+    defaultSite: demo
+    sites:
+      # `demo` is the LOCAL SPA fixture the end-to-end gate serves
+      # (/opt/workspace/tmp/<task>/server.mjs): a login form, a JSON API and a
+      # JS-rendered list. Point `baseUrl` at a real site for a real deployment;
+      # the login flow below is config, not code, and the two credential NAMEs
+      # resolve through the credentials provider (the operator puts them in the
+      # gitignored workbench-secrets/credentials.yml).
+      demo:
+        baseUrl: http://127.0.0.1:12538/
+        login:
+          url: /login
+          indicator: '#login-form'
+          fields:
+            - name: user
+              selector: '#user'
+              credential: WBSESSION_USER
+            - name: pass
+              selector: '#pass'
+              credential: WBSESSION_PASSWORD
+          submit: '#submit'
+          success:
+            selector: '#app'
+
   # The plugin of the EXTERNAL GIT source (`workbench-plugins-git`, subdir
   # `examples`): cloned from GitHub at boot, so naming it here is what keeps the
   # real clone path exercised in dev.
