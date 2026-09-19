@@ -116,8 +116,8 @@ function json(body: unknown, status = 200): WebResponse {
   return { status, contentType: 'application/json; charset=utf-8', body: `${JSON.stringify(body, null, 2)}\n` }
 }
 
-/** Matches a config reference: `${cred:NAME}`, `${secret:NAME}`, `${env:VAR}`. */
-const REFERENCE = /\$\{([A-Za-z0-9_.-]+):([A-Za-z0-9_./-]+)\}/g
+/** Matches a config reference: `${cred:NAME}`, `${env:VAR}`. */
+const REFERENCE = /\$\{(cred|env):([A-Za-z0-9_./-]+)\}/g
 
 /**
  * Every reference in a parsed config value, WITH its path and its kind - the
@@ -190,7 +190,7 @@ export function apply(ctx: PluginContext, config: SettingsConfig = {}): void {
           plugins,
           // Names only: the values of these references are never resolved here.
           references: referencesIn(view),
-          secretPolicy: 'references are shown by name only ($cred/$secret/$env); values are never resolved or returned',
+          secretPolicy: 'references are shown by name only (cred/env); values are never resolved or returned',
         })
       },
     }),

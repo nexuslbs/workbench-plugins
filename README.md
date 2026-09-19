@@ -76,7 +76,7 @@ framework, no bundler, no build step at runtime: the page modules are plain ES
 modules served from the plugin directory.
 
 **Secrets**: the `settings` surface shows config references BY NAME only
-(`$secret:NAME`, `${env:VAR}`, `${cred:NAME}`) and never resolves them.
+(`${cred:NAME}`, `${env:VAR}`) and never resolves them.
 
 ## Develop / verify
 

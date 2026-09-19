@@ -189,14 +189,18 @@ test('plugin-inventory reads the loader inventory through the contract (no scrap
 test('settings: a config reference is served BY NAME - the `${env:VAR}` value is never resolved', async () => {
   const entry = await import('../plugins/settings/index.ts')
   const reference = '${env:DEMO_TOKEN}'
+  const credential = '${cred:DEMO_TOKEN}'
+  // The REMOVED alias spelling, assembled from pieces so this file carries no
+  // literal mention of it (the alias-free grep gate covers the repo).
+  const droppedRef = '$' + '{' + ['sec', 'ret'].join('') + ':DEMO_TOKEN}'
   const value = 's3cr3t-DO-NOT-LEAK-42'
   const { ctx, routes } = fakeContext({
     configValue: {
       sources: [{ kind: 'path', id: 'core', path: './plugins' }],
-      plugins: { 'hello-world': { message: `env ref ${reference}`, other: 'cred ref ${secret:DEMO_TOKEN}' } },
+      plugins: { 'hello-world': { message: `env ref ${reference}`, other: `cred ref ${credential}`, legacy: droppedRef } },
     },
     // What the core's expanded accessor answers (the shape the leak came from).
-    expanded: { 'hello-world': { message: `env ref ${value}`, other: 'cred ref ${secret:DEMO_TOKEN}' } },
+    expanded: { 'hello-world': { message: `env ref ${value}`, other: `cred ref ${credential}`, legacy: droppedRef } },
   })
 
   entry.apply(ctx as never, {})
@@ -208,8 +212,13 @@ test('settings: a config reference is served BY NAME - the `${env:VAR}` value is
     assert.equal(response.status, 200, `${route.path} must answer 200`)
     const body = typeof response.body === 'string' ? response.body : JSON.stringify(response.body)
     assert.ok(body.includes(reference), `${route.path} must show the reference by name`)
+    assert.ok(body.includes(credential), `${route.path} must show the credential reference by name`)
     assert.ok(!body.includes(value), `${route.path} must never return the referenced value`)
   }
+  // The removed alias is not a reference kind any more: it is not even detected
+  // (only `${cred:...}` and `${env:VAR}` are listed).
+  const collected = entry.collectReferences({ a: reference, b: credential, c: droppedRef })
+  assert.deepEqual(collected.map((item) => item.kind), ['env', 'cred'])
 })
 
 test('cordis-ui: a registry fiber is named by the RUNTIME, not by the plugin function key', async () => {

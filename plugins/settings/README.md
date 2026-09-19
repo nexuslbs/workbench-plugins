@@ -15,8 +15,8 @@ and persists it through the config layer, then re-reads it.
   (also `append` / `delete`), persisted by the core config layer and re-read
   afterwards; the response is the re-read config.
 
-**Secrets**: config values that reference a secret or an environment variable
-(`$secret:NAME`, `${env:VAR}`, `${cred:NAME}`) are shown **by name only**. The
+**Secrets**: config values that reference a credential or an environment variable
+(`${cred:NAME}`, `${env:VAR}`) are shown **by name only**. The
 page and the API never resolve a reference, so no secret value can reach a
 response, a log or a screenshot.
 
