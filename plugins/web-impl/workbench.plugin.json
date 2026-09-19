@@ -1,0 +1,19 @@
+{
+  "name": "web-impl",
+  "version": "0.1.0",
+  "description": "The web@1 provider `http`: the node:http server serving the shell, the registered assets/routes/pages and /health. The core ships no web module.",
+  "entry": "index.ts",
+  "execution": "none",
+  "capabilities": [{ "id": "web", "version": 1, "provider": "http" }],
+  "policies": {
+    "web": { "provide": "web@1" }
+  },
+  "config": {
+    "type": "object",
+    "properties": {
+      "host": { "type": "string", "description": "Bind host (default WORKBENCH_WEB_HOST, then 127.0.0.1)" },
+      "port": { "type": "number", "description": "Bind port (default WORKBENCH_WEB_PORT, then WORKBENCH_PORT, then 12348; 0 picks a free port)" },
+      "maxBodyBytes": { "type": "number", "description": "Request body cap in bytes (default 1048576)" }
+    }
+  }
+}

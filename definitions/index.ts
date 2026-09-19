@@ -19,6 +19,9 @@
 //                       ssh+container | http)
 //   himalaya.ts         `himalaya@1` - typed mail-CLI actions
 //   email.ts            `email@1`    - the generic email capability (incl. send)
+//   web.ts              `web@1`      - the web seam (routes/assets/pages); moved
+//                       here from the CORE in v0.0.3 (the core ships no web
+//                       module at all), served by the provider `plugins/web-impl`
 export * from './support.ts'
 export * from './shell.ts'
 export * from './ssh.ts'
@@ -27,3 +30,4 @@ export * from './http.ts'
 export * from './general-service.ts'
 export * from './himalaya.ts'
 export * from './email.ts'
+export * from './web.ts'

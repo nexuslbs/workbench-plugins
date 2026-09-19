@@ -10,7 +10,8 @@
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
-    "test": "node --test test/*.test.ts"
+    "test": "node --test test/*.test.ts",
+    "check:seam": "node scripts/check-seam.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

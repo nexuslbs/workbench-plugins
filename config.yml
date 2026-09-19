@@ -88,6 +88,16 @@ plugins:
   plugin-manager: {}
   settings: {}
   cordis-ui: {}
+  # THE WEB PROVIDER (`web@1`, provider `http`). The core ships NO web module
+  # since v0.0.3: the socket, the shell and the `/health` endpoint belong to this
+  # plugin. Port precedence is the plugin row, then $WORKBENCH_WEB_PORT, then
+  # $WORKBENCH_PORT - and the core publishes the `web:` section at the bottom of
+  # this file to those variables BEFORE the plugins load, so a deployment keeps
+  # configuring the UI in one place. With no web provider loaded the core reports
+  # the web UI as DEFERRED (structured state, no crash) and keeps running.
+  web-impl:
+    host: 0.0.0.0
+    port: 8080
   # credentials-stub: the dev credential provider plugin (the stub vault the docs
   # use to show the Provider -> Definition <- Consumer seam end to end).
   credentials-stub: {}
