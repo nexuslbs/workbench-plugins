@@ -47,7 +47,42 @@ the next boot with no clone and no push. Production uses the tracked
 git source.
 
 No core change is needed to add a plugin here: create the plugin directory, and
-the next boot of the core picks it up.
+add its row to the `plugins:` roster of the config of the core that consumes it -
+discovery alone does not load it (see below).
+
+## The plugin roster (`sources:` DISCOVERS, `plugins:` LOADS)
+
+INTENTIONAL BREAKING CHANGE, the same contract as the core
+([PLUGIN-CONTRACT.md](https://github.com/nexuslbs/workbench/blob/main/docs/PLUGIN-CONTRACT.md),
+"Sources, the ROSTER and the `disabled` park"): a plugin discovered in a
+configured source is **available**, and it is **loaded only when the config
+NAMES it** under `plugins:` - that row is both the selection and the plugin's
+config (`{}` is a valid row, so `apply()` must not require optional config).
+
+```yaml
+sources:
+  - kind: path
+    id: workbench-plugins
+    path: ./plugins
+
+plugins:                      # the ROSTER (enable list) + per-plugin config
+  plugin-inventory: {}
+  plugin-manager: {}
+  settings: {}
+  cordis-ui: {}
+  credentials-stub:
+    disabled: true            # parked: configured, deliberately off
+# EVERY other discovered plugin is `available` - listed, never imported
+```
+
+`workbench plugins` and the Plugin Inventory page list every discovered plugin
+with its state (`loaded` / `available` / `disabled` / `failed`); `enable`
+persists the roster row, `disable` parks it with `disabled: true`. A config
+written for the old scan-and-load semantics (a discovered plugin was installed
+AND loaded in the same pass) must therefore list every plugin it wants loaded:
+in `config.yml` of this repository that is the roster shown there, which names
+the plugins of this checkout plus the Web UI plugins (`plugin-inventory`,
+`plugin-manager`, `settings`, `cordis-ui`).
 
 ## Plugins
 
