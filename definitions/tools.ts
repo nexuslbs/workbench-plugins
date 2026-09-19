@@ -3,7 +3,7 @@
  *
  * A CONSUMER plugin registers a named tool together with the parameters it
  * expects (a small, JSON-Schema-compatible spec) and a handler; the PROVIDER
- * plugin (`plugins/tools-impl`) exposes the tool set so a caller can invoke a
+ * plugin (`core/tools-impl`) exposes the tool set so a caller can invoke a
  * tool BY NAME - in process ({@link Tools.execute}), from the CLI and over HTTP
  * (`GET /api/tools`, `GET /api/tools/<name>`, `POST /api/tools/<name>`,
  * `POST /api/tools`, `POST /api/tool/call`). Workbench has no model and no agent

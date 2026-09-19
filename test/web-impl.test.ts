@@ -16,7 +16,7 @@ import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { WEB, WEB_CONTRACT, Web } from '../definitions/web.ts'
-import { apply, name as pluginName, providerId, resolvePort } from '../plugins/web-impl/index.ts'
+import { apply, name as pluginName, providerId, resolvePort } from '../core/web-impl/index.ts'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 
@@ -70,7 +70,7 @@ async function get(url: string): Promise<{ status: number; body: string }> {
 }
 
 test('web-impl: the manifest declares the web@1 capability with provider http', () => {
-  const manifest = JSON.parse(fs.readFileSync(path.join(HERE, '..', 'plugins', 'web-impl', 'workbench.plugin.json'), 'utf8'))
+  const manifest = JSON.parse(fs.readFileSync(path.join(HERE, '..', 'core', 'web-impl', 'workbench.plugin.json'), 'utf8'))
   assert.equal(manifest.name, pluginName)
   assert.equal(providerId, 'http')
   assert.deepEqual(manifest.capabilities, [{ id: 'web', version: 1, provider: 'http' }])

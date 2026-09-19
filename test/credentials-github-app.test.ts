@@ -1,4 +1,4 @@
-// `plugins/credentials-github-app` tests: the GitHub App flow MOVED OUT OF THE
+// `core/credentials-github-app` tests: the GitHub App flow MOVED OUT OF THE
 // CORE (RS256 JWT, installation token + cache, the `github-app` git auth
 // strategy registration).
 //
@@ -18,7 +18,7 @@ import {
   gitAuthArgs,
   githubAppInstallationToken,
   githubAppJwt,
-} from '../plugins/credentials-github-app/index.ts'
+} from '../core/credentials-github-app/index.ts'
 
 /** A throwaway RSA key (never a credential: generated in-process, never stored). */
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })

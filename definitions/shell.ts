@@ -6,8 +6,8 @@
 //
 //   - PROVIDERS implement {@link ShellService} and declare the capability
 //     `{ "id": "shell", "version": 1, "provider": "<id>" }` in their manifest
-//     (plugins/shell-impl ships the provider `local-bash`).
-//   - CONSUMERS (plugins/general-service-impl) select it by CONFIG, never by
+//     (core/shell-impl ships the provider `local-bash`).
+//   - CONSUMERS (core/general-service-impl) select it by CONFIG, never by
 //     import: `{ "type": "local", "params": { "shell": "bash" } }`.
 //
 // RULE (docs/SERVICES.md, "Execution policy"): a plugin that can reach this
@@ -167,7 +167,7 @@ export function requireShell(ctx: ServiceContext, hint?: string): ShellService {
   return requireService<ShellService>(
     ctx,
     SHELL,
-    hint ?? 'the local transport is not loaded: enable a plugin providing shell@1 (plugins/shell-impl)',
+    hint ?? 'the local transport is not loaded: enable a plugin providing shell@1 (core/shell-impl)',
   )
 }
 

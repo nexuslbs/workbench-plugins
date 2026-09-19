@@ -57,7 +57,7 @@ plugins:
 ## Mounting a sink (the only way output is produced)
 
 ```ts
-// plugins/logger-<sink>/index.ts
+// core/logger-<sink>/index.ts
 import { loggerOf, mountExporter, exporterLevels, messageToJson } from '../../definitions/logger.ts'
 
 export function apply(ctx, config = {}) {
@@ -93,7 +93,7 @@ log.error('call failed:', err)           // not console.error(...)
 
 ## Adding a new sink
 
-1. create `plugins/logger-<sink>/` with `index.ts`, `workbench.plugin.json` and
+1. create `core/logger-<sink>/` with `index.ts`, `workbench.plugin.json` and
    `README.md`;
 2. manifest: `capabilities: [{ "id": "logger", "version": 1, "provider": "<sink>" }]`
    and `policies: { "logger": { "provide": "logger@1" } }` (a `provider` id must

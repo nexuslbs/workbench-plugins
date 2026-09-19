@@ -5,7 +5,7 @@
  *        Provider  ->  Definition  <-  Consumer
  *
  *   provider   = a plugin directory whose manifest declares a capability with a
- *                `provider` id (`plugins/web-impl` -> `{id: "web", provider: "http"}`)
+ *                `provider` id (`core/web-impl` -> `{id: "web", provider: "http"}`)
  *   definition = the contract every role talks to (`definitions/web.ts`, ...)
  *   consumer   = any OTHER plugin (it uses the capability through the seam)
  *
@@ -35,8 +35,12 @@ import { fileURLToPath } from 'node:url'
 
 const DEFAULT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
-/** Directories scanned as plugin code. */
-const PLUGIN_DIRS = ['plugins', 'examples']
+/**
+ * Directories scanned as plugin code: `core/` holds the CORE SERVICE
+ * IMPLEMENTATIONS (capability providers / service hosts), `plugins/` the
+ * consumers, tools and UI plugins, `examples/` the runnable examples.
+ */
+const PLUGIN_DIRS = ['core', 'plugins', 'examples']
 /** The contract modules of this repository (`definitions/<capability>.ts`). */
 const DEFINITIONS_DIR = 'definitions'
 /** The core package this repository must never depend on (rule 1). */
@@ -111,7 +115,7 @@ function providerDirs(root: string): Map<string, { id: string; provider: string 
   return found
 }
 
-/** The plugin directory a repo-relative path belongs to (`plugins/x/...` -> `plugins/x`). */
+/** The plugin directory a repo-relative path belongs to (`core/x/...` -> `core/x`). */
 function pluginDirOf(relative: string): string | undefined {
   const parts = relative.split('/')
   if (parts.length < 2) return undefined

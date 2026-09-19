@@ -1,4 +1,4 @@
-// Unit tests for plugins/general-service-impl (the `general-service@1`
+// Unit tests for core/general-service-impl (the `general-service@1`
 // PROVIDER): the PARAMS of a config row MUST REACH the transport the type names.
 //
 // The regression this file pins: `dispatch` used to call the PROVIDER-ROW handle
@@ -13,7 +13,7 @@
 // the row; a provider WITHOUT an instance API must fail loudly, at create() time.
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createGeneralService, providerId } from '../plugins/general-service-impl/index.ts'
+import { createGeneralService, providerId } from '../core/general-service-impl/index.ts'
 import { GENERAL_SERVICE_CONTRACT } from '../definitions/general-service.ts'
 import { ServiceError, type CommandResult, type ServiceContext } from '../definitions/support.ts'
 

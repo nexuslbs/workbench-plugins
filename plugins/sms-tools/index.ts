@@ -8,7 +8,7 @@
 //
 // It imports NOTHING from the core and NOTHING from a provider: the only seam it
 // touches is `ctx.sms` (injected by name) plus `ctx.tools` (`tools@1`,
-// provided by plugins/tools-impl of this repository).
+// provided by core/tools-impl of this repository).
 // Swapping the provider (disable one `sms@1` provider, enable another) is a
 // config edit; this file does not change and its tools keep working, which is
 // what `npm run check:seam` in the core repository enforces. No SMS backend and

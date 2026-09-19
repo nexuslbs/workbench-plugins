@@ -14,9 +14,9 @@
 // A command whose target is unreachable FAILS: it never runs on the host.
 //
 //   - PROVIDERS implement {@link SshService} and declare the capability
-//     `{ "id": "ssh", "version": 1, "provider": "<id>" }` (plugins/ssh-impl
+//     `{ "id": "ssh", "version": 1, "provider": "<id>" }` (core/ssh-impl
 //     ships the provider `ssh-cli`).
-//   - CONSUMERS (plugins/general-service-impl) select it by CONFIG, never by
+//   - CONSUMERS (core/general-service-impl) select it by CONFIG, never by
 //     import: `{ "type": "ssh", "params": { "host": "user@host:22" } }`.
 import {
   ServiceError,
@@ -191,6 +191,6 @@ export function requireSsh(ctx: ServiceContext, hint?: string): SshService {
   return requireService<SshService>(
     ctx,
     SSH,
-    hint ?? 'the ssh transport is not loaded: enable a plugin providing ssh@1 (plugins/ssh-impl)',
+    hint ?? 'the ssh transport is not loaded: enable a plugin providing ssh@1 (core/ssh-impl)',
   )
 }

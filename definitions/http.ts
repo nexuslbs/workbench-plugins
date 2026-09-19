@@ -6,9 +6,9 @@
 // not reach a command line.
 //
 //   - PROVIDERS implement {@link HttpService} and declare the capability
-//     `{ "id": "http", "version": 1, "provider": "<id>" }` (plugins/http-impl
+//     `{ "id": "http", "version": 1, "provider": "<id>" }` (core/http-impl
 //     ships the provider `fetch`).
-//   - CONSUMERS (plugins/general-service-impl) select it by CONFIG, never by
+//   - CONSUMERS (core/general-service-impl) select it by CONFIG, never by
 //     import: `{ "type": "http", "params": { "url": "https://..." } }`.
 import {
   ServiceError,
@@ -141,6 +141,6 @@ export function requireHttp(ctx: ServiceContext, hint?: string): HttpService {
   return requireService<HttpService>(
     ctx,
     HTTP,
-    hint ?? 'the http transport is not loaded: enable a plugin providing http@1 (plugins/http-impl)',
+    hint ?? 'the http transport is not loaded: enable a plugin providing http@1 (core/http-impl)',
   )
 }

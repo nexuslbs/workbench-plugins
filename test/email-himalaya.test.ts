@@ -1,4 +1,4 @@
-// Unit test for the `email@1` PROVIDER (EmailHimalaya, plugins/email-himalaya).
+// Unit test for the `email@1` PROVIDER (EmailHimalaya, core/email-himalaya).
 //
 // It must implement the GENERIC email contract ON TOP OF the `himalaya@1`
 // service: no CLI, no docker, no ssh, no protocol. The `himalaya` service is a
@@ -20,12 +20,12 @@ import {
   providerId,
   sendArgv,
   toSummary,
-} from '../plugins/email-himalaya/index.ts'
+} from '../core/email-himalaya/index.ts'
 import { EMAIL_CONTRACT, MAIL } from '../definitions/email.ts'
 import { HIMALAYA } from '../definitions/himalaya.ts'
 import { ServiceError } from '../definitions/support.ts'
 
-const PLUGIN_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'plugins', 'email-himalaya')
+const PLUGIN_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'core', 'email-himalaya')
 
 interface HimalayaCall {
   method: string

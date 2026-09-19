@@ -21,11 +21,11 @@
 //   email.ts            `email@1`    - the generic email capability (incl. send)
 //   web.ts              `web@1`      - the web seam (routes/assets/pages); moved
 //                       here from the CORE in v0.0.3 (the core ships no web
-//                       module at all), served by the provider `plugins/web-impl`
+//                       module at all), served by the provider `core/web-impl`
 //   tools.ts            `tools@1`    - the tool registry (name + parameter
 //                       schema + handler); moved here from the CORE in v0.0.4
 //                       (the core ships no tool module and no /api/tools route),
-//                       served by the provider `plugins/tools-impl`
+//                       served by the provider `core/tools-impl`
 //   logger.ts           `logger@1`  - the logger SERVICE contract (the core
 //                       hosts cordis `ctx.logger`; no sink of its own) plus the
 //                       EXPORTER interface EVERY output sink implements: one

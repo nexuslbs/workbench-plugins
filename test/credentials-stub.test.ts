@@ -17,9 +17,9 @@ import {
   readConfig,
   resolveConfig,
   type Config,
-} from '../plugins/credentials-stub/index.ts'
+} from '../core/credentials-stub/index.ts'
 
-const PLUGIN_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'plugins', 'credentials-stub')
+const PLUGIN_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'core', 'credentials-stub')
 
 interface RequestSeen {
   url: string

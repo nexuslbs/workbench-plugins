@@ -1,13 +1,13 @@
 // External workbench plugin: registers a TOOL with the tools service.
 //
 // It deliberately imports NOTHING from the core package: `ctx.tools` (the tools
-// service, provided by plugins/tools-impl) is the whole contract this plugin
+// service, provided by core/tools-impl) is the whole contract this plugin
 // relies on. A tool is a NAME, a description, the
 // PARAMETERS it expects (a small DSH-style property map, `required: true` per
 // property) and a handler. The core exposes the registered tool so any caller
 // can invoke it BY NAME - over HTTP (`POST /api/tools/<name>`, the parameters in
 // the body, or the `{"tool","params"}` alias at `POST /api/tool/call`), from the
-// CLI (`workbench tool <name>`, registered by plugins/tools-impl) or in process - and validates the parameters
+// CLI (`workbench tool <name>`, registered by core/tools-impl) or in process - and validates the parameters
 // against this schema before the handler runs.
 
 /** One declared parameter: the type the caller must pass and whether it is required. */

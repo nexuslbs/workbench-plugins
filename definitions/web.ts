@@ -9,7 +9,7 @@
  *   Provider  ->  Definition  <-  Consumer
  *
  * - PROVIDERS implement the serving side. A provider is a PLUGIN of this
- *   repository (plugins/web-impl, provider `http`: a `node:http` server); it is
+ *   repository (core/web-impl, provider `http`: a `node:http` server); it is
  *   the only role that touches a socket. A provider
  *   calls {@link Web.dispatch} for the registered routes and reads the
  *   registered assets/pages through the accessors below.

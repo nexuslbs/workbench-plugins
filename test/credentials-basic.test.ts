@@ -1,5 +1,5 @@
 // Tests for the EXTERNAL credentials provider plugin `credentials-basic`
-// (`plugins/credentials-basic/`), the four basic backends moved out of the core.
+// (`core/credentials-basic/`), the four basic backends moved out of the core.
 //
 // What is asserted: every backend answers by credential NAME, the env-shaped
 // backends accept the ENV-normalised form of a name, a missing file/name is
@@ -15,8 +15,8 @@ import {
   apply,
   createProviders,
   resolveConfig,
-} from '../plugins/credentials-basic/index.ts'
-import type { CredentialProvider } from '../plugins/credentials-basic/types.ts'
+} from '../core/credentials-basic/index.ts'
+import type { CredentialProvider } from '../core/credentials-basic/types.ts'
 
 /** A fake cordis context: records registrations and unwinds them on dispose. */
 function fakeContext(): { ctx: { credentials: { register(p: CredentialProvider): () => void }; effect(cb: () => () => void): void }; ids: () => string[]; dispose: () => void } {

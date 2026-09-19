@@ -18,9 +18,9 @@ import assert from 'node:assert/strict'
 import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { apply, siblingProviders } from '../plugins/capabilities-impl/index.ts'
+import { apply, siblingProviders } from '../core/capabilities-impl/index.ts'
 
-const PLUGIN_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'plugins', 'capabilities-impl')
+const PLUGIN_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'core', 'capabilities-impl')
 
 /** The definition surface the test drives (structural: no definition import). */
 interface CapabilityService {
@@ -151,7 +151,7 @@ test('a renamed provider id is hosted with no host edit (config-only selection)'
 })
 
 test('the plugin module exposes the manifest name and the default entry', async () => {
-  const mod = (await import('../plugins/capabilities-impl/index.ts')) as { name: string; default: { name: string } }
+  const mod = (await import('../core/capabilities-impl/index.ts')) as { name: string; default: { name: string } }
   assert.equal(mod.name, 'capabilities-impl')
   assert.equal(mod.default.name, 'capabilities-impl')
 })

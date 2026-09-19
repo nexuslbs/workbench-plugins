@@ -26,7 +26,7 @@ import {
   type EntryInfo,
   type ProviderLike,
   type CodeResult,
-} from '../plugins/totp-rfc6238/index.ts'
+} from '../core/totp-rfc6238/index.ts'
 
 // RFC 6238 appendix B secrets, as ASCII, plus their base32 spellings.
 const SHA1_SECRET_ASCII = '12345678901234567890'

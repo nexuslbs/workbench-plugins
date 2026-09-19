@@ -23,7 +23,7 @@ definitions/          the CONTRACTS (imported by providers AND consumers)
   email@1   email.ts  the mail contract of the deployment (accounts/list/get/
                       code/search/send), account = LABEL/reference
   index.ts            the public surface of the definitions module
-plugins/
+core/                 the CORE SERVICE IMPLEMENTATIONS (capability providers)
   shell-impl          provider `local-bash`      (shell@1)
   ssh-impl            provider `ssh-cli`         (ssh@1)
   docker-impl         provider `docker-compose-cli` (docker@1)
@@ -31,8 +31,14 @@ plugins/
   general-service-impl provider `config-dispatch` (general-service@1)
   himalaya-impl       provider `cli`             (himalaya@1)
   email-himalaya      provider `himalaya`        (email@1, over himalaya@1)
+plugins/              the CONSUMERS / operator surfaces
   email-tools         CONSUMER: the tools email accounts|list|get|code|send
 ```
+
+`core/` and `plugins/` are each declared as their own source (`kind: path`,
+`path: ./core` / `path: ./plugins`, see the repository `config.yml`): the
+implementation of a core service is visibly a CORE service, while the consumers
+stay under `plugins/`. Nothing else changes - the roster names plugins by NAME.
 
 A **provider** declares its contract in `workbench.plugin.json`
 (`capabilities: [{ id, version, provider }]`) and provides the capability at

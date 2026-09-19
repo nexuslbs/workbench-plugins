@@ -14,8 +14,11 @@ Loaded like every other plugin, from any source:
 ```yaml
 sources:
   - kind: path
+    id: workbench-plugins-core
+    path: ../workbench-plugins/core      # the core service implementations
+  - kind: path
     id: workbench-plugins
-    path: ../workbench-plugins/plugins
+    path: ../workbench-plugins/plugins   # consumers, tools, UI
   - kind: git
     id: workbench-plugins
     url: https://github.com/nexuslbs/workbench-plugins

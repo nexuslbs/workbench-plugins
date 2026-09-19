@@ -10,11 +10,26 @@ contain any of these plugins, it discovers them at boot from a `path` source
 ## Layout
 
 ```
-plugins/
-  <plugin-name>/
+core/                        # the CORE SERVICE IMPLEMENTATIONS (table below)
+  <service-plugin>/
     workbench.plugin.json    # manifest (name, version, entry, capabilities, config)
     index.ts                 # entry module (cordis plugin, ESM)
+plugins/                     # consumers, operator tools, Web UI plugins
+  <plugin-name>/
+    workbench.plugin.json
+    index.ts
+examples/                    # runnable example plugins
+definitions/                 # the CONTRACTS (definitions/<capability>.ts): imported by
+                             # providers AND consumers, so a provider is swappable by config
 ```
+
+The rule that decides the tree:
+
+| Tree | What belongs there | Test |
+| --- | --- | --- |
+| `core/` | an IMPLEMENTATION of a workbench core service: a capability provider (`capabilities: [{id, version, provider}]`) whose contract is a `definitions/` module, or the SERVICE HOST that provides such a contract | it declares a `provider` id, or it hosts a `definitions/` service |
+| `plugins/` | everything that CONSUMES a core service: operator tools, UI pages, watchers, feature plugins - including a plugin that provides a cordis-only service with no `definitions/` contract (`web-recipe`) | it imports `definitions/` and registers tools/pages |
+| `examples/` | runnable examples, driven by the docs | it exists to be read and run |
 
 ## Adding this source to the core
 
@@ -24,10 +39,21 @@ git coordinate in production:
 
 ```yaml
 sources:
+  # TWO plugin trees -> TWO sources (a source scans exactly ONE directory, and
+  # its `id` is what the inventory groups by). Order matters: `core/` first, so
+  # the credential providers are discovered before any gated source is resolved.
+  - kind: path
+    id: workbench-plugins-core
+    path: ../workbench-plugins/core      # the core service implementations
   - kind: path
     id: workbench-plugins
     path: ../workbench-plugins/plugins   # local checkout (development)
-  # production form:
+  # production form (the same split, one git source per subdir):
+  # - kind: git
+  #   id: workbench-plugins-core
+  #   url: https://github.com/nexuslbs/workbench-plugins
+  #   ref: main
+  #   subdir: core
   # - kind: git
   #   id: workbench-plugins
   #   url: https://github.com/nexuslbs/workbench-plugins
@@ -39,12 +65,13 @@ sources:
 
 The repository also carries `config.yml`, the DEV config of the compose
 workbench service (omni-stack / omni-root `docker-compose.dev.yml` passes it as
-`CONFIG_FILE=/opt/workspace/workbench-plugins/config.yml`). It loads the core
-plugins from the sibling core checkout and the plugins of THIS repository from
-the local `./plugins` directory, so a plugin under development is picked up at
-the next boot with no clone and no push. Production uses the tracked
-`config/workbench.yml` of the omni-root stack, where this repository is a remote
-git source.
+`CONFIG_FILE=/opt/workspace/workbench-plugins/config.yml`). It loads the plugins
+of THIS repository from TWO local path sources, `./core` (the core service
+implementations) and `./plugins` (the consumers / tools / UI), so a plugin under
+development is picked up at the next boot with no clone and no push. Production
+uses the tracked `config/workbench.yml` of the omni-root stack, where this
+repository is a remote git source - there too the split needs one git source per
+subdir (`core`, `plugins`).
 
 No core change is needed to add a plugin here: create the plugin directory, and
 add its row to the `plugins:` roster of the config of the core that consumes it -
@@ -61,6 +88,9 @@ config (`{}` is a valid row, so `apply()` must not require optional config).
 
 ```yaml
 sources:
+  - kind: path
+    id: workbench-plugins-core
+    path: ./core
   - kind: path
     id: workbench-plugins
     path: ./plugins
@@ -84,14 +114,47 @@ in `config.yml` of this repository that is the roster shown there, which names
 the plugins of this checkout plus the Web UI plugins (`plugin-inventory`,
 `plugin-manager`, `settings`, `cordis-ui`).
 
-## Plugins
+## Core services (`core/`) - the core service IMPLEMENTATIONS
+
+Every module that IMPLEMENTS a workbench core service lives under `core/`, so
+the core services are visible at a glance. Each row is a plugin directory whose
+manifest declares the capability `{id, version, provider}`; the contract it
+implements is `definitions/<id>.ts`, and its consumer side stays under
+`plugins/`.
+
+| `core/` directory | Capability / provider | What it implements |
+| --- | --- | --- |
+| `credentials-basic` | `credentials` (`env` / `file` / `project-env` / `user-env`) | the credential providers (the core itself may hold the Definition only) |
+| `credentials-github-app` | `credentials` (git auth strategy) | turns an App private key into a short-lived installation token for a gated git source |
+| `credentials-stub` | `credentials` (`stub-vault`) | the dev stub vault the docs/tests use |
+| `logger-console` | `logger` (`console`) | one logger SINK: human-readable lines |
+| `logger-jsonl` | `logger` (`jsonl`) | one logger SINK: one JSON object per line in a file |
+| `logger-ring` | `logger` (`ring`) | one logger SINK: a bounded in-memory ring published as the `logs` service |
+| `tools-impl` | `tools` (`registry`) | the named-tool registry, the `/api/tools*` seams and the CLI |
+| `web-impl` | `web` (`http`) | the HTTP server, the shell and `/health` |
+| `shell-impl` | `shell` (`local-bash`) | the LOCAL transport (the only host-running one) |
+| `docker-impl` | `docker` (`docker-compose-cli`) | the container transport |
+| `ssh-impl` | `ssh` (`ssh-cli`) | the remote transport |
+| `http-impl` | `http` (`fetch`) | a plain HTTP call, no shell at all |
+| `general-service-impl` | `general-service` (`config-dispatch`) | the dispatcher that resolves the transport from CONFIG |
+| `himalaya-impl` | `himalaya` (`cli`) | the mail-CLI transport |
+| `email-himalaya` | `email` (`himalaya`) | the mail contract on top of `himalaya@1` |
+| `sms-twilio` | `sms` (`twilio`) | read-only SMS over the Twilio REST API |
+| `totp-rfc6238` | `totp` (`rfc6238`) | RFC 4226/6238 TOTP on `node:crypto` HMAC |
+| `capabilities-impl` | SERVICE HOST of `totp@1` + `sms@1` | declares the discovered provider ids and provides `ctx.totp` / `ctx.sms` |
+
+The two trees are discovered through two separate `sources:` (see above) and the
+`plugins:` roster names every plugin by NAME (never by path), so moving a plugin
+between the trees does not change WHAT loads. `npm run check:seam` scans `core/`
+too: a provider may still import only its own directory and `definitions/`, and a
+consumer still talks to the Definition, never to a provider plugin.
+
+## Plugins (`plugins/`) - consumers, tools and the UI
 
 | Plugin | Capability | Output |
 | --- | --- | --- |
 | `hello-otherworld` | `command:hello otherworld` | `Hello Otherworld` |
-| `credentials-stub` | `credentials:vault` | example credential provider |
 | `hello-tool` | `tool:hello greet` | by-name tool over HTTP: `POST /api/tools/hello%20greet`, `POST /api/tool/call` (core contract, section 4d) |
-| `email-himalaya` | `email:himalaya` | email PROVIDER: implements `email@1` on the himalaya CLI - multiple accounts plus a configured default account; loads as NOT CONFIGURED without accounts (core contract, section 4e) |
 | `email-tools` | `tool:email accounts`, `tool:email list`, `tool:email get`, `tool:email code` | email CONSUMER: the four operator tools, provider agnostic (it only touches `ctx.email`) |
 | `web-page` | `tool:page read`, `tool:page map` | web-page CONSUMER: ONE-call JS-aware page read - chromium render through `playwright-core`, main content to compact markdown IN CODE, URL + content-hash cache (`unchanged since <hash>`), hard char cap with spill to a file; no browser driver, no model in the loop |
 

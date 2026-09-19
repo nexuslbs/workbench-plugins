@@ -5,7 +5,7 @@
  * Placement (operator rule 2026-09-19 + correction telegram thread 2477): the
  * core `nexuslbs/workbench` keeps AT MOST an interface for this capability and
  * the `${cred:...}` resolution path. The provider IMPLEMENTATIONS - the four
- * basic backends in `plugins/credentials-basic` - live HERE, in the PUBLIC
+ * basic backends in `core/credentials-basic` - live HERE, in the PUBLIC
  * `nexuslbs/workbench-plugins` repo. A provider resolves credential NAMES
  * against the environment / credential store at RUNTIME, so this repository
  * holds no secret VALUE; being public is exactly what breaks the bootstrap

@@ -3,14 +3,14 @@
 // Three roles make up the capability seam (core `docs/PLUGIN-CONTRACT.md` 4f):
 //   Definition (core)  - the contract, `ctx.totp`
 //   Provider           - a backend implementation (any `totp@1` provider plugin,
-//                        e.g. plugins/totp-rfc6238)
+//                        e.g. core/totp-rfc6238)
 //   Consumer           - THIS plugin: it exposes the capability as the tools
 //                        `totp list` and `totp code` and never learns which
 //                        provider answers.
 //
 // It imports NOTHING from the core and NOTHING from a provider: the only seams
 // it touches are `ctx.totp` (injected by name) and `ctx.tools` (`tools@1`,
-// provided by plugins/tools-impl of this repository).
+// provided by core/tools-impl of this repository).
 // Swapping the provider (disable one `totp@1` provider, enable another) is a
 // config edit; this file does not change and its tools keep working, which is
 // what `npm run check:seam` in the core repository enforces. This plugin names

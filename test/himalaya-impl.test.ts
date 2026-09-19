@@ -1,4 +1,4 @@
-// Unit test for the `himalaya@1` PROVIDER driver (plugins/himalaya-impl).
+// Unit test for the `himalaya@1` PROVIDER driver (core/himalaya-impl).
 //
 // REGRESSION GUARD 1: the command line handed to the general service MUST be
 // complete, i.e. it MUST start with the himalaya binary. The general service
@@ -27,7 +27,7 @@ import {
   parseJson,
   toEnvelope,
   withAccount,
-} from '../plugins/himalaya-impl/index.ts'
+} from '../core/himalaya-impl/index.ts'
 import type { GeneralServiceInstance } from '../definitions/general-service.ts'
 import { ServiceError } from '../definitions/support.ts'
 

@@ -1,4 +1,4 @@
-// Tools capability tests (`definitions/tools.ts` + `plugins/tools-impl`).
+// Tools capability tests (`definitions/tools.ts` + `core/tools-impl`).
 //
 // The by-name invocation surface is a CONTRACT: a consumer plugin registers a
 // named tool with the parameters it expects, and any caller (HTTP, CLI, in
@@ -19,7 +19,7 @@ import {
   validateArgs,
   type ParameterSchemaSpec,
 } from '../definitions/tools.ts'
-import { apply, registerToolRoutes, toolCommand, toolsCommand } from '../plugins/tools-impl/index.ts'
+import { apply, registerToolRoutes, toolCommand, toolsCommand } from '../core/tools-impl/index.ts'
 
 /** The tool schema the fixtures below register: one required, two optional params. */
 const GREET_PARAMETERS: ParameterSchemaSpec = {
@@ -119,7 +119,7 @@ interface Response {
   body?: string | Uint8Array
 }
 
-/** A host stub: the services `plugins/tools-impl` touches, nothing else. */
+/** A host stub: the services `core/tools-impl` touches, nothing else. */
 function createHost(): {
   ctx: Record<string, unknown>
   routes: Route[]
@@ -182,7 +182,7 @@ function routeOf(routes: Route[], method: string, path: string): Route {
   return found
 }
 
-test('plugins/tools-impl: provides the tools service and the five wire routes', () => {
+test('core/tools-impl: provides the tools service and the five wire routes', () => {
   const host = createHost()
   apply(host.ctx as never, { log: false })
   assert.ok(host.ctx.provide !== undefined)
@@ -195,7 +195,7 @@ test('plugins/tools-impl: provides the tools service and the five wire routes', 
   assert.equal(host.routes.length, 0)
 })
 
-test('plugins/tools-impl: the routes dispatch, validate and 404 like the contract says', async () => {
+test('core/tools-impl: the routes dispatch, validate and 404 like the contract says', async () => {
   const host = createHost()
   const tools = registryWithGreet()
   const disposers = [registerToolRoutes((host.ctx.web as never), tools)]
@@ -238,7 +238,7 @@ test('plugins/tools-impl: the routes dispatch, validate and 404 like the contrac
   assert.equal(host.routes.length, 0, 'the disposer removes every route')
 })
 
-test('plugins/tools-impl: the CLI commands run the same dispatch', async () => {
+test('core/tools-impl: the CLI commands run the same dispatch', async () => {
   const tools = registryWithGreet()
   const listed = toolsCommand(tools, [])
   assert.match(listed, /hello greet/)
@@ -258,7 +258,7 @@ test('plugins/tools-impl: the CLI commands run the same dispatch', async () => {
   process.exitCode = 0
 })
 
-test('plugins/tools-impl: the service name is the contract id', () => {
+test('core/tools-impl: the service name is the contract id', () => {
   assert.equal(TOOLS, 'tools')
   assert.equal(TOOLS_CONTRACT, 'tools@1')
 })

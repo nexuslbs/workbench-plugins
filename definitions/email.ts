@@ -2,7 +2,7 @@
 //
 // The generic EMAIL capability: accounts, list, get, code, search and SEND.
 // It is backend agnostic - it names no mail protocol, no CLI and no transport -
-// so a provider (plugins/email-himalaya) and a consumer (plugins/email-tools)
+// so a provider (core/email-himalaya) and a consumer (plugins/email-tools)
 // can evolve independently:
 //
 //   Provider -> Definition <- Consumer
@@ -315,6 +315,6 @@ export function requireMail(ctx: ServiceContext, hint?: string): EmailService {
     ctx,
     MAIL,
     hint ??
-      "the email service is not loaded: enable a plugin providing email@1 (plugins/email-himalaya provides 'mail', the kernel hosts 'email')",
+      "the email service is not loaded: enable a plugin providing email@1 (core/email-himalaya provides 'mail', the kernel hosts 'email')",
   )
 }

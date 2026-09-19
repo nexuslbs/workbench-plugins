@@ -20,9 +20,9 @@
 // `unreachable`; the command NEVER falls back to the host.
 //
 //   - PROVIDERS implement {@link DockerService} and declare the capability
-//     `{ "id": "docker", "version": 1, "provider": "<id>" }` (plugins/docker-impl
+//     `{ "id": "docker", "version": 1, "provider": "<id>" }` (core/docker-impl
 //     ships the provider `docker-compose-cli`).
-//   - CONSUMERS (plugins/general-service-impl) select it by CONFIG, never by
+//   - CONSUMERS (core/general-service-impl) select it by CONFIG, never by
 //     import: `{ "type": "container", "params": { "engine": "docker-compose",
 //     "compose": { "project_dir": "/opt/omni", "service": "toolbox" } } }`.
 import {
@@ -292,6 +292,6 @@ export function requireDocker(ctx: ServiceContext, hint?: string): DockerService
   return requireService<DockerService>(
     ctx,
     DOCKER,
-    hint ?? 'the container transport is not loaded: enable a plugin providing docker@1 (plugins/docker-impl)',
+    hint ?? 'the container transport is not loaded: enable a plugin providing docker@1 (core/docker-impl)',
   )
 }

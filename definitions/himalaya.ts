@@ -3,13 +3,13 @@
 // The contract of the MAIL CLI plane: typed ACTIONS with typed OUTPUTS over the
 // himalaya mail CLI (https://github.com/pimalaya/himalaya). It is deliberately
 // transport agnostic: it says NOTHING about docker, ssh, paths or how himalaya
-// is invoked - an implementation (plugins/himalaya-impl) owns that, and IT
+// is invoked - an implementation (core/himalaya-impl) owns that, and IT
 // decides which transport runs himalaya.
 //
 //   - PROVIDERS implement {@link HimalayaService} and declare the capability
 //     `{ "id": "himalaya", "version": 1, "provider": "<id>" }`
-//     (plugins/himalaya-impl ships the provider `cli`).
-//   - CONSUMERS (plugins/email-himalaya) inject the SERVICE and never learn
+//     (core/himalaya-impl ships the provider `cli`).
+//   - CONSUMERS (core/email-himalaya) inject the SERVICE and never learn
 //     which transport or which binary answers.
 //
 // The typed surface is on PURPOSE small and closed:
@@ -214,6 +214,6 @@ export function requireHimalaya(ctx: ServiceContext, hint?: string): HimalayaSer
   return requireService<HimalayaService>(
     ctx,
     HIMALAYA,
-    hint ?? 'the mail service is not loaded: enable plugins/himalaya-impl (a plugin providing himalaya@1)',
+    hint ?? 'the mail service is not loaded: enable core/himalaya-impl (a plugin providing himalaya@1)',
   )
 }

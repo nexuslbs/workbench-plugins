@@ -6,7 +6,7 @@ External plugin for the workbench `totp@1` capability seam (core
 | Role | Where | What |
 | --- | --- | --- |
 | Definition | core `src/totp/definition.ts` (`ctx.totp`) | the contract: `entries()`, `code(label, { at })` |
-| Provider | `plugins/totp-rfc6238` | RFC 4226/6238 TOTP over `node:crypto` HMAC |
+| Provider | `core/totp-rfc6238` | RFC 4226/6238 TOTP over `node:crypto` HMAC |
 | **Consumer** | **this plugin** | the tools `totp list` / `totp code` |
 
 It imports nothing from the core and nothing from a provider. The only seams it

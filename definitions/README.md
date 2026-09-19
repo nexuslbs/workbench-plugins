@@ -11,7 +11,7 @@ consume it can be developed, replaced and versioned without a core change.
 ```
         provides                    consumes
 Provider ---------> Definition <----------- Consumer
-(plugins/*-impl)                 (plugins/*-tools, plugins/*-consumer)
+(core/*-impl)                    (plugins/*-tools, plugins/*-consumer)
 ```
 
 * a **Definition** is a contract module: types, a versioned contract id, service
@@ -33,7 +33,7 @@ Provider ---------> Definition <----------- Consumer
 | `general-service@1` | `general-service.ts` | `ctx['general-service']` | ONE facade whose CONFIG (`type` + `params`) selects `shell`/`docker`/`ssh`/`ssh+docker`/`http` |
 | `himalaya@1` | `himalaya.ts` | `ctx.himalaya` | typed mail-CLI actions (`accounts`, `folders`, `envelopeList`, `messageRead`, `run`) |
 | `email@1` | `email.ts` | `ctx.mail` | the generic email capability (`accounts`, `list`, `get`, `code`, `search`, `send`) |
-| `web@1` | `web.ts` | `ctx.web` | the web seam (routes / assets / pages) served by the provider plugin `plugins/web-impl`; moved here from the CORE in v0.0.3 |
+| `web@1` | `web.ts` | `ctx.web` | the web seam (routes / assets / pages) served by the provider plugin `core/web-impl`; moved here from the CORE in v0.0.3 |
 
 ## Why a definition per transport AND a `general-service`
 

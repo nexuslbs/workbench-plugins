@@ -11,12 +11,12 @@
 //
 // The Definition names the types and the params of each type; it names NO
 // implementation and NO vendor vocabulary beyond that. The implementation
-// (plugins/general-service-impl) resolves the transport SERVICE by config at
+// (core/general-service-impl) resolves the transport SERVICE by config at
 // call time - never by a hard injection - so a config of type `ssh` works while
 // no `docker@1` provider is loaded, and an unsupported/missing transport FAILS
 // (naming the missing capability) instead of silently running on the host.
 //
-// INSTANCE API (what a consumer such as plugins/himalaya-impl uses):
+// INSTANCE API (what a consumer such as core/himalaya-impl uses):
 //
 //   const instance = general.create({ type: 'container', params: { ... } })
 //   const result = await instance.call('himalaya --version')
@@ -195,6 +195,6 @@ export function requireGeneralService(ctx: ServiceContext, hint?: string): Gener
     ctx,
     GENERAL_SERVICE,
     hint ??
-      'the general service is not loaded: enable plugins/general-service-impl (a plugin providing general-service@1)',
+      'the general service is not loaded: enable core/general-service-impl (a plugin providing general-service@1)',
   )
 }

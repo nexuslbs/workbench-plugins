@@ -42,7 +42,7 @@ plugins:
 ```
 
 The numbers themselves are the **provider's** configuration (see
-`plugins/sms-twilio/README.md`); this consumer never sees a credential.
+`core/sms-twilio/README.md`); this consumer never sees a credential.
 
 ## Example calls
 

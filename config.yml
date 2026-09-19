@@ -13,6 +13,21 @@ sources:
   # since v0.0.2 - every plugin, including this repository's, is EXTERNAL.
   # THIS repository, referenced LOCALLY: a plugin under development is picked up
   # at the next boot, with no clone and no push.
+  #
+  # THIS repository has TWO plugin trees, so it has TWO sources:
+  #   * `./core`    - the CORE SERVICE IMPLEMENTATIONS: the `{id, version,
+  #                   provider}` capability providers and the service hosts of
+  #                   `definitions/` (credentials, logger sinks, tools, web,
+  #                   shell, docker, ssh, http, general-service, himalaya, email,
+  #                   sms, totp, capabilities-host). Listing them first keeps the
+  #                   `credentials` provider discoverable before any gated source
+  #                   or plugin is resolved;
+  #   * `./plugins` - the consumers, the operator tools and the Web UI plugins.
+  # Both trees are discovered here and the `plugins:` ROSTER below names every
+  # plugin by NAME (never by path), so the LOADED SET is unchanged by the split.
+  - kind: path
+    id: workbench-plugins-core
+    path: ./core
   - kind: path
     id: workbench-plugins
     path: ./plugins
@@ -38,7 +53,7 @@ sources:
     subdir: plugins
     auth:
       # github-app: the credential value is an App PRIVATE KEY (PEM); the PLUGIN
-      # plugins/credentials-github-app turns it into a short-lived installation
+      # core/credentials-github-app turns it into a short-lived installation
       # token (RS256 JWT) for the fetch. The core mints nothing and branches on
       # no auth type: it dispatches to the strategy a plugin registered on the
       # credentials service. That plugin must be in the roster below (it is).
@@ -250,7 +265,7 @@ plugins:
   # the tools 'email accounts', 'email list', 'email get' and 'email code'.
   # The accounts are placeholders: himalaya itself must be installed AND those
   # mailboxes configured with `himalaya account configure <name>` (see
-  # plugins/email-himalaya/README.md). `credential` is a NAME, resolved at call
+  # core/email-himalaya/README.md). `credential` is a NAME, resolved at call
   # time through ctx.credentials; no value is ever written here.
   email-himalaya:
     defaultAccount: personal
@@ -271,7 +286,7 @@ plugins:
   # the transports it uses, the config-driven dispatcher below resolves by type.
   # `shell-impl` is the ONLY provider that executes on the WORKBENCH HOST and it
   # is OPT-IN: drop its row and `local` stops working while every remote type
-  # keeps working (plugins/shell-impl/README.md).
+  # keeps working (core/shell-impl/README.md).
   shell-impl: {}
   ssh-impl: {}
   docker-impl: {}

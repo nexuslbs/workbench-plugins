@@ -38,10 +38,10 @@ import {
   type LogLevelName,
   type LogMessage,
 } from '../definitions/logger.ts'
-import { apply as applyConsole } from '../plugins/logger-console/index.ts'
+import { apply as applyConsole } from '../core/logger-console/index.ts'
 import { apply as applyDemo } from '../plugins/logger-demo/index.ts'
-import { apply as applyJsonl } from '../plugins/logger-jsonl/index.ts'
-import { apply as applyRing } from '../plugins/logger-ring/index.ts'
+import { apply as applyJsonl } from '../core/logger-jsonl/index.ts'
+import { apply as applyRing } from '../core/logger-ring/index.ts'
 
 // ---------------------------------------------------------------------------
 // Test doubles: the host's logger SERVICE + the two stream captures.

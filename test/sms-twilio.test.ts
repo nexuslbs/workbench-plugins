@@ -20,7 +20,7 @@ import {
   normalizeLimit,
   normalizeNumbers,
   refLabel,
-} from '../plugins/sms-twilio/index.ts'
+} from '../core/sms-twilio/index.ts'
 
 const API_VERSION = '2010-04-01'
 
