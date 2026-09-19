@@ -53,7 +53,7 @@ function fakeEmail(marker: string): {
           to: ['Me <me@example.com>'],
           date: '2026-09-19T09:00:00.000Z',
           unread: true,
-          snippet: 'your code',
+          snippet: `your code ${marker === 'alpha' ? '123456' : '654321'}`,
         },
       ]
     },
@@ -91,6 +91,9 @@ function makeContext(email: Record<string, unknown>): { ctx: unknown; tools: Map
   const tools = new Map<string, ToolDef>()
   const ctx = {
     email,
+    get(name: string): unknown {
+      return name === 'email' ? email : undefined
+    },
     workbench: {
       registerTool(def: ToolDef): () => void {
         tools.set(def.name, def)
@@ -110,9 +113,9 @@ function boot(email: Record<string, unknown>): Map<string, ToolDef> {
   return tools
 }
 
-const EXPECTED = ['email accounts', 'email list', 'email get', 'email code']
+const EXPECTED = ['email accounts', 'email list', 'email get', 'email code', 'email send']
 
-test('the consumer registers the four email tools with typed parameter schemas', () => {
+test('the consumer registers the five email tools with typed parameter schemas', () => {
   const tools = boot(fakeEmail('alpha').service)
   assert.deepEqual([...tools.keys()].sort(), [...EXPECTED].sort())
   for (const tool of tools.values()) {
@@ -147,7 +150,7 @@ test('an omitted account is the DEFAULT account: the consumer forwards no refere
   assert.equal(fake.calls[0]?.ref, undefined, 'no reference: the configured default account answers')
   await tools.get('email list')?.handler({ account: 'work', limit: 3, unreadOnly: true, since: '2026-09-01T00:00:00Z', folder: 'INBOX' })
   assert.deepEqual(fake.calls[1]?.ref, { label: 'work' })
-  assert.deepEqual(fake.calls[1]?.options, { limit: 3, folder: 'INBOX', unreadOnly: true, since: '2026-09-01T00:00:00Z' })
+  assert.deepEqual(fake.calls[1]?.options, { pageSize: 3, folder: 'INBOX', unreadOnly: true })
 })
 
 test('email list caps the page size and reports the account the caller asked for', async () => {
@@ -158,7 +161,7 @@ test('email list caps the page size and reports the account the caller asked for
     count: number
     messages: { id: string; subject: string }[]
   }
-  assert.equal(fake.calls[0]?.options?.limit, 50, 'the consumer cap applies')
+  assert.equal(fake.calls[0]?.options?.pageSize, 50, 'the consumer cap applies')
   assert.equal(result.account, 'work')
   assert.equal(result.count, 1)
   assert.equal(result.messages[0]?.id, '42')
@@ -177,20 +180,23 @@ test('email get forwards the id and the format, and returns the body plus attach
   assert.equal(raw.body, 'raw body from alpha')
 })
 
-test('email code forwards query/pattern/maxAgeSeconds and reports the mail the code came from', async () => {
+test('email code forwards the query and applies maxAgeSeconds client-side', async () => {
   const fake = fakeEmail('alpha')
   const tools = boot(fake.service)
-  const found = (await tools.get('email code')?.handler({ account: 'work', query: 'acme', maxAgeSeconds: 600 })) as {
+  const found = (await tools.get('email code')?.handler({ account: 'work', query: 'acme' })) as {
     code: string
     messageId: string
     subject: string
   }
-  assert.deepEqual(fake.calls[0]?.options, { query: 'acme', maxAgeSeconds: 600 })
+  assert.deepEqual(fake.calls[0]?.options, { pageSize: 10, query: 'acme' })
   assert.deepEqual(fake.calls[0]?.ref, { label: 'work' })
   assert.equal(found.code, '123456')
   assert.equal(found.messageId, '42')
-  await tools.get('email code')?.handler({ id: '42', pattern: '([0-9]{6})' })
-  assert.deepEqual(fake.calls[1]?.options, { id: '42', pattern: '([0-9]{6})' })
+  const stale = (await tools.get('email code')?.handler({ account: 'work', maxAgeSeconds: 1 })) as { found: boolean }
+  assert.equal(stale.found, false, 'the age filter is applied client side, so the old message is not eligible')
+  const byId = (await tools.get('email code')?.handler({ id: '42', pattern: 'text body from (\\w+)' })) as { code: string }
+  assert.equal(byId.code, 'alpha', "the caller's pattern wins over the built-in ones")
+  assert.deepEqual(fake.calls[2], { method: 'get', ref: undefined, options: { format: 'text' }, id: '42' })
 })
 
 test('the consumer is provider agnostic: swapping ctx.email leaves every tool untouched and working', async () => {

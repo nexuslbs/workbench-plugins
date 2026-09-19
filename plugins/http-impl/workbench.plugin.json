@@ -1,0 +1,23 @@
+{
+  "name": "http-impl",
+  "version": "0.1.0",
+  "description": "The http@1 provider `fetch`: calls a URL with the input as the request body. No shell, no argv, no quoting.",
+  "entry": "index.ts",
+  "execution": "none",
+  "capabilities": [{ "id": "http", "version": 1, "provider": "fetch" }],
+  "policies": {
+    "http": { "provide": "http@1", "require": "http@1" }
+  },
+  "config": {
+    "type": "object",
+    "properties": {
+      "url": { "type": "string", "description": "Target URL (required)" },
+      "method": { "type": "string", "default": "POST" },
+      "headers": { "type": "object", "description": "Extra request headers" },
+      "credential": { "type": "string", "description": "Credential NAME sent as Authorization: Bearer (resolved at call time)" },
+      "timeoutMs": { "type": "number", "default": 30000 },
+      "maxBodyBytes": { "type": "number", "default": 4194304 }
+    },
+    "required": ["url"]
+  }
+}

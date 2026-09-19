@@ -1,0 +1,24 @@
+{
+  "name": "ssh-impl",
+  "version": "0.1.0",
+  "description": "The ssh@1 provider `ssh-cli`: runs ONE command string on a REMOTE machine. The input is executed by the remote shell only; an unreachable target fails instead of running on the host.",
+  "entry": "index.ts",
+  "execution": "remote",
+  "capabilities": [{ "id": "ssh", "version": 1, "provider": "ssh-cli" }],
+  "policies": {
+    "ssh": { "provide": "ssh@1", "require": "ssh@1" }
+  },
+  "config": {
+    "type": "object",
+    "properties": {
+      "host": { "type": "string", "description": "`host`, `user@host` or `user@host:port` (required)" },
+      "privateKeyName": { "type": "string", "description": "Credential NAME whose value is the private key (never a path, never a value)" },
+      "configFilePath": { "type": "string", "description": "ssh config file passed as -F (aliases/options)" },
+      "binary": { "type": "string", "default": "ssh" },
+      "timeoutMs": { "type": "number", "default": 30000 },
+      "maxOutputBytes": { "type": "number", "default": 4194304 },
+      "options": { "type": "array", "description": "Extra ssh options, verbatim argv entries" }
+    },
+    "required": ["host"]
+  }
+}

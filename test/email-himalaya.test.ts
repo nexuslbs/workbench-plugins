@@ -1,149 +1,140 @@
-// Unit test for the external email PROVIDER: it must register an `email@1`
-// implementation on the injected context, drive the himalaya CLI in machine mode
-// (json, bounded), normalise its answers into the capability's shapes, resolve a
-// credential NAME into the child ENV (never argv) and report a missing CLI /
-// unparseable output as a structured `email: ...` error instead of crashing.
+// Unit test for the `email@1` PROVIDER (EmailHimalaya, plugins/email-himalaya).
 //
-// The `himalaya` executable is a STUB written by this test: no mailbox, no
-// network, no real CLI installation. It records every invocation (argv + env) so
-// the secret discipline is asserted, not assumed.
+// It must implement the GENERIC email contract ON TOP OF the `himalaya@1`
+// service: no CLI, no docker, no ssh, no protocol. The `himalaya` service is a
+// FAKE here (a recording stub), so every assertion is about the MAPPING and the
+// account/credential discipline - never about a binary.
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { DEFAULT_MAX_OUTPUT_BYTES, DEFAULT_TIMEOUT_MS, MAX_FETCH, apply, name, providerId, CONTRACT_VERSION } from '../plugins/email-himalaya/index.ts'
+import { fileURLToPath } from 'node:url'
+import {
+  DEFAULT_HIMALAYA_WAIT_MS,
+  MAX_PAGE,
+  apply,
+  buildRawMessage,
+  createEmailProvider,
+  createNotConfiguredService,
+  name,
+  providerId,
+  sendArgv,
+  toSummary,
+} from '../plugins/email-himalaya/index.ts'
+import { EMAIL_CONTRACT, MAIL } from '../definitions/email.ts'
+import { HIMALAYA } from '../definitions/himalaya.ts'
+import { ServiceError } from '../definitions/support.ts'
 
-interface AccountRef {
-  label: string
+const PLUGIN_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'plugins', 'email-himalaya')
+
+interface HimalayaCall {
+  method: string
+  query?: Record<string, unknown>
+  args?: string
 }
 
-interface ProviderLike {
-  id: string
-  version: number
-  describe?: () => string
-  accounts: () => { label: string; address?: string; default?: boolean; description?: string }[]
-  list: (ref?: AccountRef, options?: Record<string, unknown>) => Promise<Record<string, unknown>[]>
-  get: (ref: AccountRef | undefined, id: string, options?: Record<string, unknown>) => Promise<Record<string, unknown>>
-}
-
-const STUB = `#!/usr/bin/env node
-const fs = require('node:fs')
-const argv = process.argv.slice(2)
-if (process.env.HIMALAYA_STUB_LOG) {
-  fs.appendFileSync(process.env.HIMALAYA_STUB_LOG, JSON.stringify({
-    argv,
-    password: process.env.HIMALAYA_PASSWORD ?? null,
-  }) + '\\n')
-}
-if (process.env.HIMALAYA_STUB_BROKEN) {
-  process.stderr.write('imap connection refused: could not reach the server\\n')
-  process.exit(3)
-}
-if (process.env.HIMALAYA_STUB_GARBAGE) {
-  process.stdout.write('not json at all\\n')
-  process.exit(0)
-}
-const command = argv[0] + ' ' + argv[1]
-if (command === 'envelope list') {
-  process.stdout.write(JSON.stringify([
-    { id: 42, subject: 'Your sign-in code', from: { name: 'Acme', addr: 'no-reply@acme.test' }, to: [{ name: 'Me', addr: 'me@example.com' }], date: '2026-09-19T09:00:00Z', flags: [] },
-    { id: 41, subject: 'Shipped', from: 'Shop <shop@acme.test>', to: ['me@example.com'], date: '2026-09-17T09:00:00Z', flags: ['Seen'] },
-    { id: 40, subject: 'Older', from: 'Old <old@acme.test>', to: ['me@example.com'], date: '2026-01-01T00:00:00Z', flags: [] }
-  ]))
-  process.exit(0)
-}
-if (command === 'message read') {
-  if (argv.includes('--raw')) {
-    process.stdout.write('From: no-reply@acme.test\\r\\nSubject: Your sign-in code\\r\\n\\r\\nYour code is 123456\\r\\n')
-    process.exit(0)
+/** A recording FAKE `himalaya@1` service: the typed surface, no CLI at all. */
+function fakeHimalaya(describe = 'fake himalaya (test)'): {
+  calls: HimalayaCall[]
+  service: Record<string, unknown>
+} {
+  const calls: HimalayaCall[] = []
+  const service = {
+    contract: 'himalaya@1',
+    provider: 'fake',
+    describe: () => describe,
+    accounts: async () => [
+      { name: 'personal', backend: 'imap', default: true },
+      { name: 'work', backend: 'imap' },
+    ],
+    folders: async () => [{ name: 'INBOX' }],
+    envelopeList: async (query?: Record<string, unknown>) => {
+      calls.push({ method: 'envelopeList', query })
+      return [
+        {
+          id: '42',
+          flags: [],
+          subject: 'Your sign-in code',
+          from: 'Acme <no-reply@acme.test>',
+          to: 'Me <me@example.com>, Other <o@example.com>',
+          date: '2026-09-19T09:00:00Z',
+          hasAttachment: false,
+        },
+        {
+          id: '41',
+          flags: ['Seen'],
+          subject: 'Shipped',
+          from: 'Shop <shop@acme.test>',
+          to: '',
+          date: '2026-09-17T09:00:00Z',
+          hasAttachment: false,
+        },
+      ]
+    },
+    messageRead: async (query: Record<string, unknown>) => {
+      calls.push({ method: 'messageRead', query })
+      return { text: 'Your code is 123456', raw: '{"text":"Your code is 123456"}' }
+    },
+    run: async (input: { args: string; account?: string }) => {
+      calls.push({ method: 'run', args: input.args })
+      return { output: 'message sent', code: 0 }
+    },
   }
-  process.stdout.write(JSON.stringify({
-    id: argv[2],
-    subject: 'Your sign-in code',
-    from: { name: 'Acme', addr: 'no-reply@acme.test' },
-    to: [{ name: 'Me', addr: 'me@example.com' }],
-    date: '2026-09-19T09:00:00Z',
-    flags: [],
-    body: { text_plain: 'Your code is 123456', text_html: '<p>Your code is 123456</p>' },
-    attachments: [{ filename: 'invoice.pdf', content_type: 'application/pdf', size: 2048 }]
-  }))
-  process.exit(0)
+  return { calls, service }
 }
-process.stderr.write('unknown command\\n')
-process.exit(2)
-`
 
 interface Booted {
-  provider: ProviderLike
+  services: Map<string, Record<string, unknown>>
   logs: string[]
-  registered: number
+  kernel: Record<string, unknown>[]
   disposers: (() => void)[]
 }
 
-function boot(raw: Record<string, unknown>, credentials?: unknown): Booted {
+async function boot(
+  config: Record<string, unknown>,
+  services: Record<string, Record<string, unknown>> = {},
+  credentials?: { resolve: (ref: { name: string }) => Promise<{ value?: string } | undefined> },
+): Promise<Booted> {
+  const store = new Map<string, Record<string, unknown>>(Object.entries(services))
   const logs: string[] = []
-  const original = console.error
-  console.error = (message: unknown): void => {
-    logs.push(String(message))
-  }
+  const kernel: Record<string, unknown>[] = []
   const disposers: (() => void)[] = []
-  let provider: ProviderLike | undefined
-  const registered: ProviderLike[] = []
   const ctx = {
-    email: {
-      register(value: ProviderLike): () => void {
-        provider = value
-        registered.push(value)
-        return () => {
-          const index = registered.indexOf(value)
-          if (index >= 0) registered.splice(index, 1)
-        }
-      },
+    provide(serviceName: string, value: unknown): unknown {
+      store.set(serviceName, value as Record<string, unknown>)
+      return value
     },
-    ...(credentials === undefined ? {} : { credentials }),
+    get(serviceName: string): unknown {
+      return store.get(serviceName)
+    },
+    on(): unknown {
+      return undefined
+    },
     effect(callback: () => () => void): void {
       disposers.push(callback())
     },
+    logger: {
+      info: (...args: unknown[]) => logs.push(args.join(' ')),
+      warn: (...args: unknown[]) => logs.push(args.join(' ')),
+    },
+    ...(credentials === undefined ? {} : { credentials }),
+    email: {
+      register(descriptor: Record<string, unknown>): void {
+        kernel.push(descriptor)
+      },
+    },
   }
+  // The soft, bounded load-after wait uses UNREF'D timers (it must never hold a
+  // real process open). A test has no other handle, so it keeps the loop alive
+  // for the duration of `apply` - otherwise node drains the loop while the wait
+  // is pending.
+  const keepAlive = setInterval(() => {}, 5)
   try {
-    apply(ctx as never, raw as never)
+    await apply(ctx as never, { himalayaWaitMs: 20, ...config } as never)
   } finally {
-    console.error = original
+    clearInterval(keepAlive)
   }
-  return {
-    get provider() {
-      return provider as ProviderLike
-    },
-    logs,
-    get registered() {
-      return registered.length
-    },
-    disposers,
-  }
-}
-
-function tempDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'email-himalaya-'))
-}
-
-/** Writes the stub `himalaya` executable and returns its path. */
-function stubBinary(): string {
-  const dir = tempDir()
-  const file = path.join(dir, 'himalaya')
-  fs.writeFileSync(file, STUB)
-  fs.chmodSync(file, 0o755)
-  return file
-}
-
-function readLog(file: string): { argv: string[]; password: string | null }[] {
-  if (!fs.existsSync(file)) return []
-  return fs
-    .readFileSync(file, 'utf8')
-    .split('\n')
-    .filter((line) => line.trim().length > 0)
-    .map((line) => JSON.parse(line) as { argv: string[]; password: string | null })
+  return { services: store, logs, kernel, disposers }
 }
 
 const ACCOUNTS = {
@@ -154,192 +145,245 @@ const ACCOUNTS = {
 test('the plugin speaks email@1 and claims the manifest provider id', () => {
   assert.equal(name, 'email-himalaya')
   assert.equal(providerId, 'himalaya')
-  assert.equal(CONTRACT_VERSION, 1)
-  assert.equal(DEFAULT_TIMEOUT_MS, 15_000)
-  assert.equal(DEFAULT_MAX_OUTPUT_BYTES, 4 * 1024 * 1024)
-  assert.equal(MAX_FETCH, 200)
-})
-
-test('no accounts configured: NOT CONFIGURED, nothing registered, never a throw', () => {
-  const bare = boot({})
-  assert.equal(bare.registered, 0)
-  assert.ok(
-    bare.logs.some((line) => line.includes('not configured') && line.includes('accounts')),
-    'the reason is logged',
-  )
-  const withDefault = boot({ defaultAccount: 'personal' })
-  assert.equal(withDefault.registered, 0)
-})
-
-test('accounts() reports the configured labels, addresses and the DEFAULT account', () => {
-  const { provider } = boot({ binary: stubBinary(), accounts: ACCOUNTS, defaultAccount: 'work' })
-  const accounts = provider.accounts()
-  assert.deepEqual(
-    accounts.map((account) => account.label),
-    ['personal', 'work'],
-  )
-  assert.equal(accounts[0]?.address, 'me@example.com')
-  assert.equal(accounts[0]?.default, undefined)
-  assert.equal(accounts[1]?.default, true, "the operator's defaultAccount is the default")
-  assert.match(String(provider.describe?.()), /himalaya CLI/)
-  // An unknown default falls back to the first account, with a log.
-  const fallback = boot({ binary: stubBinary(), accounts: ACCOUNTS, defaultAccount: 'nope' })
-  assert.equal(fallback.provider.accounts().find((account) => account.default)?.label, 'personal')
-  assert.ok(fallback.logs.some((line) => line.includes("'defaultAccount' 'nope' is not a configured account")))
-})
-
-test('list() drives himalaya envelope list --output json and normalises the envelope', async () => {
-  const log = path.join(tempDir(), 'calls.log')
-  process.env.HIMALAYA_STUB_LOG = log
-  try {
-    const { provider } = boot({ binary: stubBinary(), accounts: ACCOUNTS, defaultAccount: 'personal' })
-    const messages = await provider.list(undefined, { limit: 10 })
-    assert.equal(messages.length, 3)
-    assert.deepEqual(messages[0], {
-      id: '42',
-      subject: 'Your sign-in code',
-      from: 'Acme <no-reply@acme.test>',
-      to: ['Me <me@example.com>'],
-      date: '2026-09-19T09:00:00.000Z',
-      unread: true,
-      folder: 'INBOX',
-    })
-    assert.equal(messages[1]?.unread, false, "himalaya's Seen flag means read")
-    const [call] = readLog(log)
-    assert.deepEqual(call?.argv, [
-      'envelope',
-      'list',
-      '--account',
-      'personal',
-      '--folder',
-      'INBOX',
-      '--page-size',
-      '10',
-      '--output',
-      'json',
-    ])
-  } finally {
-    delete process.env.HIMALAYA_STUB_LOG
-  }
-})
-
-test('list() selects the account by LABEL and applies limit, unreadOnly and since', async () => {
-  const log = path.join(tempDir(), 'calls.log')
-  process.env.HIMALAYA_STUB_LOG = log
-  try {
-    const { provider } = boot({ binary: stubBinary(), accounts: ACCOUNTS })
-    const unread = await provider.list({ label: 'work' }, { limit: 1, unreadOnly: true })
-    assert.equal(unread.length, 1)
-    assert.equal(unread[0]?.id, '42')
-    const [call] = readLog(log)
-    assert.equal(call?.argv[3], 'work', 'the accountName of the label is passed to the CLI')
-    assert.equal(call?.argv[7], '4', 'a client-side filter asks for a wider page')
-    const recent = await provider.list(undefined, { since: '2026-09-18T00:00:00Z' })
-    assert.deepEqual(
-      recent.map((message) => message.id),
-      ['42'],
-    )
-  } finally {
-    delete process.env.HIMALAYA_STUB_LOG
-  }
-})
-
-test('an unknown account label is a structured email: error', async () => {
-  const { provider } = boot({ binary: stubBinary(), accounts: ACCOUNTS })
-  await assert.rejects(
-    () => provider.list({ label: 'absent' }, {}),
-    (error: Error) => error.name === 'EmailUnknownAccountError' && /email: unknown account 'absent' \(configured: personal, work\)/.test(error.message),
-  )
-})
-
-test('get() returns the envelope plus the body and the attachment metadata; raw stays bounded', async () => {
-  const { provider } = boot({ binary: stubBinary(), accounts: ACCOUNTS })
-  const message = await provider.get({ label: 'personal' }, '42', { format: 'text' })
-  assert.equal(message.id, '42')
-  assert.equal(message.text, 'Your code is 123456')
-  assert.equal(message.format, 'text')
-  assert.deepEqual(message.attachments, [{ filename: 'invoice.pdf', contentType: 'application/pdf', size: 2048 }])
-  const markdown = await provider.get(undefined, '42', { format: 'markdown' })
-  assert.equal(markdown.markdown, 'Your code is 123456', 'markdown falls back to the text body')
-  const raw = await provider.get(undefined, '42', { format: 'raw', maxBytes: 10 })
-  assert.equal(String(raw.raw).length, 10)
-  assert.equal(raw.format, 'raw')
-})
-
-test('a missing CLI binary is a structured not-configured error, not a load failure', async () => {
-  const { provider, registered } = boot({ binary: path.join(tempDir(), 'no-such-himalaya'), accounts: ACCOUNTS })
-  assert.equal(registered, 1, 'accounts are configured: the provider IS registered')
-  await assert.rejects(
-    () => provider.list(undefined, {}),
-    (error: Error) => error.name === 'EmailNotConfiguredError' && /the mail CLI '.*no-such-himalaya' was not found/.test(error.message),
-  )
-})
-
-test('a failing or unparseable CLI answer is a structured email: error naming the cause', async () => {
-  const { provider } = boot({ binary: stubBinary(), accounts: ACCOUNTS })
-  process.env.HIMALAYA_STUB_BROKEN = '1'
-  try {
-    await assert.rejects(
-      () => provider.list(undefined, {}),
-      (error: Error) => error.name === 'EmailBackendError' && /failed: imap connection refused/.test(error.message),
-    )
-  } finally {
-    delete process.env.HIMALAYA_STUB_BROKEN
-  }
-  process.env.HIMALAYA_STUB_GARBAGE = '1'
-  try {
-    await assert.rejects(
-      () => provider.list(undefined, {}),
-      (error: Error) => /unparseable envelope list/.test(error.message) && /--output json/.test(error.message),
-    )
-  } finally {
-    delete process.env.HIMALAYA_STUB_GARBAGE
-  }
-})
-
-test('a credential NAME resolves through ctx.credentials into the child ENV: never argv, never a log', async () => {
-  const log = path.join(tempDir(), 'calls.log')
-  const resolved: string[] = []
-  const secret = 'app-password-not-a-real-secret'
-  process.env.HIMALAYA_STUB_LOG = log
-  try {
-    const { provider, logs } = boot(
-      { binary: stubBinary(), accounts: { personal: { ...ACCOUNTS.personal, credential: 'EMAIL_PERSONAL_PASSWORD' } } },
-      {
-        resolve: async (ref: { name: string }) => {
-          resolved.push(ref.name)
-          return { value: secret }
-        },
-      },
-    )
-    await provider.list(undefined, {})
-    assert.deepEqual(resolved, ['EMAIL_PERSONAL_PASSWORD'])
-    const [call] = readLog(log)
-    assert.equal(call?.password, secret, 'the value travels in the environment')
-    assert.equal(
-      (call?.argv ?? []).some((arg) => arg.includes(secret)),
-      false,
-      'the value NEVER travels on the command line',
-    )
-    assert.equal(
-      logs.some((line) => line.includes(secret)),
-      false,
-      'the value NEVER reaches a log line',
-    )
-  } finally {
-    delete process.env.HIMALAYA_STUB_LOG
-  }
-})
-
-test('the plugin is an external cordis plugin: named, email-injected, and the registration is disposable', () => {
-  const manifest = JSON.parse(fs.readFileSync(path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'plugins', 'email-himalaya', 'workbench.plugin.json'), 'utf8')) as {
+  assert.equal(EMAIL_CONTRACT, 'email@1')
+  assert.equal(MAIL, 'mail')
+  assert.equal(DEFAULT_HIMALAYA_WAIT_MS, 1500)
+  assert.equal(MAX_PAGE, 50)
+  const manifest = JSON.parse(fs.readFileSync(path.join(PLUGIN_DIR, 'workbench.plugin.json'), 'utf8')) as {
     capabilities: { id: string; version: number; provider: string }[]
   }
   assert.deepEqual(manifest.capabilities, [{ id: 'email', version: 1, provider: 'himalaya' }])
-  const booted = boot({ binary: stubBinary(), accounts: ACCOUNTS })
-  assert.equal(booted.disposers.length, 1)
-  booted.disposers[0]?.()
-  assert.equal(booted.registered, 0, 'unloading the plugin unregisters the provider')
-  // The driver never shells out with a shell: no shell metacharacter reaches execFile.
-  assert.equal(execFileSync(process.execPath, ['-e', 'process.stdout.write("ok")'], { encoding: 'utf8' }), 'ok')
+})
+
+test('no himalaya service: NOT CONFIGURED (a service that answers structured errors), never a throw', async () => {
+  const booted = await boot({ accounts: ACCOUNTS })
+  assert.equal(booted.kernel.length, 0, 'nothing is registered with the kernel')
+  const service = booted.services.get(MAIL)
+  assert.ok(service, 'the plugins-repo service is still provided')
+  await assert.rejects(
+    () => (service?.list as (ref?: unknown, options?: unknown) => Promise<unknown>)(undefined, {}),
+    (error: unknown) => error instanceof ServiceError && error.code === 'not-configured',
+  )
+  assert.ok(
+    booted.logs.some((line) => line.includes('not configured') && line.includes(HIMALAYA)),
+    'the reason is logged',
+  )
+})
+
+test('no accounts configured: the provider is still usable and lists nothing (labels come from the CLI)', async () => {
+  const fake = fakeHimalaya()
+  const booted = await boot({ accounts: {} }, { [HIMALAYA]: fake.service })
+  const service = booted.services.get(MAIL) as { accounts: () => Promise<{ label: string; default?: boolean }[]> }
+  const accounts = await service.accounts()
+  assert.deepEqual(accounts, [{ label: 'personal', default: true }, { label: 'work', default: undefined }])
+})
+
+test('accounts() reports the configured labels, the himalaya account names and the DEFAULT account', async () => {
+  const fake = fakeHimalaya()
+  const booted = await boot({ accounts: ACCOUNTS, defaultAccount: 'work' }, { [HIMALAYA]: fake.service })
+  const service = booted.services.get(MAIL) as {
+    accounts: () => Promise<{ label: string; address?: string; default?: boolean; description?: string }[]>
+    describe?: () => string
+  }
+  const accounts = await service.accounts()
+  assert.deepEqual(accounts.map((account) => account.label), ['personal', 'work'])
+  assert.equal(accounts[0]?.address, 'me@example.com')
+  assert.equal(accounts[0]?.default, false)
+  assert.equal(accounts[1]?.default, true, "the operator's defaultAccount is the default")
+  assert.match(accounts[0]?.description ?? '', /himalaya account 'personal'/)
+  assert.match(service.describe?.() ?? '', /himalaya \(2 account\(s\), default 'work'\)/)
+})
+
+test('list() asks himalaya for the account + folder + a bounded page and normalises the envelope', async () => {
+  const fake = fakeHimalaya()
+  const booted = await boot({ accounts: ACCOUNTS, defaultAccount: 'personal' }, { [HIMALAYA]: fake.service })
+  const service = booted.services.get(MAIL) as {
+    list: (ref?: unknown, options?: Record<string, unknown>) => Promise<Record<string, unknown>[]>
+  }
+  const messages = await service.list(undefined, { pageSize: 500 })
+  assert.deepEqual(fake.calls[0], {
+    method: 'envelopeList',
+    query: { account: 'personal', folder: 'INBOX', pageSize: MAX_PAGE },
+  })
+  assert.deepEqual(messages[0], {
+    id: '42',
+    subject: 'Your sign-in code',
+    from: 'Acme <no-reply@acme.test>',
+    to: ['Me <me@example.com>', 'Other <o@example.com>'],
+    date: '2026-09-19T09:00:00Z',
+    unread: true,
+    folder: 'INBOX',
+  })
+  assert.equal(messages[1]?.unread, false, "himalaya's Seen flag means read")
+  assert.deepEqual(messages[1]?.to, [], 'an empty To list is an empty list')
+})
+
+test('list() selects the account by LABEL and unreadOnly filters the typed answer', async () => {
+  const fake = fakeHimalaya()
+  const booted = await boot({ accounts: ACCOUNTS }, { [HIMALAYA]: fake.service })
+  const service = booted.services.get(MAIL) as {
+    list: (ref?: unknown, options?: Record<string, unknown>) => Promise<{ id: string }[]>
+  }
+  const unread = await service.list({ label: 'work' }, { unreadOnly: true })
+  assert.equal((fake.calls[0]?.query as { account: string }).account, 'work')
+  assert.deepEqual(unread.map((message) => message.id), ['42'])
+})
+
+test('an unknown account label is a structured error naming the configured labels', async () => {
+  const fake = fakeHimalaya()
+  const booted = await boot({ accounts: ACCOUNTS }, { [HIMALAYA]: fake.service })
+  const service = booted.services.get(MAIL) as { list: (ref?: unknown, options?: unknown) => Promise<unknown> }
+  await assert.rejects(
+    () => service.list({ label: 'absent' }, {}),
+    (error: unknown) => error instanceof ServiceError && error.code === 'invalid-input' && /unknown account 'absent' \(configured: personal, work\)/.test(error.message),
+  )
+})
+
+test('get() forwards the id, the folder and the noHeaders flag and returns the typed body', async () => {
+  const fake = fakeHimalaya()
+  const booted = await boot({ accounts: ACCOUNTS }, { [HIMALAYA]: fake.service })
+  const service = booted.services.get(MAIL) as {
+    get: (ref: unknown, id: string, options?: Record<string, unknown>) => Promise<Record<string, unknown>>
+  }
+  const message = await service.get({ label: 'personal' }, '42', { format: 'text', noHeaders: true })
+  assert.deepEqual(fake.calls[0], {
+    method: 'messageRead',
+    query: { account: 'personal', id: '42', folder: 'INBOX', noHeaders: true },
+  })
+  assert.equal(message.text, 'Your code is 123456')
+  assert.equal(message.raw, '{"text":"Your code is 123456"}')
+  assert.equal(message.format, 'text')
+  assert.deepEqual(message.attachments, [])
+})
+
+test('send() builds the RFC 5322 message and hands ONE quoted argv string to himalaya', async () => {
+  const fake = fakeHimalaya()
+  const booted = await boot({ accounts: ACCOUNTS }, { [HIMALAYA]: fake.service })
+  const service = booted.services.get(MAIL) as {
+    send: (input: Record<string, unknown>) => Promise<Record<string, unknown>>
+  }
+  const result = await service.send({
+    ref: { label: 'work' },
+    to: 'hermes@nexuslbs.org',
+    cc: 'copy@nexuslbs.org',
+    subject: 'workbench smoke',
+    body: 'hello from the test',
+  })
+  assert.equal(result.account, 'work')
+  assert.deepEqual(result.accepted, ['hermes@nexuslbs.org'])
+  const argv = String(fake.calls[0]?.args)
+  assert.ok(argv.startsWith("himalaya -a 'work' message send "))
+  assert.ok(
+    argv.startsWith("himalaya -a 'work' message send '"),
+    'the raw RFC 5322 message is handed over as ONE single-quoted argument',
+  )
+  assert.ok(argv.endsWith("'"), 'the quoted message closes at the very end of the argv string')
+  assert.ok(argv.includes('To: hermes@nexuslbs.org'), 'the recipient header rides in the quoted message')
+  assert.ok(argv.includes('Cc: copy@nexuslbs.org'))
+  assert.ok(argv.includes('Subject: workbench smoke'))
+  assert.ok(argv.includes('hello from the test'))
+  // Exactly ONE argument after `message send`: the raw message cannot word-split.
+  assert.equal((argv.match(/'/g) ?? []).length % 2, 0, 'single quotes are balanced')
+})
+
+test('the argv builders are pure: headers, quoting and the account flag', () => {
+  const raw = buildRawMessage({ to: ['a@x.test', 'b@x.test'], subject: 's', body: 'b' })
+  assert.equal(raw, 'To: a@x.test, b@x.test\r\nSubject: s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nb')
+  const html = buildRawMessage({ to: 'a@x.test', subject: "it's here", body: 'b', html: true })
+  assert.ok(html.includes("Subject: it's here"))
+  assert.ok(html.includes('Content-Type: text/html'))
+  const argv = sendArgv(undefined, html)
+  assert.ok(argv.startsWith('himalaya message send '), 'no account flag when none is given')
+  assert.ok(argv.includes("'Subject: it's here'") === false, 'the message is ONE quoted word')
+  assert.deepEqual(toSummary({ id: '1', flags: [], subject: 's', from: 'f', to: '', date: 'd', hasAttachment: false }).to, [])
+})
+
+test('a credential NAME is resolved through credentials at CALL time; the value never reaches the argv', async () => {
+  const fake = fakeHimalaya()
+  const resolved: string[] = []
+  const secret = 'app-password-not-a-real-secret'
+  const booted = await boot(
+    { accounts: { personal: { ...ACCOUNTS.personal, credential: 'EMAIL_PERSONAL_PASSWORD' } } },
+    { [HIMALAYA]: fake.service },
+    {
+      resolve: async (ref: { name: string }) => {
+        resolved.push(ref.name)
+        return { value: secret }
+      },
+    },
+  )
+  const service = booted.services.get(MAIL) as {
+    list: (ref?: unknown, options?: unknown) => Promise<unknown>
+    send: (input: Record<string, unknown>) => Promise<unknown>
+  }
+  await service.list(undefined, {})
+  assert.deepEqual(resolved, ['EMAIL_PERSONAL_PASSWORD'])
+  await service.send({ to: 'a@x.test', subject: 's', body: 'b' })
+  assert.deepEqual(resolved, ['EMAIL_PERSONAL_PASSWORD', 'EMAIL_PERSONAL_PASSWORD'], 'checked on every call')
+  assert.equal(
+    (fake.calls[0]?.query === undefined ? '' : String(fake.calls[0].query)).includes(secret),
+    false,
+    'the value never reaches a himalaya query',
+  )
+  assert.equal(
+    fake.calls.some((call) => String(call.args ?? '').includes(secret)),
+    false,
+    'the value never reaches the argv',
+  )
+  assert.equal(
+    booted.logs.some((line) => line.includes(secret)),
+    false,
+    'the value never reaches a log line',
+  )
+})
+
+test('an unresolvable credential is a structured error BEFORE any backend call', async () => {
+  const fake = fakeHimalaya()
+  const booted = await boot(
+    { accounts: { personal: { ...ACCOUNTS.personal, credential: 'MISSING_ONE' } } },
+    { [HIMALAYA]: fake.service },
+    { resolve: async () => undefined },
+  )
+  const service = booted.services.get(MAIL) as { list: (ref?: unknown, options?: unknown) => Promise<unknown> }
+  await assert.rejects(
+    () => service.list(undefined, {}),
+    (error: unknown) => error instanceof ServiceError && error.code === 'not-configured' && /credential 'MISSING_ONE' is not resolvable/.test(error.message),
+  )
+  assert.equal(fake.calls.length, 0, 'the backend was never called')
+})
+
+test('a credential with NO credentials capability is a structured missing-service error', async () => {
+  const fake = fakeHimalaya()
+  const booted = await boot({ accounts: { personal: { ...ACCOUNTS.personal, credential: 'SOME_NAME' } } }, { [HIMALAYA]: fake.service })
+  const service = booted.services.get(MAIL) as { list: (ref?: unknown, options?: unknown) => Promise<unknown> }
+  await assert.rejects(
+    () => service.list(undefined, {}),
+    (error: unknown) => error instanceof ServiceError && error.code === 'missing-service',
+  )
+})
+
+test('a CONFIGURED provider is also fed to the kernel-hosted email service (backward compat)', async () => {
+  const fake = fakeHimalaya()
+  const booted = await boot({ accounts: ACCOUNTS }, { [HIMALAYA]: fake.service })
+  assert.equal(booted.kernel.length, 1)
+  assert.equal(booted.kernel[0]?.id, 'himalaya')
+  assert.equal(typeof (booted.kernel[0]?.descriptor as Record<string, unknown>)?.send, 'function')
+  assert.deepEqual(Object.keys(booted.kernel[0]?.descriptor as Record<string, unknown>).sort(), ['accounts', 'get', 'list', 'send'])
+})
+
+test('a NOT-CONFIGURED provider never throws at load and its service answers structured errors', async () => {
+  const service = createNotConfiguredService("the 'himalaya' service is not loaded")
+  await assert.rejects(
+    () => service.accounts(),
+    (error: unknown) => error instanceof ServiceError && error.code === 'not-configured',
+  )
+  assert.match(service.describe?.() ?? '', /not configured/)
+})
+
+test('createEmailProvider is instantiable directly with any himalaya@1 service', async () => {
+  const fake = fakeHimalaya()
+  const provider = createEmailProvider(fake.service as never, { accounts: ACCOUNTS }, {} as never)
+  const summaries = await provider.list(undefined, { pageSize: 1 })
+  assert.equal(summaries.length, 2)
+  assert.equal((fake.calls[0]?.query as { pageSize: number }).pageSize, 1)
 })
