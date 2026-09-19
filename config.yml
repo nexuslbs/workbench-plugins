@@ -101,6 +101,22 @@ plugins:
   plugin-manager: {}
   settings: {}
   cordis-ui: {}
+  # THE CONFIG WATCHER (plugins/config-watch, contract config-watch@1): it
+  # watches the ACTIVE config file (the SAME file the core loaded: --config /
+  # CONFIG_FILE / the default search order) and its directory, so an EXTERNAL
+  # edit - `vi config.yml`, `sed -i`, an atomic write+rename - is applied LIVE
+  # through the core's `host.reconcile()`: no restart, no HTTP lifecycle call.
+  # It is OPT-IN: with no row (or `disabled: true`) the process opens NO fs
+  # handle at all. `debounceMs` coalesces a burst of writes; `minIntervalMs`
+  # rate-limits applies; both are bounded and the plugin state
+  # (`GET /api/config-watch/state`) reports the last event, the last reconcile
+  # report, the last error and the counters. Self-writes (settings patch,
+  # enable/disable/install/uninstall) cannot loop: an unchanged BYTE-IDENTICAL
+  # rewrite is suppressed by content hash and reconcile itself never writes the
+  # file, so the worst case is one no-op apply.
+  config-watch:
+    debounceMs: 300
+    minIntervalMs: 1000
   # THE WEB PROVIDER (`web@1`, provider `http`). The core ships NO web module
   # since v0.0.3: the socket, the shell and the `/health` endpoint belong to this
   # plugin. Port precedence is the plugin row, then $WORKBENCH_WEB_PORT, then

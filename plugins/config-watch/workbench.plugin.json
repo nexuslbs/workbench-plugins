@@ -1,0 +1,19 @@
+{
+  "name": "config-watch",
+  "version": "0.1.0",
+  "description": "Watches the ACTIVE workbench config file and applies an EXTERNAL edit to the running process live (reconcile), with debounce, atomic-rename handling, self-write suppression and structured state",
+  "entry": "index.ts",
+  "capabilities": ["web:route:/api/config-watch/state", "web:route:/api/config-watch/apply"],
+  "config": {
+    "type": "object",
+    "properties": {
+      "debounceMs": { "type": "integer", "default": 300, "description": "Coalescing window for filesystem events, milliseconds" },
+      "minIntervalMs": { "type": "integer", "default": 1000, "description": "Minimum delay between two applies (rate limit / churn guard)" },
+      "pollMs": { "type": "integer", "default": 0, "description": "Optional polling fallback in milliseconds (0 = off); only for filesystems without inotify" },
+      "retryDelayMs": { "type": "integer", "default": 40, "description": "Delay between the read retries of an atomic-write window" },
+      "readRetries": { "type": "integer", "default": 4, "description": "How many times a read is retried before it is reported as an error" },
+      "recentLimit": { "type": "integer", "default": 24, "description": "Size of the event ring buffer exposed in the state" },
+      "file": { "type": "string", "description": "Watch a different file (default: the config file the host actually loaded)" }
+    }
+  }
+}

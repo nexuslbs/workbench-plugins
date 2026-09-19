@@ -108,6 +108,7 @@ the config removes its surface; the server keeps booting and serving the rest.
 | `plugin-manager` | install / enable / disable / retry / reload / compose | `/plugin-manager` | `GET /api/plugin-manager/state`, `POST /api/plugin-manager/action` |
 | `settings` | active config file + per-plugin config, edit + persist | `/settings` | `GET /api/settings`, `GET /api/settings/plugins`, `GET /api/settings/plugin-config?name=`, `POST /api/settings/patch` |
 | `cordis-ui` | live cordis runtime (services, fibers, loader) + manage | `/cordis-ui` | `GET /api/cordis-ui/runtime`, `POST /api/cordis-ui/action` |
+| `config-watch` | config-file WATCHER: an EXTERNAL edit of the active config is applied live (reload + reconcile), debounced, with self-write suppression | (state endpoint) | `GET /api/config-watch/state`, `POST /api/config-watch/apply` |
 
 The UI is served by the core (`npm run web`, or `workbench serve` with
 `web.enabled: true`); the plugins only contribute routes, assets and pages. No
