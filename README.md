@@ -120,7 +120,8 @@ modules served from the plugin directory.
 ### Tool plugins (by-name invocation)
 
 A plugin can register a named **tool** (a description, the parameters it expects
-and a handler) through `ctx.workbench.registerTool`; the core then exposes it for
+and a handler) through `ctx.tools.registerTool` (the `tools@1` seam, provided by
+the `tools-impl` plugin of this repository); the provider then exposes it for
 invocation BY NAME over HTTP with the parameters as the request body. This is
 NOT a model/agent feature: the callers are plugins and operators. The contract is
 `docs/PLUGIN-CONTRACT.md` section 4d of the core.

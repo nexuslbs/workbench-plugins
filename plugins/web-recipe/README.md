@@ -113,7 +113,7 @@ level. On read:
 
 ## Tools
 
-Registered through `ctx.workbench.registerTool`, so they are reachable on the
+Registered through `ctx.tools.registerTool`, so they are reachable on the
 shipped seam (`POST /api/tools/<name>`, `POST /api/tool/call {"tool","params"}`)
 and listed by `GET /api/tools` with their JSON schema.
 

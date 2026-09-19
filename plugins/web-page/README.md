@@ -170,7 +170,7 @@ decide what to read. `page map` output never contains the body.
 
 The plugin is a directory in `nexuslbs/workbench-plugins` with the usual
 manifest (`workbench.plugin.json`) and entry (`index.ts`); it registers its two
-tools through `ctx.workbench.registerTool` and closes its browser through the
+tools through `ctx.tools.registerTool` and closes its browser through the
 cordis effect disposal. The dev config carries one `plugins:` row for it, so the
 repo's local `sources: path` entry picks it up - external git sources keep
 working unchanged (this plugin is never vendored into the core).
