@@ -14,6 +14,7 @@ import {
   default as plugin,
   name,
   providerId,
+  readConfig,
   resolveConfig,
   type Config,
 } from '../plugins/credentials-stub/index.ts'
@@ -62,6 +63,7 @@ async function startStub(): Promise<{ url: string; seen: RequestSeen[]; close: (
 function makeContext() {
   const registered: { id: string; version: number; describe?: () => string }[] = []
   const disposers: (() => void)[] = []
+  const logs: string[] = []
   const ctx = {
     credentials: {
       register(provider: { id: string; version: number; describe?: () => string }): () => void {
@@ -72,11 +74,16 @@ function makeContext() {
         }
       },
     },
+    workbench: {
+      log(message: string): void {
+        logs.push(message)
+      },
+    },
     effect(callback: () => () => void): void {
       disposers.push(callback())
     },
   }
-  return { ctx, registered, disposers }
+  return { ctx, registered, disposers, logs }
 }
 
 test('the manifest DECLARES the credentials capability (what makes the provider resolvable)', () => {
@@ -99,6 +106,20 @@ test('registers a credentials@1 provider on the injected context', () => {
   )
   for (const dispose of disposers) dispose()
   assert.equal(registered.length, 0)
+})
+
+// `apply` receives `{}` for every discovered plugin WITHOUT a `plugins.<name>`
+// config row (docs/PLUGIN-CONTRACT.md): that is the normal DEV state, so it must
+// not be a load failure and must not register a provider that cannot answer.
+test('an UNCONFIGURED plugin loads: no throw, no provider, a not-configured announcement', () => {
+  const { ctx, registered, disposers, logs } = makeContext()
+  assert.doesNotThrow(() => apply(ctx, {}))
+  assert.doesNotThrow(() => apply(ctx, { mount: 'kv' })) // partial config: url still missing
+  assert.deepEqual(registered, [])
+  assert.equal(disposers.length, 0)
+  assert.equal(logs.length, 2)
+  assert.match(logs[0] ?? '', /credentials-stub: not configured \(no 'url' in plugins\.credentials-stub\)/)
+  assert.match(logs[0] ?? '', /'stub-vault' is declared but not registered/)
 })
 
 test('resolves a KV v2 secret, a flat secret and a scoped secret through the SAME backend', async () => {
@@ -148,7 +169,15 @@ test('resolveConfig requires a url and defaults the mount', () => {
   assert.deepEqual(config, { url: 'http://vault:8200' })
 })
 
+test('readConfig treats a missing url as NOT CONFIGURED and still validates a present one', () => {
+  assert.equal(readConfig({}), undefined)
+  assert.equal(readConfig({ mount: 'kv' }), undefined)
+  assert.equal(readConfig({ url: '' }), undefined)
+  assert.throws(() => readConfig({ url: 42 as unknown as string }), /'url' must be a non-empty string/)
+  assert.deepEqual(readConfig({ url: 'http://vault:8200', mount: 'kv' }), { url: 'http://vault:8200', mount: 'kv' })
+})
+
 test('entry export and manifest agree on the plugin name', () => {
   assert.equal(plugin.name, name)
-  assert.deepEqual((plugin as { inject?: string[] }).inject, ['credentials'])
+  assert.deepEqual((plugin as { inject?: string[] }).inject, ['credentials', 'workbench'])
 })

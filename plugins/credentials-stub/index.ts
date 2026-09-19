@@ -54,12 +54,18 @@ interface CredentialsLike {
   }): () => void
 }
 
+/** The slice of the core service this plugin uses (log only, no core import). */
+interface WorkbenchLike {
+  log(message: string): void
+}
+
 interface PluginContext {
   credentials: CredentialsLike
+  workbench: WorkbenchLike
   effect(callback: () => () => void): void
 }
 
-/** Validates the plugin config; the URL is the only required value. */
+/** Validates a CONFIGURED plugin config; the URL is the only required value. */
 export function resolveConfig(raw: Partial<Config> = {}): Config {
   if (typeof raw.url !== 'string' || raw.url.length === 0) {
     throw new Error(`credentials-stub: 'url' must be a non-empty string (got ${JSON.stringify(raw.url)})`)
@@ -69,6 +75,20 @@ export function resolveConfig(raw: Partial<Config> = {}): Config {
   if (raw.token !== undefined) config.token = raw.token
   if (raw.timeoutMs !== undefined) config.timeoutMs = raw.timeoutMs
   return config
+}
+
+/**
+ * Reads the plugin config WITHOUT requiring it. `undefined` means the plugin is
+ * present but NOT CONFIGURED (no `url` at all), which is a normal state and NOT
+ * an error: the loader applies every DISCOVERED plugin with `{}` when the
+ * config has no `plugins.<name>` row (docs/PLUGIN-CONTRACT.md, `apply()` rule 5),
+ * so a plugin may never fail the load over missing optional config. A `url` that
+ * IS present but invalid (not a non-empty string) stays a loud config error.
+ */
+export function readConfig(raw: Partial<Config> = {}): Config | undefined {
+  const url = (raw as Record<string, unknown>).url
+  if (url === undefined || url === null || url === '') return undefined
+  return resolveConfig(raw)
 }
 
 /** Reads the value out of a Vault KV v2 answer, then the simpler shapes. */
@@ -122,9 +142,23 @@ export function createProvider(config: Config) {
   }
 }
 
+/**
+ * Applies the plugin. WITHOUT a `url` the plugin is NOT CONFIGURED - a normal
+ * state, never a load failure: no provider is registered (so `stub-vault` stays
+ * DECLARED by the manifest but shows `registered: false` in the credentials
+ * `providers()` view) and the state is announced once through the core log.
+ * With a `url` the provider is registered and answers `resolve()` as before.
+ */
 export function apply(ctx: PluginContext, raw: Partial<Config> = {}): void {
-  const provider = createProvider(resolveConfig(raw))
+  const config = readConfig(raw)
+  if (config === undefined) {
+    ctx.workbench.log(
+      "credentials-stub: not configured (no 'url' in plugins.credentials-stub) - provider 'stub-vault' is declared but not registered; set plugins.credentials-stub.url to enable it",
+    )
+    return
+  }
+  const provider = createProvider(config)
   ctx.effect(() => ctx.credentials.register(provider))
 }
 
-export default { name, inject: ['credentials'], apply }
+export default { name, inject: ['credentials', 'workbench'], apply }

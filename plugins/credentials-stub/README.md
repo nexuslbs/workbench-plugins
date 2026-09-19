@@ -15,9 +15,18 @@ change at all**.
 
 ## Config
 
+`url` is required only to ENABLE the provider - the plugin is loadable with NO
+config row at all (`plugins.credentials-stub` absent). Without a `url` it loads
+and registers **no** provider (the manifest still DECLARES `stub-vault`, so the
+credentials `providers()` view shows it with `registered: false`) and announces
+the not-configured state through the core log; `apply()` never throws for missing
+optional config (core `docs/PLUGIN-CONTRACT.md`, "An unconfigured plugin must
+still load"). A `url` that IS present but not a non-empty string stays a loud
+config error.
+
 | key | default | meaning |
 | --- | --- | --- |
-| `url` | (required) | base URL, e.g. `http://127.0.0.1:8200` |
+| `url` | (required to enable) | base URL, e.g. `http://127.0.0.1:8200` |
 | `mount` | `secret` | KV mount point |
 | `token` | - | sent as `X-Vault-Token`, never logged |
 | `timeoutMs` | `5000` | request timeout |

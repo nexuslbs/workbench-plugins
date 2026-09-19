@@ -6,12 +6,12 @@
   "capabilities": [{ "id": "credentials", "version": 1, "provider": "stub-vault" }],
   "config": {
     "type": "object",
+    "description": "No config row at all is a valid state: the plugin then loads and reports 'not configured' without registering the provider. 'url' is required only to ENABLE it.",
     "properties": {
-      "url": { "type": "string", "description": "Base URL of the Vault-style endpoint" },
+      "url": { "type": "string", "description": "Base URL of the Vault-style endpoint; required only to enable the provider" },
       "mount": { "type": "string", "default": "secret" },
       "token": { "type": "string", "description": "sent as X-Vault-Token; never logged" },
       "timeoutMs": { "type": "number", "default": 5000 }
-    },
-    "required": ["url"]
+    }
   }
 }
