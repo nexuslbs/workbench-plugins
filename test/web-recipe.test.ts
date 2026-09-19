@@ -31,7 +31,7 @@ function fakeCtx(): { ctx: Ctx; tools: Map<string, ToolDef>; services: Map<strin
   const tools = new Map<string, ToolDef>()
   const services = new Map<string, unknown>()
   const ctx = {
-    workbench: {
+    tools: {
       registerTool: (def: ToolDef) => {
         tools.set(def.name, def)
         return () => {
@@ -299,7 +299,7 @@ test('web-page read-through: a broken recipe is reported and demoted, and the re
   const cacheDir = tmpDir('web-page-fallback-cache-')
   applyPage(
     {
-      workbench: {
+      tools: {
         registerTool: (def: ToolDef) => {
           pageTools.set(def.name, def)
           return () => undefined
@@ -359,7 +359,7 @@ test('web-page read-through: an API recipe answers in ONE call with no browser a
   const cacheDir = tmpDir('web-page-payoff-cache-')
   applyPage(
     {
-      workbench: {
+      tools: {
         registerTool: (def: ToolDef) => {
           pageTools.set(def.name, def)
           return () => undefined
@@ -423,7 +423,7 @@ test('web-page read-through: an UNRESOLVABLE credential does not block the API r
   const cacheDir = tmpDir('web-page-cred-cache-')
   applyPage(
     {
-      workbench: {
+      tools: {
         registerTool: (def: ToolDef) => {
           pageTools.set(def.name, def)
           return () => undefined
@@ -489,7 +489,7 @@ test('web-page read-through: a broken recipe must not poison the read with its O
   const cacheDir = tmpDir('web-page-poison-cache-')
   applyPage(
     {
-      workbench: {
+      tools: {
         registerTool: (def: ToolDef) => {
           pageTools.set(def.name, def)
           return () => undefined

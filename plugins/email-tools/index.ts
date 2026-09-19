@@ -1,7 +1,7 @@
 // plugins/email-tools - the `email@1` CONSUMER (EmailConsumer).
 //
 // It exposes the generic email capability as TOOLS for an agent or a human,
-// through the core seam `ctx.workbench.registerTool` (workbench API
+// through the tools seam `ctx.tools.registerTool` (tools@1 API
 // `POST /api/tools/<name>` / `POST /api/tool/call {"tool","params"}` or the
 // CLI). It imports the DEFINITION and the shared helpers only:
 //
@@ -44,7 +44,7 @@ interface ToolParameter {
 
 type ToolParameters = Record<string, ToolParameter>
 
-interface WorkbenchLike {
+interface ToolsLike {
   registerTool(def: {
     name: string
     description?: string
@@ -59,7 +59,7 @@ export interface Config {
 }
 
 export interface EmailToolsContext extends ServiceContext {
-  workbench: WorkbenchLike
+  tools: ToolsLike
   effect?: (callback: () => () => void) => void
 }
 
@@ -398,7 +398,7 @@ export function apply(ctx: EmailToolsContext, config: Config = {}): void {
   const registered = tools(config, ctx)
   const install = (): (() => void) => {
     const disposers = Object.entries(registered).map(([toolName, tool]) =>
-      ctx.workbench.registerTool({
+      ctx.tools.registerTool({
         name: toolName,
         description: tool.description,
         parameters: tool.parameters,
@@ -413,4 +413,4 @@ export function apply(ctx: EmailToolsContext, config: Config = {}): void {
   else install()
 }
 
-export default { name, inject: ['workbench'], apply }
+export default { name, inject: ['tools'], apply }

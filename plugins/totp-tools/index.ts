@@ -9,7 +9,8 @@
 //                        provider answers.
 //
 // It imports NOTHING from the core and NOTHING from a provider: the only seams
-// it touches are `ctx.totp` (injected by name) and `ctx.workbench.registerTool`.
+// it touches are `ctx.totp` (injected by name) and `ctx.tools` (`tools@1`,
+// provided by plugins/tools-impl of this repository).
 // Swapping the provider (disable one `totp@1` provider, enable another) is a
 // config edit; this file does not change and its tools keep working, which is
 // what `npm run check:seam` in the core repository enforces. This plugin names
@@ -57,7 +58,7 @@ interface TotpLike {
   code(label: string, options?: { at?: number }): Promise<TotpCodeLike> | TotpCodeLike
 }
 
-interface WorkbenchLike {
+interface ToolsLike {
   registerTool(def: {
     name: string
     description?: string
@@ -68,7 +69,7 @@ interface WorkbenchLike {
 
 interface PluginContext {
   totp: TotpLike
-  workbench: WorkbenchLike
+  tools: ToolsLike
   effect(callback: () => () => void): void
 }
 
@@ -86,7 +87,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
   // never part of this answer because it is never part of the capability's
   // `entries()` either - the contract is metadata only.
   ctx.effect(() =>
-    ctx.workbench.registerTool({
+    ctx.tools.registerTool({
       name: 'totp list',
       description:
         'lists the configured TOTP entries: label, issuer, account, digits, period, algorithm and whether a key is configured; never a secret',
@@ -103,7 +104,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
   // the capability answers for exactly that second and reports how long the code
   // stays valid (`remainingSeconds`).
   ctx.effect(() =>
-    ctx.workbench.registerTool({
+    ctx.tools.registerTool({
       name: 'totp code',
       description:
         'generates the current code of the named TOTP entry (label, optional unix-second `at`) and reports digits, period, algorithm, generatedAt and remainingSeconds',
@@ -155,4 +156,4 @@ function int(value: unknown): number | undefined {
   return Number.isFinite(number) ? Math.trunc(number) : undefined
 }
 
-export default { name, inject: ['totp', 'workbench'], apply }
+export default { name, inject: ['totp', 'tools'], apply }

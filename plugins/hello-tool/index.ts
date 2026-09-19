@@ -1,12 +1,13 @@
-// External workbench plugin: registers a TOOL with the core.
+// External workbench plugin: registers a TOOL with the tools service.
 //
-// It deliberately imports NOTHING from the core package: `ctx.workbench` is the
-// whole contract this plugin relies on. A tool is a NAME, a description, the
+// It deliberately imports NOTHING from the core package: `ctx.tools` (the tools
+// service, provided by plugins/tools-impl) is the whole contract this plugin
+// relies on. A tool is a NAME, a description, the
 // PARAMETERS it expects (a small DSH-style property map, `required: true` per
 // property) and a handler. The core exposes the registered tool so any caller
 // can invoke it BY NAME - over HTTP (`POST /api/tools/<name>`, the parameters in
 // the body, or the `{"tool","params"}` alias at `POST /api/tool/call`), from the
-// CLI (`workbench tool <name>`) or in process - and validates the parameters
+// CLI (`workbench tool <name>`, registered by plugins/tools-impl) or in process - and validates the parameters
 // against this schema before the handler runs.
 
 /** One declared parameter: the type the caller must pass and whether it is required. */
@@ -20,7 +21,7 @@ interface ToolParameter {
 /** The parameter map of a tool (what `GET /api/tools` publishes). */
 type ToolParameters = Record<string, ToolParameter>
 
-interface WorkbenchLike {
+interface ToolsLike {
   registerTool(def: {
     name: string
     description?: string
@@ -30,7 +31,7 @@ interface WorkbenchLike {
 }
 
 interface PluginContext {
-  workbench: WorkbenchLike
+  tools: ToolsLike
   effect(callback: () => () => void): void
 }
 
@@ -44,7 +45,7 @@ export interface Config {
 export function apply(ctx: PluginContext, config: Config = {}): void {
   const fallback = config.greeting ?? 'Hello'
   ctx.effect(() =>
-    ctx.workbench.registerTool({
+    ctx.tools.registerTool({
       name: 'hello greet',
       description: 'greets one person: required name, optional greeting and times',
       parameters: {
@@ -65,4 +66,4 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
   )
 }
 
-export default { name, inject: ['workbench'], apply }
+export default { name, inject: ['tools'], apply }

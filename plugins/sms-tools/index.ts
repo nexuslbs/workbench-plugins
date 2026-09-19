@@ -7,7 +7,8 @@
 //                        never learns which backend answers.
 //
 // It imports NOTHING from the core and NOTHING from a provider: the only seam it
-// touches is `ctx.sms` (injected by name) plus `ctx.workbench.registerTool`.
+// touches is `ctx.sms` (injected by name) plus `ctx.tools` (`tools@1`,
+// provided by plugins/tools-impl of this repository).
 // Swapping the provider (disable one `sms@1` provider, enable another) is a
 // config edit; this file does not change and its tools keep working, which is
 // what `npm run check:seam` in the core repository enforces. No SMS backend and
@@ -75,7 +76,7 @@ interface SmsLike {
   code(ref: SmsRefLike | undefined, options?: Record<string, unknown>): Promise<SmsCodeLike>
 }
 
-interface WorkbenchLike {
+interface ToolsLike {
   registerTool(def: {
     name: string
     description?: string
@@ -86,7 +87,7 @@ interface WorkbenchLike {
 
 interface PluginContext {
   sms: SmsLike
-  workbench: WorkbenchLike
+  tools: ToolsLike
   effect(callback: () => () => void): void
 }
 
@@ -150,7 +151,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
   // which of them are actually usable. The tool NEVER keeps a roster of its own:
   // it forwards the capability, so the operator's config decides.
   ctx.effect(() =>
-    ctx.workbench.registerTool({
+    ctx.tools.registerTool({
       name: 'sms numbers',
       description:
         'lists the configured SMS numbers by label (which one is the default, and whether each has usable credentials); never a secret',
@@ -175,7 +176,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
 
   // 2) The last N inbound messages of one number (default number when omitted).
   ctx.effect(() =>
-    ctx.workbench.registerTool({
+    ctx.tools.registerTool({
       name: 'sms list',
       description:
         'lists the newest inbound SMS of a number: optional number label (default number when omitted), limit, since, from and unreadOnly',
@@ -208,7 +209,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
 
   // 3) One message, full (bounded) body included.
   ctx.effect(() =>
-    ctx.workbench.registerTool({
+    ctx.tools.registerTool({
       name: 'sms get',
       description: 'reads one inbound SMS of a number by id: the full body plus its sender, recipient, date and delivery metadata',
       parameters: {
@@ -227,7 +228,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
   // The extraction rule lives in the Definition (one place, every provider), so
   // this handler only picks the message and forwards the options.
   ctx.effect(() =>
-    ctx.workbench.registerTool({
+    ctx.tools.registerTool({
       name: 'sms code',
       description:
         'extracts a verification code from an SMS (a given message id, or the newest message matching query/pattern) and reports which message it came from',
@@ -266,4 +267,4 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
   // `ctx.effect` disposes its own registration when the plugin unloads).
 }
 
-export default { name, inject: ['sms', 'workbench'], apply }
+export default { name, inject: ['sms', 'tools'], apply }

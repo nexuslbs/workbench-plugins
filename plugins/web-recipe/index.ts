@@ -2,7 +2,7 @@
 // a repeated site ONE cheap call.
 //
 // It is an external workbench plugin with three seams, nothing else:
-//   - `ctx.workbench.registerTool` (core docs/PLUGIN-CONTRACT.md 4d): the five
+//   - `ctx.tools.registerTool` (tools@1, public plugins repo): the five
 //     `recipe *` tools an agent/operator drives;
 //   - `ctx.provide('web-recipe', service)`: the consumer contract web-page looks
 //     up (`ctx.inject(['web-recipe'], ...)`), so the read-through is a SERVICE
@@ -111,7 +111,7 @@ interface ToolDef {
   handler: (params: Record<string, unknown>) => unknown | Promise<unknown>
 }
 
-interface WorkbenchLike {
+interface ToolsLike {
   registerTool(def: ToolDef): () => void
 }
 
@@ -120,7 +120,7 @@ interface CredentialsLike {
 }
 
 interface PluginContext {
-  workbench: WorkbenchLike
+  tools: ToolsLike
   credentials?: CredentialsLike
   provide?(name: string, service: unknown): void
   effect(callback: () => () => void): void
@@ -371,7 +371,7 @@ export function apply(ctx: PluginContext, config: WebRecipeConfig = {}, deps: We
   }
 
   ctx.effect(() =>
-    ctx.workbench.registerTool({
+    ctx.tools.registerTool({
       name: 'recipe get',
       description:
         'returns the stored per-domain recipe (read path, named selectors, discovered API endpoints, login flow, quirks, provenance) or a structured not-found; a recipe is durable knowledge every thread can reuse',
@@ -402,7 +402,7 @@ export function apply(ctx: PluginContext, config: WebRecipeConfig = {}, deps: We
   )
 
   ctx.effect(() =>
-    ctx.workbench.registerTool({
+    ctx.tools.registerTool({
       name: 'recipe save',
       description:
         'creates or MERGES a per-domain recipe (read path, selectors, discovered endpoints, login flow, quirks, confidence); provenance is updated, a replacement read path resets verification, and a credential is stored by NAME only',
@@ -441,7 +441,7 @@ export function apply(ctx: PluginContext, config: WebRecipeConfig = {}, deps: We
   )
 
   ctx.effect(() =>
-    ctx.workbench.registerTool({
+    ctx.tools.registerTool({
       name: 'recipe list',
       description: 'lists the stored recipes: domain, read path kind, counts, confidence, lastVerifiedAt and parked state, plus any unreadable file',
       parameters: {
@@ -466,7 +466,7 @@ export function apply(ctx: PluginContext, config: WebRecipeConfig = {}, deps: We
   )
 
   ctx.effect(() =>
-    ctx.workbench.registerTool({
+    ctx.tools.registerTool({
       name: 'recipe delete',
       description:
         "parks a recipe (`mode: disable`, default: the file and its provenance stay, reads stop using it) or removes it from disk (`mode: purge`)",
@@ -489,7 +489,7 @@ export function apply(ctx: PluginContext, config: WebRecipeConfig = {}, deps: We
   )
 
   ctx.effect(() =>
-    ctx.workbench.registerTool({
+    ctx.tools.registerTool({
       name: 'recipe verify',
       description:
         "re-runs a recipe's read path (an API endpoint is probed directly; a rendered page needs a consumer verifier such as web-page), updates lastVerifiedAt/confidence and reports whether the stored knowledge still holds",
@@ -516,4 +516,4 @@ export function apply(ctx: PluginContext, config: WebRecipeConfig = {}, deps: We
   )
 }
 
-export default { name, inject: ['credentials', 'workbench'], apply }
+export default { name, inject: ['credentials', 'tools'], apply }

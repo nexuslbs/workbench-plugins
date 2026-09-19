@@ -7,7 +7,7 @@
 // the outline (headings, sections, links) so a caller can pick a slice cheaply.
 //
 // It is a CONSUMER plugin: it imports nothing from the core and nothing from a
-// provider, and touches only `ctx.workbench.registerTool` (tools seam) plus
+// provider, and touches only `ctx.tools.registerTool` (tools seam) plus
 // `ctx.credentials` (a credential NAME for a proxy is resolved at call time and
 // never logged). Omniagent, the core, and any model are NOT in the loop: one
 // call in, markdown out.
@@ -37,7 +37,7 @@ interface ToolParameter {
 
 type ToolParameters = Record<string, ToolParameter>
 
-interface WorkbenchLike {
+interface ToolsLike {
   registerTool(def: {
     name: string
     description?: string
@@ -51,7 +51,7 @@ interface CredentialsLike {
 }
 
 interface PluginContext {
-  workbench: WorkbenchLike
+  tools: ToolsLike
   credentials?: CredentialsLike
   effect(callback: () => () => void): void
   /**
@@ -438,7 +438,7 @@ export function apply(ctx: PluginContext, config: WebPageConfig = {}, deps: WebP
   }
 
   ctx.effect(() =>
-    ctx.workbench.registerTool({
+    ctx.tools.registerTool({
       name: 'page read',
       description:
         'reads ONE web page that needs JavaScript, in a single call: renders it in chromium, returns compact markdown of the main content (no HTML, no browser in the caller loop), capped with spill to a file, cached by URL with a content hash so an unchanged page answers "unchanged since <hash>" in a few tokens',
@@ -470,7 +470,7 @@ export function apply(ctx: PluginContext, config: WebPageConfig = {}, deps: WebP
   )
 
   ctx.effect(() =>
-    ctx.workbench.registerTool({
+    ctx.tools.registerTool({
       name: 'page map',
       description:
         'maps ONE web page without its body: renders it in chromium and returns the OUTLINE (title, headings, per-section char counts, links) so a caller can pick a slice cheaply, with the same cache and char cap as page read',
@@ -568,4 +568,4 @@ async function revalidateHttp(url: string, entry: CacheEntry): Promise<'not-modi
 }
 
 export { estimateTokens }
-export default { name, inject: ['credentials', 'workbench'], apply }
+export default { name, inject: ['credentials', 'tools'], apply }

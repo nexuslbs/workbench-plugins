@@ -37,8 +37,11 @@ sources:
     ref: main
     subdir: plugins
     auth:
-      # github-app: the credential value is an App PRIVATE KEY (PEM); the core
-      # mints a short-lived installation token from it (RS256 JWT) for the fetch.
+      # github-app: the credential value is an App PRIVATE KEY (PEM); the PLUGIN
+      # plugins/credentials-github-app turns it into a short-lived installation
+      # token (RS256 JWT) for the fetch. The core mints nothing and branches on
+      # no auth type: it dispatches to the strategy a plugin registered on the
+      # credentials service. That plugin must be in the roster below (it is).
       type: github-app
       credential: GITHUB_APP_KEY
       appId: 3967918
@@ -72,10 +75,17 @@ plugins:
     message: Hello Otherworld
 
   # The TOOL consumer: registers the by-name tool `hello greet` through
-  # `ctx.workbench.registerTool` (core docs/PLUGIN-CONTRACT.md, section 4d), so
+  # `ctx.tools.registerTool` (the tools@1 service, plugins repo docs), so
   # the dev service answers GET /api/tools, POST /api/tools/hello%20greet and
   # POST /api/tool/call (the shape the omniagent `workbench` MCP plugin sends).
   hello-tool: {}
+
+  # THE TOOLS PROVIDER (tools@1, provider `registry`): it owns the named-tool
+  # registry, the /api/tools* HTTP seams on the web seam and the `workbench
+  # tools` / `workbench tool <name>` CLI commands. The CORE ships NO tool module
+  # at all since v0.0.4 (definitions/tools.ts + this provider live in THIS
+  # repository): a consumer registers through `ctx.tools`.
+  tools-impl: {}
 
   # Web UI (M1 Plugin Inventory, M2 Plugin Manager, M3 Settings, M4 Cordis UI).
   # The UI is composed ONLY of plugins: they are discovered in the sources above
@@ -101,13 +111,19 @@ plugins:
   # credentials-stub: the dev credential provider plugin (the stub vault the docs
   # use to show the Provider -> Definition <- Consumer seam end to end).
   credentials-stub: {}
+  # THE github-app GIT AUTH STRATEGY (moved out of the core in v0.0.4): it turns
+  # the App PRIVATE KEY that a credentials PROVIDER resolved for
+  # `auth.credential` into a short-lived installation token and hands the core
+  # the `git -c ...` arguments. No provider id: the VALUE comes from the
+  # providers above, this plugin only mints from it.
+  credentials-github-app: {}
   # The WEB-PAGE reader: ONE-call JS-aware read of a page that needs JavaScript.
   # The plugin renders through playwright-core chromium (the browser is provided
   # by the deployment: `PLAYWRIGHT_BROWSERS_PATH` here points at the browser
   # installed for local runs, config `executablePath` overrides it), distils the
   # page to compact markdown IN CODE, caps the result with spill to a file and
   # caches it by URL + content hash. Two CONSUMER tools through
-  # `ctx.workbench.registerTool`: 'page read' and 'page map'. It holds no
+  # `ctx.tools.registerTool`: 'page read' and 'page map'. It holds no
   # credential of its own - the optional `proxy.credential` is a NAME resolved
   # through ctx.credentials and never written or logged.
   web-page:

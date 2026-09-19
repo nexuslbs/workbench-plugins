@@ -22,7 +22,9 @@ function makeContext() {
   const tools: Registered[] = []
   const disposers: (() => void)[] = []
   const ctx = {
-    workbench: {
+    // the tools@1 service (Definition in definitions/tools.ts, provided by the
+    // external `tools-impl` plugin): a consumer registers through `ctx.tools`.
+    tools: {
       registerTool(def: Registered): () => void {
         tools.push(def)
         return () => {
@@ -35,7 +37,7 @@ function makeContext() {
       disposers.push(callback())
     },
   }
-  return { ctx, tools, disposers }
+  return { ctx: ctx as never, tools, disposers }
 }
 
 test('registers the hello greet tool with one required and two optional parameters', () => {
@@ -75,5 +77,7 @@ test('disposing the plugin unregisters the tool', () => {
 
 test('entry export and manifest agree on the plugin name', () => {
   assert.equal(plugin.name, name)
-  assert.deepEqual((plugin as { inject?: string[] }).inject, ['workbench'])
+  // The consumer injects the tools@1 service by NAME (Definition in
+  // definitions/tools.ts, provider = the external `tools-impl` plugin).
+  assert.deepEqual((plugin as { inject?: string[] }).inject, ['tools'])
 })

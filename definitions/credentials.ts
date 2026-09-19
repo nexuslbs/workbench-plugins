@@ -161,6 +161,35 @@ export function normalizeRef(ref: CredentialRef): CredentialRef {
   return ref
 }
 
+/**
+ * A request to build the git auth arguments of ONE source, from a credential
+ * value that was resolved through this service. No value ever leaves the
+ * handler: `value` is passed in memory only and must never be logged.
+ */
+export interface GitAuthRequest {
+  /** The credential reference the value came from (names only). */
+  ref: CredentialRef
+  /** The resolved credential value. Never logged, echoed or persisted. */
+  value: string
+  /** The source's `auth` config block (backend-specific fields, by name). */
+  auth: Record<string, unknown>
+}
+
+/**
+ * A GIT AUTH STRATEGY for one `auth.type`, registered by a PLUGIN: it turns a
+ * resolved credential value into the `git -c ...` arguments of a source fetch.
+ *
+ * The core knows ONE built-in type (`token`: the value IS the token) and NO
+ * backend: every other type (`github-app`, and any future one) is a plugin that
+ * registers a handler here, so no minting logic lives in the host.
+ */
+export interface GitAuthHandler {
+  /** `auth.type` this handler answers, e.g. `github-app`. */
+  type: string
+  /** Builds the git arguments; may mint a short-lived token (async). */
+  args(request: GitAuthRequest): string[] | Promise<string[]>
+}
+
 interface ProviderEntry {
   descriptor: CredentialProvider
   declaration: ProviderDeclaration
@@ -176,6 +205,8 @@ export abstract class CredentialsService {
   declarations = new Map<string, ProviderDeclaration>()
   implementations = new Map<string, ProviderEntry>()
   enabledIds: string[] | undefined
+  /** Git auth strategies by `auth.type`, registered by PROVIDER plugins. */
+  gitAuthHandlers = new Map<string, GitAuthHandler>()
 
   /** Resolves a reference through the enabled providers (first answering wins). */
   abstract resolve(ref: CredentialRef): Promise<CredentialResolution | undefined>
@@ -237,6 +268,33 @@ export abstract class CredentialsService {
     return () => {
       if (this.implementations.get(descriptor.id) === entry) this.implementations.delete(descriptor.id)
     }
+  }
+
+  /**
+   * Registers a git auth strategy for one `auth.type` (`github-app`, ...). A
+   * plugin implements the backend; the host only dispatches by type. Returns the
+   * disposer.
+   */
+  registerGitAuth(handler: GitAuthHandler): () => void {
+    const type = typeof handler?.type === 'string' ? handler.type.trim() : ''
+    if (type.length === 0) throw new Error('credentials: a git auth handler needs a non-empty type')
+    if (typeof handler.args !== 'function') throw new Error(`credentials: git auth handler '${type}' must implement args()`)
+    if (type === 'token') throw new Error("credentials: the 'token' git auth type is built in and must not be registered")
+    if (this.gitAuthHandlers.has(type)) throw new Error(`credentials: a git auth handler for '${type}' is already registered`)
+    this.gitAuthHandlers.set(type, handler)
+    return () => {
+      if (this.gitAuthHandlers.get(type) === handler) this.gitAuthHandlers.delete(type)
+    }
+  }
+
+  /** The git auth strategy registered for one `auth.type`, or undefined. */
+  gitAuth(type: string): GitAuthHandler | undefined {
+    return this.gitAuthHandlers.get(type)
+  }
+
+  /** The `auth.type`s a plugin registered a strategy for (sorted). */
+  gitAuthTypes(): string[] {
+    return [...this.gitAuthHandlers.keys()].sort()
   }
 
   /** Fixes the enabled providers and their precedence order (configuration only). */
@@ -381,6 +439,10 @@ export interface CredentialsLike extends CredentialConsumer {
   register(descriptor: CredentialProvider): () => void
   providers(): ProviderInfo[]
   setEnabled?(ids?: readonly string[]): void
+  /** Registers a git auth strategy for one `auth.type` (plugin side). */
+  registerGitAuth?(handler: GitAuthHandler): () => void
+  /** The git auth strategy registered for one `auth.type`, when the host offers it. */
+  gitAuth?(type: string): GitAuthHandler | undefined
 }
 
 /**

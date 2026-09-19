@@ -60,7 +60,7 @@ function makeContext(totp: Record<string, unknown>): { ctx: unknown; tools: Map<
   const tools = new Map<string, ToolDef>()
   const ctx = {
     totp,
-    workbench: {
+    tools: {
       registerTool(def: ToolDef): () => void {
         tools.set(def.name, def)
         return () => tools.delete(def.name)

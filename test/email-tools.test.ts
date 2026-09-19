@@ -94,7 +94,7 @@ function makeContext(email: Record<string, unknown>): { ctx: unknown; tools: Map
     get(name: string): unknown {
       return name === 'email' ? email : undefined
     },
-    workbench: {
+    tools: {
       registerTool(def: ToolDef): () => void {
         tools.set(def.name, def)
         return () => tools.delete(def.name)

@@ -304,27 +304,30 @@ class FakeRenderer implements Renderer {
 }
 
 interface FakeCtx {
-  workbench: { registerTool(def: RegisteredTool): () => void }
+  // The tools@1 service (Definition in definitions/tools.ts, provided by the
+  // external `tools-impl` plugin): a consumer registers through `ctx.tools`.
+  // `registered` is the tool list this test double records.
+  tools: { registerTool(def: RegisteredTool): () => void }
   effect(callback: () => () => void): void
-  tools: RegisteredTool[]
+  registered: RegisteredTool[]
 }
 
 function makeCtx(): FakeCtx {
-  const tools: RegisteredTool[] = []
+  const registered: RegisteredTool[] = []
   return {
-    workbench: {
+    tools: {
       registerTool: (def) => {
-        tools.push(def)
+        registered.push(def)
         return () => {
-          const index = tools.indexOf(def)
-          if (index >= 0) tools.splice(index, 1)
+          const index = registered.indexOf(def)
+          if (index >= 0) registered.splice(index, 1)
         }
       },
     },
     effect: (callback) => {
       callback()
     },
-    tools,
+    registered,
   }
 }
 
@@ -337,7 +340,7 @@ function boot(renderer: Renderer, config: Record<string, unknown> = {}): { ctx: 
   return {
     ctx,
     tool: (name: string) => {
-      const found = ctx.tools.find((tool) => tool.name === name)
+      const found = ctx.registered.find((tool) => tool.name === name)
       assert.ok(found !== undefined, `tool '${name}' is registered`)
       return found
     },
@@ -365,7 +368,7 @@ async function rejection(value: unknown): Promise<unknown> {
 
 test('tools: both tools register with real schemas and the owning plugin name', () => {
   const { ctx, tool } = boot(new FakeRenderer(FIXTURE_HTML))
-  assert.deepEqual(ctx.tools.map((entry) => entry.name), ['page read', 'page map'])
+  assert.deepEqual(ctx.registered.map((entry) => entry.name), ['page read', 'page map'])
   const read = tool('page read')
   assert.equal(read.parameters?.url?.required, true)
   assert.equal(read.parameters?.url?.type, 'string')

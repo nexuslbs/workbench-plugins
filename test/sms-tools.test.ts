@@ -98,7 +98,7 @@ function makeContext(sms: Record<string, unknown>): { ctx: unknown; tools: Map<s
   const tools = new Map<string, ToolDef>()
   const ctx = {
     sms,
-    workbench: {
+    tools: {
       registerTool(def: ToolDef): () => void {
         tools.set(def.name, def)
         return () => tools.delete(def.name)

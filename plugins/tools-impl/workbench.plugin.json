@@ -1,0 +1,13 @@
+{
+  "name": "tools-impl",
+  "version": "0.1.0",
+  "description": "The tools@1 PROVIDER `registry`: owns the named-tool registry, the /api/tools* HTTP seams and the `workbench tools` / `workbench tool` commands. The core ships no tool module at all.",
+  "entry": "index.ts",
+  "capabilities": [{ "id": "tools", "version": 1, "provider": "registry" }],
+  "config": {
+    "type": "object",
+    "properties": {
+      "log": { "type": "boolean", "description": "Log the registered tool count at load (default true)" }
+    }
+  }
+}

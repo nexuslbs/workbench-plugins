@@ -22,6 +22,10 @@
 //   web.ts              `web@1`      - the web seam (routes/assets/pages); moved
 //                       here from the CORE in v0.0.3 (the core ships no web
 //                       module at all), served by the provider `plugins/web-impl`
+//   tools.ts            `tools@1`    - the tool registry (name + parameter
+//                       schema + handler); moved here from the CORE in v0.0.4
+//                       (the core ships no tool module and no /api/tools route),
+//                       served by the provider `plugins/tools-impl`
 export * from './support.ts'
 export * from './shell.ts'
 export * from './ssh.ts'
@@ -31,3 +35,4 @@ export * from './general-service.ts'
 export * from './himalaya.ts'
 export * from './email.ts'
 export * from './web.ts'
+export * from './tools.ts'

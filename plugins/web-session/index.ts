@@ -43,7 +43,7 @@ interface ToolParameter {
 
 type ToolParameters = Record<string, ToolParameter>
 
-interface WorkbenchLike {
+interface ToolsLike {
   registerTool(def: {
     name: string
     description?: string
@@ -57,7 +57,7 @@ interface CredentialsLike {
 }
 
 interface PluginContext {
-  workbench: WorkbenchLike
+  tools: ToolsLike
   credentials?: CredentialsLike
   effect(callback: () => () => void): void
 }
@@ -140,7 +140,7 @@ export function apply(ctx: PluginContext, config: WebSessionConfig = {}, deps: W
     }
   }
   const manager = new SessionManager(resolved, resolveCredential, deps)
-  const unregister = ctx.workbench.registerTool({
+  const unregister = ctx.tools.registerTool({
     name: 'session',
     description:
       'browser session by site label: one action enum (open|act|read|close) with persisted logins, change DELTAS after act, selector-scoped reads (CSS/XPath/role+name) and direct JSON endpoint calls (read {api:"list"})',
@@ -167,4 +167,4 @@ export function apply(ctx: PluginContext, config: WebSessionConfig = {}, deps: W
   })
 }
 
-export default { name, inject: ['credentials', 'workbench'], apply }
+export default { name, inject: ['credentials', 'tools'], apply }
