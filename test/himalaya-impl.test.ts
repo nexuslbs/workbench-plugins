@@ -186,7 +186,9 @@ test('send evidence: the -a flag lands in the SUBCOMMAND option list of a heredo
   // `buildRunArgv` must insert the account flag AFTER `message send` and leave
   // the multiline body untouched, so the target shell feeds himalaya on STDIN.
   const raw = 'From: hermes@nexuslbs.org\r\nTo: hermes@nexuslbs.org\r\nSubject: s\r\n\r\nb'
-  const fragment = ['message', 'send', "<<'WB_HIMALAYA_MESSAGE_EOF'", raw, 'WB_HIMALAYA_MESSAGE_EOF'].join('\n')
+  // EXACTLY the fragment `sendArgv()` builds: the redirect stays on the command
+  // line, the raw message and the delimiter go on their own STDIN lines.
+  const fragment = `message send <<'WB_HIMALAYA_MESSAGE_EOF'\n${raw}\nWB_HIMALAYA_MESSAGE_EOF`
   const line = buildRunArgv({ binary: 'himalaya', account: 'hostinger', args: fragment })
   assert.equal(line.split('\n')[0], "himalaya message send -a hostinger <<'WB_HIMALAYA_MESSAGE_EOF'")
   assert.ok(line.includes('From: hermes@nexuslbs.org'))

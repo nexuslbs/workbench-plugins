@@ -150,7 +150,7 @@ export function sendArgv(raw: string): string {
   // reads the same message from STDIN. A quoted heredoc is the portable way for
   // the TARGET shell (sh/ash, no bashisms) to feed that stdin: the operator's
   // message never becomes a shell word, so no split/glob/expansion can happen.
-  return ['message', 'send', `<<'${SEND_HEREDOC}'`, raw, SEND_HEREDOC].join('\n')
+  return `message send <<'${SEND_HEREDOC}'\n${raw}\n${SEND_HEREDOC}`
 }
 
 /**
