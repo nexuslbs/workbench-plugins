@@ -25,7 +25,7 @@ export const PAGE_ID = 'plugin-manager'
 export const API_BASE = `/api/${PAGE_ID}`
 
 /** Every action the manager exposes (one per loader mutation, plus compose). */
-export const ACTIONS = ['load', 'unload', 'reload', 'retry', 'enable', 'disable', 'install', 'uninstall', 'compose'] as const
+export const ACTIONS = ['load', 'unload', 'reload', 'retry', 'enable', 'disable', 'install', 'uninstall', 'compose', 'reconcile'] as const
 export type ActionName = (typeof ACTIONS)[number]
 
 // ---------------------------------------------------------------- seam types
@@ -119,6 +119,18 @@ interface HostActionResult {
   message: string
 }
 
+/**
+ * The loader's RECONCILE report: the plain action result PLUS the per-plugin
+ * desired-vs-live delta, so the page can show which row was loaded, unloaded,
+ * reloaded, deferred or failed instead of claiming a convergence.
+ */
+interface HostReconcileReport extends HostActionResult {
+  changes: { name: string; desired: boolean; loaded: boolean; action: string; reason: string; error?: string }[]
+  deferred: string[]
+  errors: string[]
+  loaded: number
+}
+
 interface HostApi {
   inventory(): HostInventory
   configFilePath(): string | undefined
@@ -131,6 +143,12 @@ interface HostApi {
   disable(name: string): Promise<HostActionResult>
   install(spec: SourceSpec): Promise<HostActionResult>
   uninstall(id: string): Promise<HostActionResult>
+  /**
+   * Applies config-file edits to the RUNNING process: diff the desired
+   * `plugins:` roster against the live tree and apply only the delta. Needs NO
+   * target - it operates on the whole roster.
+   */
+  reconcile(): Promise<HostReconcileReport>
 }
 
 interface ConfigPatch {
@@ -231,6 +249,14 @@ export function apply(ctx: PluginContext, config: PluginManagerConfig = {}): voi
         }
         const target = typeof body?.target === 'string' ? body.target.trim() : ''
         const host = ctx.workbench.host()
+
+        // `reconcile` operates on the WHOLE `plugins:` roster, so it needs no
+        // target: a config-file edit reaches the RUNNING process here (load /
+        // unload / reload / park are applied as one delta).
+        if (action === 'reconcile') {
+          const report = await host.reconcile()
+          return json({ ...report, state: host.inventory() }, report.ok ? 200 : 409)
+        }
 
         if (action === 'install') {
           const source = body?.source

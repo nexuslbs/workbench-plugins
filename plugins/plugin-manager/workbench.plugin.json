@@ -1,7 +1,7 @@
 {
   "name": "plugin-manager",
   "version": "0.1.0",
-  "description": "Web UI: install, enable, disable, retry and compose plugins through the loader API",
+  "description": "Web UI: install, enable, disable, retry and compose plugins through the loader API, and reconcile the config roster against the live tree",
   "entry": "index.ts",
   "capabilities": ["web:page:plugin-manager"],
   "config": {

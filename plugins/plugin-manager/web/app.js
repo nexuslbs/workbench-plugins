@@ -1,8 +1,10 @@
 /**
  * plugin-manager page module: one row per plugin with the loader actions, plus
- * an install form. Every action POSTs to /api/plugin-manager/action and prints
- * the RAW loader response (ok, message, persisted, before -> after) so the
- * state change is visible instead of claimed.
+ * a "reconcile" button that applies a config-file edit to the RUNNING process
+ * and an install form. Every action POSTs to /api/plugin-manager/action and
+ * prints the RAW loader response (ok, message, persisted, before -> after,
+ * and for reconcile the per-plugin delta) so the state change is visible
+ * instead of claimed.
  */
 const API = '/api/plugin-manager'
 
@@ -82,13 +84,29 @@ export async function mount(root, { api }) {
       `\n-> status ${result.ok ? 'ok' : 'error'}: ${result.message}` +
       `\n   persisted: ${result.persisted}` +
       `\n   before: ${before.join(', ')}` +
-      `\n   after:  ${after.join(', ')}`
+      `\n   after:  ${after.join(', ')}` +
+      (Array.isArray(result.changes)
+        ? `\n   delta:  ${result.changes.map((c) => `${c.name}=${c.action}`).join(', ') || '(empty: the roster already matches)'}`
+        : '')
     try {
       await refresh()
     } catch (error) {
       status.textContent = `refresh failed: ${error && error.message ? error.message : error}`
     }
   }
+
+  const reconcile = el('form')
+  reconcile.appendChild(el('h2', undefined, 'Apply config changes'))
+  reconcile.appendChild(
+    el('p', 'muted', 'Diff the desired "plugins:" roster in the config file against the live tree and apply only the delta (load / unload / reload), without restarting the process.'),
+  )
+  const reconcileButton = el('button', undefined, 'reconcile')
+  reconcileButton.onclick = (event) => {
+    event.preventDefault()
+    void act('reconcile')
+    return false
+  }
+  reconcile.appendChild(reconcileButton)
 
   const install = el('form')
   install.appendChild(el('h2', undefined, 'Install a source'))
@@ -121,6 +139,7 @@ export async function mount(root, { api }) {
   install.appendChild(submit)
 
   root.appendChild(tableBox)
+  root.appendChild(reconcile)
   root.appendChild(install)
   root.appendChild(el('h2', undefined, 'Raw loader response'))
   root.appendChild(output)
