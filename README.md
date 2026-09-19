@@ -91,6 +91,8 @@ the plugins of this checkout plus the Web UI plugins (`plugin-inventory`,
 | `hello-otherworld` | `command:hello otherworld` | `Hello Otherworld` |
 | `credentials-stub` | `credentials:vault` | example credential provider |
 | `hello-tool` | `tool:hello greet` | by-name tool over HTTP: `POST /api/tools/hello%20greet`, `POST /api/tool/call` (core contract, section 4d) |
+| `email-himalaya` | `email:himalaya` | email PROVIDER: implements `email@1` on the himalaya CLI - multiple accounts plus a configured default account; loads as NOT CONFIGURED without accounts (core contract, section 4e) |
+| `email-tools` | `tool:email accounts`, `tool:email list`, `tool:email get`, `tool:email code` | email CONSUMER: the four operator tools, provider agnostic (it only touches `ctx.email`) |
 
 ### Web UI plugins (M1-M4)
 
@@ -125,10 +127,20 @@ NOT a model/agent feature: the callers are plugins and operators. The contract i
 | Plugin | Tool | Parameters | Routes |
 | --- | --- | --- | --- |
 | `hello-tool` | `hello greet` | `name` (string, required), `greeting` (string), `times` (integer) | `GET /api/tools`, `POST /api/tools/hello%20greet`, `POST /api/tool/call` |
+| `email-tools` | `email accounts` | `format` (string, enum `labels` / `full`) | same seam: `GET /api/tools`, `POST /api/tools/email%20accounts`, `POST /api/tool/call` |
+| `email-tools` | `email list` | `account` (string), `folder` (string), `limit` (integer), `unreadOnly` (boolean), `since` (string) | same seam |
+| `email-tools` | `email get` | `id` (string, required), `account` (string), `format` (string, enum `text` / `markdown` / `raw`) | same seam |
+| `email-tools` | `email code` | `account` (string), `id` (string), `query` (string), `pattern` (string), `maxAgeSeconds` (integer) | same seam |
 
 The smoke for this end-to-end (the plugin registers a tool, the core lists it
 with its schema, invokes it, validates the body and returns 400/404/500 without
 restarting) is `test/hello-tool.test.ts` here plus the core's `test/tools.test.ts`.
+
+The email capability seam (core contract, section 4e) is covered by
+`test/email-himalaya.test.ts` (the provider driven against a stub `himalaya`
+executable: accounts, list, get, credential-in-env-only, missing CLI, failing
+and unparseable output) and `test/email-tools.test.ts` (the four tools, their
+schemas, the default-account resolution and a provider swap).
 
 ## Develop / verify
 

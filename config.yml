@@ -100,6 +100,27 @@ plugins:
   # real clone path exercised in dev.
   git-source-demo: {}
 
+  # The EMAIL capability (core docs/PLUGIN-CONTRACT.md 4e): the PROVIDER below
+  # implements `email@1` on top of the himalaya CLI, the CONSUMER exposes it as
+  # the tools 'email accounts', 'email list', 'email get' and 'email code'.
+  # The accounts are placeholders: himalaya itself must be installed AND those
+  # mailboxes configured with `himalaya account configure <name>` (see
+  # plugins/email-himalaya/README.md). `credential` is a NAME, resolved at call
+  # time through ctx.credentials; no value is ever written here.
+  email-himalaya:
+    defaultAccount: personal
+    accounts:
+      personal:
+        address: me@example.com
+        accountName: personal
+        credential: EMAIL_PERSONAL_PASSWORD
+      work:
+        address: me@work.example
+        accountName: work
+  email-tools:
+    defaultListLimit: 10
+    maxListLimit: 50
+
 web:
   enabled: true
   # Inside the compose service the listener must not bind the container's

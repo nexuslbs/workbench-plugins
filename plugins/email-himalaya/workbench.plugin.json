@@ -1,0 +1,24 @@
+{
+  "name": "email-himalaya",
+  "version": "0.1.0",
+  "description": "External email provider: implements email@1 on top of the himalaya mail CLI (multiple accounts, a configurable default account, verification-code extraction through the definition)",
+  "entry": "index.ts",
+  "capabilities": [{ "id": "email", "version": 1, "provider": "himalaya" }],
+  "config": {
+    "type": "object",
+    "description": "No `accounts` is a valid state: the plugin then loads and reports 'not configured' without registering the provider.",
+    "properties": {
+      "defaultAccount": {
+        "type": "string",
+        "description": "Account label used when a call passes no account; default: the first configured account"
+      },
+      "accounts": {
+        "type": "object",
+        "description": "Accounts by label: { address?, accountName?, credential?, folder? }. `accountName` is the account name in himalaya's own config (default: the label); `credential` is a credential NAME resolved at call time, never a value"
+      },
+      "binary": { "type": "string", "default": "himalaya", "description": "himalaya executable, resolved on PATH by default" },
+      "timeoutMs": { "type": "number", "default": 15000, "description": "Per-invocation timeout in milliseconds" },
+      "maxOutputBytes": { "type": "number", "default": 4194304, "description": "Cap of one command's output in bytes" }
+    }
+  }
+}
