@@ -107,6 +107,31 @@ to load one):
 | `events-subscriber-a` | `events:subscriber events-demo/{...}` | SUBSCRIBER: `on` / `once` per mode, one listener that throws on purpose; `GET /api/events/subscriber-a` |
 | `events-subscriber-b` | `events:subscriber events-demo/{...}` | SUBSCRIBER that OWNS EXTERNAL RESOURCES (TCP server, interval, child process) released by `effect()`; `GET /api/events/subscriber-b` |
 
+### Logger plugins (the logger SERVICE + one plugin per SINK)
+
+Logging is a SERVICE plus EXPORTER plugins: never `console.log` sprinkled
+around, never a monolithic logger plugin. The core hosts cordis' logger service
+(`ctx.logger(name)` yields `{error,warn,info,debug}`, `ctx.logger.exporter(sink)`
+mounts an output) and ships NO exporter, formatter or `console.*` call of its
+own, so with no sink rostered the process emits NO log line at all. A plugin
+always logs through the service (`loggerOf(ctx, name)` from
+`definitions/logger.ts`) and prints nothing itself. Contract, Message shape,
+level semantics and how to add a sink: `docs/LOGGING.md`.
+
+| Plugin | Capability | Output |
+| --- | --- | --- |
+| `logger-console` | `logger:console` | human-readable lines: `error`/`warn` to stderr, `info`/`debug` to stdout; config `{ level, names, colors, maxLength }` |
+| `logger-jsonl` | `logger:jsonl` | ONE JSON object per line (`{sn,ts,name,type,level,args}`) appended to a file, bounded rotation; config `{ level, names, path, maxBytes, maxFiles }` |
+| `logger-ring` | `logger:ring` | bounded in-memory ring published as the `logs` service and readable over the web seam (`GET /api/logs`, `GET /api/logs/tail`, `POST /api/logs/clear`); config `{ level, names, size, path, routes }` |
+| `logger-demo` | `logger:demo` | NOT a sink: the drive surface (`GET /api/logger/demo?count=N&name=<logger>&level=<level>`) used by the docs and the live gates |
+
+Every sink is independently mountable, independently configurable and
+independently disableable, and a failure in one is ISOLATED by the Definition's
+`mountExporter` wrapper (it cannot reach the emitter or the other sinks);
+unloading its plugin removes it, because the mount is a cordis `effect`.
+`test/logger.test.ts` covers the level filter, the Message shape, mount/unmount,
+the throwing-exporter isolation, the JSONL validity and the ring bounds.
+
 ### Web UI plugins (M1-M4)
 
 The browser-based workbench UI is composed **only** of plugins: each one

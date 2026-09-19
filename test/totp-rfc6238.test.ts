@@ -62,16 +62,19 @@ async function boot(config: Config, credentials?: Credentials): Promise<Boot> {
     effect(callback: () => () => void): void {
       callback()
     },
+    // The logger SERVICE the core hosts (definitions/logger.ts): the plugin
+    // reports through `loggerOf(ctx, name)` now, so the test provides the
+    // service instead of hijacking `console.error`. The NAME is the logger's
+    // (no inline prefix in the plugin message any more), so the capture keeps
+    // it: a wrongly named logger fails the assertions below.
+    logger: (name?: string) => ({
+      error: (...args: unknown[]) => logs.push(`${name ?? 'default'}: ${args.map((arg) => String(arg)).join(' ')}`),
+      warn: (...args: unknown[]) => logs.push(`${name ?? 'default'}: ${args.map((arg) => String(arg)).join(' ')}`),
+      info: () => {},
+      debug: () => {},
+    }),
   }
-  const original = console.error
-  console.error = (...args: unknown[]) => {
-    logs.push(args.map((arg) => String(arg)).join(' '))
-  }
-  try {
-    await apply(ctx as never, config)
-  } finally {
-    console.error = original
-  }
+  await apply(ctx as never, config)
   return { registered, provider: registered[0], logs }
 }
 

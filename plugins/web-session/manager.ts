@@ -15,6 +15,7 @@
 // It talks to the browser through the small `SessionDriver` interface, so the
 // dispatch/delta/budget/error logic is unit-tested without chromium, and it
 // reaches the shared chromium through `PlaywrightDriver`.
+import type { LoggerHandle } from '../../definitions/logger.ts'
 import { str } from '../web-page/config.ts'
 import { extractMain, renderOutline } from '../web-page/extract.ts'
 import { messageOf } from '../web-page/errors.ts'
@@ -44,7 +45,12 @@ const FORMATS = ['text', 'markdown', 'html', 'json']
 export interface SessionDeps {
   driver?: SessionDriver
   now?: () => number
+  /** The typed logger SERVICE handle the plugin passes in (docs/LOGGING.md). */
+  logger?: LoggerHandle
 }
+
+/** The handle a manager built without a host logger gets: it prints NOTHING. */
+const SILENT_LOGGER: LoggerHandle = { error: () => {}, warn: () => {}, info: () => {}, debug: () => {} }
 
 export type CredentialResolver = (name: string) => Promise<string | undefined>
 
@@ -132,10 +138,18 @@ export class SessionManager {
   private readonly now: () => number
   private readonly live = new Map<string, LiveSession>()
 
+  /**
+   * The typed logger SERVICE handle (docs/LOGGING.md): the manager PRINTS
+   * nothing itself, every operator-visible line is a Message through the
+   * service, and a test that builds the manager without one gets silence.
+   */
+  private readonly log: LoggerHandle
+
   constructor(config: ResolvedConfig, resolveCredential: CredentialResolver, deps: SessionDeps = {}) {
     this.config = config
     this.resolveCredential = resolveCredential
     this.now = deps.now ?? ((): number => Date.now())
+    this.log = deps.logger ?? SILENT_LOGGER
     if (deps.driver !== undefined) {
       this.driver = deps.driver
     } else {
@@ -638,8 +652,8 @@ export class SessionManager {
     const context = await this.driver.openContext(site, usable ? { storageState: stored.state } : {})
     // Operator-visible, secret-free: WHICH state file was used, and whether it
     // was usable (an unusable state is what triggers the re-login below).
-    console.log(
-      `[web-session] site '${label}': ${usable ? 'storage state restored from' : 'no usable storage state at'} ${site.stateFile}`,
+    this.log.info(
+      `site '${label}': ${usable ? 'storage state restored from' : 'no usable storage state at'} ${site.stateFile}`,
     )
     const live: LiveSession = {
       label,
@@ -822,8 +836,8 @@ export class SessionManager {
     live.logins += 1
     // Credential NAMES only: the resolved VALUES never reach a log line, a tool
     // response or the state file (the state file holds cookies, not passwords).
-    console.log(
-      `[web-session] site '${live.label}': session was expired, re-login performed from credentials [${login.fields
+    this.log.info(
+      `site '${live.label}': session was expired, re-login performed from credentials [${login.fields
         .map((field) => field.credential ?? `literal:${field.name}`)
         .join(', ')}]`,
     )

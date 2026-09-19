@@ -24,6 +24,7 @@
 //     declaration at apply time.
 import fs from 'node:fs'
 import path from 'node:path'
+import type { LoggerServiceLike } from './logger.ts'
 
 /** A credential reference: a NAME (plus an optional scope), never a value. */
 export interface CredentialRef {
@@ -51,12 +52,13 @@ export interface ServiceContext {
   effect?(callback: () => () => void): unknown
   /** The credentials capability, when the deployment has it. */
   credentials?: CredentialsLike
-  /** The host logger, when the deployment has one (every call optional). */
-  logger?: {
-    info?(...args: unknown[]): void
-    warn?(...args: unknown[]): void
-    debug?(...args: unknown[]): void
-  }
+  /**
+   * The logger SERVICE (`logger@1`, definitions/logger.ts). The host installs
+   * it on every context (cordis ships the service), so it is normally present;
+   * a plugin never calls it directly - it uses `loggerOf(ctx, name)` for
+   * emitting and `mountExporter(...)` for sinking, both from that module.
+   */
+  logger?: LoggerServiceLike
   [key: string]: unknown
 }
 

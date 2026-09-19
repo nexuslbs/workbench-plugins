@@ -190,11 +190,23 @@ export interface EventsHostContext {
   effect?(callback: () => unknown): unknown
   /** cordis' EventsService, read structurally for the host hook count (optional). */
   events?: { _hooks?: Record<string, unknown[]> }
+  /**
+   * The logger SERVICE (`logger@1`, see definitions/logger.ts and
+   * docs/LOGGING.md): the HOST installs it on the context, `ctx.logger(name)`
+   * yields the levelled handle a consumer calls and `ctx.logger.exporter(sink)`
+   * mounts one exporter PLUGIN's sink. Read STRUCTURALLY, like the rest of this
+   * interface (this module imports nothing). A host without the service produces
+   * NO output at all - the model is "no exporter mounted, no output", so there is
+   * deliberately no console fallback anywhere.
+   */
   logger?: {
-    info?(...args: unknown[]): void
-    warn?(...args: unknown[]): void
-    error?(...args: unknown[]): void
-    debug?(...args: unknown[]): void
+    (name?: string): {
+      error(...args: unknown[]): void
+      warn(...args: unknown[]): void
+      info(...args: unknown[]): void
+      debug(...args: unknown[]): void
+    }
+    exporter?(exporter: unknown): unknown
   }
   [key: string]: unknown
 }

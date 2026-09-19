@@ -1,0 +1,26 @@
+{
+  "name": "logger-console",
+  "version": "0.1.0",
+  "description": "The logger@1 SINK `console`: human-readable log lines on stdout (info/debug) and stderr (error/warn). One exporter, no other job; without it the deployment produces no log output at all.",
+  "entry": "index.ts",
+  "execution": "none",
+  "capabilities": [{ "id": "logger", "version": 1, "provider": "console" }],
+  "policies": {
+    "logger": { "provide": "logger@1" }
+  },
+  "config": {
+    "type": "object",
+    "properties": {
+      "level": {
+        "description": "Threshold: error | warn | info | debug (name or ordinal). Default info.",
+        "type": ["string", "number"]
+      },
+      "names": {
+        "description": "Per-logger-name thresholds, e.g. { \"web-session\": \"debug\" }",
+        "type": "object"
+      },
+      "colors": { "description": "ANSI colours on the rendered line (default false)", "type": "boolean" },
+      "maxLength": { "description": "Characters kept per rendered line (default 10240)", "type": "number" }
+    }
+  }
+}

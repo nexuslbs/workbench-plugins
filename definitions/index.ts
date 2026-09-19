@@ -26,7 +26,13 @@
 //                       schema + handler); moved here from the CORE in v0.0.4
 //                       (the core ships no tool module and no /api/tools route),
 //                       served by the provider `plugins/tools-impl`
+//   logger.ts           `logger@1`  - the logger SERVICE contract (the core
+//                       hosts cordis `ctx.logger`; no sink of its own) plus the
+//                       EXPORTER interface EVERY output sink implements: one
+//                       sink per plugin (`logger-console`, `logger-jsonl`,
+//                       `logger-ring`, ...), never a monolithic logger plugin
 export * from './support.ts'
+export * from './logger.ts'
 export * from './shell.ts'
 export * from './ssh.ts'
 export * from './docker.ts'

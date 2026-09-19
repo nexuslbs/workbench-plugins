@@ -37,6 +37,7 @@
 // error (or a `SmsNotFoundError`/`SmsNumberNotConfiguredError`-shaped one), never
 // a crash and never a hang.
 
+import { loggerOf, type LoggerServiceLike } from '../../definitions/logger.ts'
 export const name = 'sms-twilio'
 
 /** Provider id this plugin registers; it must match the manifest capability. */
@@ -157,6 +158,8 @@ interface PluginContext {
   sms: { register(provider: ProviderLike): () => void }
   credentials?: CredentialsLike
   effect(callback: () => () => void): void
+  /** The logger SERVICE the core hosts (definitions/logger.ts, docs/LOGGING.md). */
+  logger?: LoggerServiceLike
 }
 
 /**
@@ -367,8 +370,8 @@ function backendDetail(payload: unknown): string {
 export async function apply(ctx: PluginContext, config: Config = {}): Promise<void> {
   const entries = normalizeNumbers(config)
   if (entries.length === 0) {
-    console.error(
-      "sms-twilio: not configured (no 'numbers' in plugins.sms-twilio) - provider 'twilio' is declared by the " +
+    loggerOf(ctx, name).error(
+      "not configured (no 'numbers' in plugins.sms-twilio) - provider 'twilio' is declared by the " +
         "manifest and registers nothing; add at least one number, e.g. " +
         'numbers: { personal: { number: "+15551234567", accountSid: ACxxxx, authToken: ${cred:TWILIO_PERSONAL_TOKEN} } }',
     )
@@ -539,7 +542,7 @@ export async function apply(ctx: PluginContext, config: Config = {}): Promise<vo
     } catch (error) {
       runtime.configured = false
       runtime.reason = messageOf(error)
-      console.error(`sms-twilio: ${runtime.reason}`)
+      loggerOf(ctx, name).error(runtime.reason)
     }
   }
 

@@ -12,6 +12,7 @@
 // AWAITED (the async socket close is awaited before the unload finishes).
 //
 // See `docs/EVENTS.md` for the copy-pasteable form of this file.
+import { loggerOf, reportOnce } from '../../definitions/logger.ts'
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import net from 'node:net'
@@ -70,11 +71,6 @@ function json(body: unknown, status = 200): WebResponse {
   return { status, contentType: 'application/json; charset=utf-8', body: `${JSON.stringify(body, null, 2)}\n` }
 }
 
-/** stdout: the raw evidence the live replay greps for. */
-const consoleLog = (message: string): void => {
-  console.log(`events-subscriber-b: ${message}`)
-}
-
 function applyInner(ctx: PluginContext, config: Config = {}): void {
   // NOTE: capture the SERVICE object, never the METHOD. `const sink = ctx.workbench?.log`
   // detaches the function from its receiver, and a host service method that uses
@@ -84,7 +80,9 @@ function applyInner(ctx: PluginContext, config: Config = {}): void {
   // (measured, thread 2529; see docs/EVENTS.md "Plugin rules").
   const sink = ctx.workbench
   const log = (message: string): void => {
-    consoleLog(message)
+    // The logger SERVICE (docs/LOGGING.md): name + level, no console, and NO
+    // output at all until a deployment mounts an exporter plugin.
+    loggerOf(ctx, name).info(message)
     sink?.log?.(`events-subscriber-b: ${message}`)
   }
   const port = config.port ?? 12398
@@ -210,7 +208,11 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
     applyInner(ctx, config)
   } catch (error) {
     const detail = error instanceof Error ? (error.stack ?? error.message) : String(error)
-    console.error(`${name}: apply() FAILED: ${detail}`)
+    // The loader reports a plugin whose `apply()` threw as LOADED, so the loud
+    // failure this wrapper produces must NOT depend on a mounted exporter: it
+    // uses the one-shot reporter of the logging subsystem itself (the same
+    // deliberate stderr line as a broken sink, docs/LOGGING.md "Exceptions").
+    reportOnce(`apply:${name}`, `plugin '${name}' apply() FAILED: ${detail}`)
     throw error
   }
 }

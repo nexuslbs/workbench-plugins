@@ -9,6 +9,7 @@
 // `events-subscriber-b`.
 //
 // See `definitions/events.ts` (the contract) and `docs/EVENTS.md` (the guide).
+import { loggerOf } from '../../definitions/logger.ts'
 import {
   createEvents,
   eventsRegistry,
@@ -70,17 +71,21 @@ function json(body: unknown, status = 200): WebResponse {
   return { status, contentType: 'application/json; charset=utf-8', body: `${JSON.stringify(body, null, 2)}\n` }
 }
 
-const log = (message: string): void => {
-  console.log(`events-demo: ${message}`)
-}
-
 export function apply(ctx: PluginContext, config: Config = {}): void {
+  // The logger SERVICE handle of this plugin (docs/LOGGING.md): name + level per
+  // call and NO console anywhere - the process prints nothing until a deployment
+  // mounts an exporter plugin.
+  const log = (message: string): void => {
+    loggerOf(ctx, name).info(message)
+  }
   const basePath = config.path ?? '/api/events/demo'
   // One scope for this plugin: every subscription and every effect below dies
   // with it when the plugin is unloaded (see docs/EVENTS.md).
   const events = createEvents(ctx, { namespace: name })
   const logger: EventLogger = (level, message, meta) => {
-    console.log(`events-demo[${level}]: ${message}${meta === undefined ? '' : ` ${JSON.stringify(meta)}`}`)
+    // The event lib's diagnostic channel, routed through the logger SERVICE
+    // (docs/LOGGING.md): name + level, never console.
+    loggerOf(ctx, name)[level](message, meta ?? {})
   }
 
   const state = {

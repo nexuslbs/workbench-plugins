@@ -90,6 +90,28 @@ plugins:
   # repository): a consumer registers through `ctx.tools`.
   tools-impl: {}
 
+
+  # THE LOGGER SINKS (`logger@1`, plugins repo docs/LOGGING.md). The core hosts
+  # the cordis logger SERVICE (`ctx.logger`, which EVERY context already
+  # installs) and ships NO exporter, no formatter and no console.* call of its
+  # own: with no sink rostered the process prints NO log line at all - that is
+  # the model, not a bug. Every output is a SEPARATE plugin with its OWN row
+  # (one sink = one plugin, never a monolithic logger plugin): drop a row (or
+  # set `disabled: true`) and only that sink disappears while every plugin keeps
+  # logging through the service.
+  logger-console:
+    level: info
+  logger-jsonl:
+    level: info
+    path: /opt/workspace/workbench-plugins/.workbench/logs/workbench.jsonl
+  # The third sink shape: a bounded in-memory ring published as the `logs`
+  # service and readable over the web seam (GET /api/logs, /api/logs/tail).
+  logger-ring:
+    level: info
+    size: 500
+  # plugins/logger-demo is NOT a sink: it is the drive surface (`GET
+  # /api/logger/demo?count=N&name=<logger>&level=<level>`). It is left OUT of
+  # this roster on purpose - every gate that needs it writes its own row.
   # Web UI (M1 Plugin Inventory, M2 Plugin Manager, M3 Settings, M4 Cordis UI).
   # The UI is composed ONLY of plugins: they are discovered in the sources above
   # and named here, nothing is hardcoded in the core. Drop a row (or set

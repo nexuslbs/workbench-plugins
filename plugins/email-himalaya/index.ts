@@ -17,6 +17,7 @@
 // NAMES may be declared per account and are resolved through the core
 // `credentials` capability at call time, so this plugin can prove the reference
 // resolves without ever holding - or logging - a value.
+import { loggerOf } from '../../definitions/logger.ts'
 import {
   EMAIL,
   EMAIL_CONTRACT,
@@ -369,9 +370,9 @@ export async function apply(ctx: ServiceContext, config: EmailHimalayaConfig = {
   provideService(ctx, MAIL, service)
   const himalaya = serviceOfHimalaya(ctx)
   const himalayaReady = himalaya !== undefined && himalaya.describe?.()?.startsWith('not configured') !== true
-  ctx.logger?.info?.(
+  loggerOf(ctx, name).info(
     himalayaReady
-      ? `email-himalaya: bound to the himalaya service (${service.describe?.()})`
+      ? `bound to the himalaya service (${service.describe?.()})`
       : "email-himalaya: not configured (the 'himalaya' service is not loaded; it is resolved at call time, never a hard dependency)",
   )
 
@@ -395,9 +396,9 @@ export async function apply(ctx: ServiceContext, config: EmailHimalayaConfig = {
             send: service.send,
           },
         })
-        ctx.logger?.info?.('email-himalaya: also registered with the kernel-hosted email service')
+        loggerOf(ctx, name).info('also registered with the kernel-hosted email service')
       } catch (error) {
-        ctx.logger?.warn?.(`email-himalaya: the kernel email service refused the provider (${messageOf(error)})`)
+        loggerOf(ctx, name).warn(`the kernel email service refused the provider (${messageOf(error)})`)
       }
   }
   void EMAIL

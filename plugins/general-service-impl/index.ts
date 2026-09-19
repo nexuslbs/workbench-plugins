@@ -30,6 +30,7 @@
 // transports that COULD be used, then provides the service. The wait is an
 // ordering hint: a transport that never loads does not block this plugin, it
 // only makes the configs that need it fail with a named error.
+import { loggerOf } from '../../definitions/logger.ts'
 import {
   GENERAL_SERVICE,
   GENERAL_SERVICE_CONTRACT,
@@ -309,14 +310,16 @@ export async function apply(ctx: ServiceContext, config: GeneralServiceImplConfi
   // The report is informational: transports that are not loaded are NOT an error
   // here - only a config that NEEDS them fails, with the missing service named.
   if (report.missing.length > 0) {
-    // The CLI context carries no `logger` service (the core ships none), so the
-    // load-order report must ALSO reach stderr: the boot log is what operators
-    // and the gates read. It stays INFORMATIONAL - a missing transport is not a
-    // failure here, only a config that NEEDS it fails (with the service named).
-    const line =
-      `general-service-impl: loaded after ${report.loaded.length}/${POSSIBLE_SERVICES.length} transports ` +
-      `(missing: ${report.missing.join(', ')}); configs needing a missing transport fail with a named error`
-    console.error(line)
+    // The load-order report goes through the logger SERVICE like every other
+    // runtime line (docs/LOGGING.md): the logger NAME carries the plugin, so a
+    // deployment with NO exporter mounted prints nothing at all - an operator who
+    // wants the boot log mounts `logger-console`. It stays INFORMATIONAL - a
+    // missing transport is not a failure here, only a config that NEEDS it fails
+    // (with the service named).
+    loggerOf(ctx, name).info(
+      `loaded after ${report.loaded.length}/${POSSIBLE_SERVICES.length} transports ` +
+        `(missing: ${report.missing.join(', ')}); configs needing a missing transport fail with a named error`,
+    )
   }
 }
 

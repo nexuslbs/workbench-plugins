@@ -41,7 +41,14 @@ function fakeContext(): { ctx: Record<string, unknown>; provided: Map<string, un
       return value
     },
     get: (name: string) => provided.get(name),
-    logger: { info: (message: string) => logs.push(message) },
+    // The logger SERVICE is a CALLABLE that yields the levelled handle
+    // (definitions/logger.ts): `ctx.logger(name).info(...)`, not an object.
+    logger: (name?: string) => ({
+      error: (...args: unknown[]) => logs.push(args.join(' ')),
+      warn: (...args: unknown[]) => logs.push(args.join(' ')),
+      info: (...args: unknown[]) => logs.push(args.join(' ')),
+      debug: (...args: unknown[]) => logs.push(args.join(' ')),
+    }),
   }
   return { ctx, provided, logs }
 }

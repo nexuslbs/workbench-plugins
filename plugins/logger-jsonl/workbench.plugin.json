@@ -1,0 +1,24 @@
+{
+  "name": "logger-jsonl",
+  "version": "0.1.0",
+  "description": "The logger@1 SINK `jsonl`: one JSON object per line ({sn,ts,name,type,level,args}) in a file, with bounded rotation. Structure instead of prose; never writes a resolved config.",
+  "entry": "index.ts",
+  "execution": "none",
+  "capabilities": [{ "id": "logger", "version": 1, "provider": "jsonl" }],
+  "policies": {
+    "logger": { "provide": "logger@1" }
+  },
+  "config": {
+    "type": "object",
+    "properties": {
+      "level": {
+        "description": "Threshold: error | warn | info | debug (name or ordinal). Default info.",
+        "type": ["string", "number"]
+      },
+      "names": { "description": "Per-logger-name thresholds", "type": "object" },
+      "path": { "description": "File receiving the lines (default .workbench/logs/workbench.jsonl)", "type": "string" },
+      "maxBytes": { "description": "Rotate before a line would exceed this size (0 = never, default 0)", "type": "number" },
+      "maxFiles": { "description": "Rotated files kept as <path>.1, .2, ... (default 3; 0 truncates)", "type": "number" }
+    }
+  }
+}

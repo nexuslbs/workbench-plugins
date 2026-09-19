@@ -34,6 +34,7 @@
 // no TOTP (or no SMS) sets `totp: false` (respectively `sms: false`) in its own
 // row; `definitions/` stay untouched.
 
+import { loggerOf } from '../../definitions/logger.ts'
 import fs from 'node:fs'
 import path from 'node:path'
 import { SMS, SMS_VERSION, Sms } from '../../definitions/sms.ts'
@@ -153,7 +154,7 @@ export function apply(ctx: ServiceContext, config: Config = {}): void {
       } satisfies TotpProviderDeclaration),
     )
     if (config.totpProviders !== undefined) totp.setEnabled(config.totpProviders)
-    ctx.logger?.info?.(`capabilities-impl: provided totp@${TOTP_VERSION} - declared provider(s): ${declared}`)
+    loggerOf(ctx, name).info(`provided totp@${TOTP_VERSION} - declared provider(s): ${declared}`)
   }
 
   if (config.sms !== false) {
@@ -168,7 +169,7 @@ export function apply(ctx: ServiceContext, config: Config = {}): void {
       } satisfies SmsProviderDeclaration),
     )
     if (config.smsProviders !== undefined) sms.setEnabled(config.smsProviders)
-    ctx.logger?.info?.(`capabilities-impl: provided sms@${SMS_VERSION} - declared provider(s): ${declared}`)
+    loggerOf(ctx, name).info(`provided sms@${SMS_VERSION} - declared provider(s): ${declared}`)
   }
 }
 

@@ -29,6 +29,7 @@
 // depend on that alone: every wrapper also carries an `active` flag, so a host
 // that forgot to remove the hook still never calls a listener of an unloaded
 // plugin.
+import { loggerOf } from '../definitions/logger.ts'
 import {
   EVENTS_CONTRACT,
   EventsError,
@@ -275,7 +276,7 @@ interface EffectEntry {
 export interface CreateEventsOptions {
   /** The plugin's namespace, normally its plugin name (`demo`, `events-demo`). */
   namespace: string
-  /** Where caught listener/disposer errors are written (default: host logger, else console). */
+  /** Where caught listener/disposer errors are written (default: the logger SERVICE). */
   logger?: EventLogger
   /** Bound applied to a disposer that does not declare its own (default 5000 ms). */
   disposeTimeoutMs?: number
@@ -809,16 +810,11 @@ async function toDisposers(produced: unknown, label: string): Promise<Disposer[]
 
 function defaultLogger(ctx: EventsHostContext, namespace: string): EventLogger {
   return (level, message, meta) => {
-    const line = `[events:${namespace}] ${message}`
-    const host = ctx.logger
-    const method = level === 'debug' ? host?.debug : level === 'info' ? host?.info : level === 'warn' ? host?.warn : host?.error
-    if (typeof method === 'function') {
-      method.call(host, line, meta ?? {})
-      return
-    }
-    if (level === 'debug') return
-    const sink = level === 'error' || level === 'warn' ? console.error : console.log
-    sink(line, meta ?? {})
+    // The logger SERVICE of the host (docs/LOGGING.md). `loggerOf` is SILENT when
+    // the host exposes no service, which IS the model - no sink mounted, no
+    // output - so there is deliberately NO console fallback on this path, and a
+    // throwing sink stays isolated from the event dispatch below.
+    loggerOf(ctx, namespace)[level](`[events:${namespace}] ${message}`, meta ?? {})
   }
 }
 

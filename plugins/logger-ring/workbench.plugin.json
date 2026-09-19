@@ -1,0 +1,24 @@
+{
+  "name": "logger-ring",
+  "version": "0.1.0",
+  "description": "The logger@1 SINK `ring`: a bounded in-memory ring of the last Messages, published as the `logs` service and readable through GET/POST routes on the web seam (works with no web provider loaded; only the read routes are conditional).",
+  "entry": "index.ts",
+  "execution": "none",
+  "capabilities": [{ "id": "logger", "version": 1, "provider": "ring" }],
+  "policies": {
+    "logger": { "provide": "logger@1" }
+  },
+  "config": {
+    "type": "object",
+    "properties": {
+      "level": {
+        "description": "Threshold: error | warn | info | debug (name or ordinal). Default info.",
+        "type": ["string", "number"]
+      },
+      "names": { "description": "Per-logger-name thresholds", "type": "object" },
+      "size": { "description": "Messages kept in the ring (default 500)", "type": "number" },
+      "path": { "description": "Route base path of the read surface (default /api/logs)", "type": "string" },
+      "routes": { "description": "Register the read routes when the web seam is present (default true)", "type": "boolean" }
+    }
+  }
+}

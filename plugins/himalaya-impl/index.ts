@@ -23,6 +23,7 @@
 // NOT CONFIGURED is a valid state: with no `general` config the plugin loads,
 // logs the reason and provides nothing; a call then answers a structured
 // `not-configured` error. It never appears under `failures`.
+import { loggerOf } from '../../definitions/logger.ts'
 import {
   HIMALAYA,
   HIMALAYA_CONTRACT,
@@ -372,7 +373,7 @@ export async function apply(ctx: ServiceContext, config: HimalayaImplConfig = {}
   assertPolicyDeclared(import.meta.url, { execution: 'remote', capabilities: [HIMALAYA] })
   if (config.general === undefined) {
     provideService(ctx, HIMALAYA, createNotConfiguredService('no `general` transport configured for himalaya'))
-    ctx.logger?.info?.('himalaya-impl: not configured (no `general` config row): calls answer a structured error')
+    loggerOf(ctx, name).info('not configured (no `general` config row): calls answer a structured error')
     return
   }
   // SOFT, BOUNDED ordering hint: the general service is the transport selector.
@@ -389,7 +390,7 @@ export async function apply(ctx: ServiceContext, config: HimalayaImplConfig = {}
       HIMALAYA,
       createNotConfiguredService(`the '${GENERAL_SERVICE}' service is not loaded (enable plugins/general-service-impl)`),
     )
-    console.error(`himalaya-impl: not configured (the '${GENERAL_SERVICE}' service is not loaded); calls answer a structured error`)
+    loggerOf(ctx, name).error(`not configured (the '${GENERAL_SERVICE}' service is not loaded); calls answer a structured error`)
     return
   }
   const transport = config.general
@@ -401,8 +402,8 @@ export async function apply(ctx: ServiceContext, config: HimalayaImplConfig = {}
   try {
     binding.instance()
   } catch (error) {
-    console.error(
-      `himalaya-impl: the configured '${String(transport.type)}' transport is not ready (${messageOf(error)}); ` +
+    loggerOf(ctx, name).error(
+      `the configured '${String(transport.type)}' transport is not ready (${messageOf(error)}); ` +
         'the general-service instance is re-created on the next call - a provider that loads later is picked up, ' +
         'a missing capability keeps failing with this error (never a host fallback)',
     )

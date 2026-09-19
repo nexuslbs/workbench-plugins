@@ -1,0 +1,19 @@
+{
+  "name": "logger-demo",
+  "version": "0.1.0",
+  "description": "Producer + drive surface of the logger service: emits one Message per level at load and again on every call to its drive route, so the sinks can be compared with raw output. It is a CONSUMER: no stream of its own.",
+  "entry": "index.ts",
+  "execution": "none",
+  "capabilities": [
+    "route:GET /api/logger/demo",
+    "route:GET /api/logger/demo/audit"
+  ],
+  "config": {
+    "type": "object",
+    "properties": {
+      "path": { "type": "string", "default": "/api/logger/demo", "description": "Base path of the drive route; the audit route is <path>/audit" },
+      "loggerName": { "type": "string", "description": "Logger name used when the caller passes none (default: the plugin name)" },
+      "onLoad": { "type": "boolean", "default": true, "description": "Emit one Message per level at apply time" }
+    }
+  }
+}

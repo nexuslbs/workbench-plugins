@@ -34,6 +34,7 @@
 // never leaves this module: it is never logged, never returned and never part of
 // `entries()` - only the generated code is. The README states plainly that
 // committing a real key is forbidden.
+import { loggerOf } from '../../definitions/logger.ts'
 import { createHmac } from 'node:crypto'
 
 export const name = 'totp-rfc6238'
@@ -425,8 +426,8 @@ export function notConfiguredError(label: string, reason: string): Error {
 export async function apply(ctx: PluginContext, config: Config = {}): Promise<void> {
   const entries = normalizeEntries(config)
   if (entries.length === 0) {
-    console.error(
-      "totp-rfc6238: not configured (no 'entries' in plugins.totp-rfc6238) - provider 'rfc6238' is declared by the " +
+    loggerOf(ctx, name).error(
+      "not configured (no 'entries' in plugins.totp-rfc6238) - provider 'rfc6238' is declared by the " +
         "manifest and registers nothing; add at least one entry, e.g. entries: { github: { credential: TOTP_GITHUB_KEY } }",
     )
     return
@@ -498,7 +499,7 @@ export async function apply(ctx: PluginContext, config: Config = {}): Promise<vo
       runtime.configured = true
     } catch (error) {
       runtime.reason = messageOf(error)
-      console.error(`totp-rfc6238: ${runtime.reason}`)
+      loggerOf(ctx, name).error(runtime.reason)
     }
   }
 

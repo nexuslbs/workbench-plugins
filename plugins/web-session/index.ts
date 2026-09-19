@@ -22,6 +22,7 @@
 // from the SHARED launcher in `plugins/web-shared/` (web-page uses the same one,
 // so the two plugins never fight over chromium), and no per-site knowledge is
 // hardcoded here - a site is config (and, later, the recipe store).
+import { loggerOf, type LoggerHandle, type LoggerServiceLike } from '../../definitions/logger.ts'
 import { resolveConfig } from './config.ts'
 import type { WebSessionConfig } from './config.ts'
 import type { SessionDriver } from './driver.ts'
@@ -60,12 +61,16 @@ interface PluginContext {
   tools: ToolsLike
   credentials?: CredentialsLike
   effect(callback: () => () => void): void
+  /** The logger SERVICE the core hosts (docs/LOGGING.md). */
+  logger?: LoggerServiceLike
 }
 
 /** Optional collaborators, so the dispatch can be tested without a browser. */
 export interface WebSessionDeps {
   driver?: SessionDriver
   now?: () => number
+  /** Override the logger handle (default: the host logger service). */
+  logger?: LoggerHandle
 }
 
 /** One `act` step: the closed set, documented in the README. */
@@ -139,7 +144,8 @@ export function apply(ctx: PluginContext, config: WebSessionConfig = {}, deps: W
       return undefined
     }
   }
-  const manager = new SessionManager(resolved, resolveCredential, deps)
+  const log = loggerOf(ctx, name)
+  const manager = new SessionManager(resolved, resolveCredential, { ...deps, logger: deps.logger ?? log })
   const unregister = ctx.tools.registerTool({
     name: 'session',
     description:
@@ -155,7 +161,7 @@ export function apply(ctx: PluginContext, config: WebSessionConfig = {}, deps: W
         // log once, so the operator can see where it came from - the response
         // stays the small `internal` envelope.
         if (!(error instanceof SessionError)) {
-          console.error('[web-session] unhandled failure:', error instanceof Error ? (error.stack ?? error.message) : String(error))
+          log.error('unhandled failure:', error instanceof Error ? (error.stack ?? error.message) : String(error))
         }
         return envelopeOf(error, resolved.redact)
       }

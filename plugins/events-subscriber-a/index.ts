@@ -8,6 +8,7 @@
 // the process all survive it.
 //
 // The plugin holds NO external resource: that is `events-subscriber-b`.
+import { loggerOf } from '../../definitions/logger.ts'
 import { createEvents } from '../../lib/events.ts'
 import type { EventsHostContext } from '../../definitions/events.ts'
 
@@ -55,11 +56,13 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-const log = (message: string): void => {
-  console.log(`events-subscriber-a: ${message}`)
-}
-
 export function apply(ctx: PluginContext, config: Config = {}): void {
+  // The logger SERVICE handle of this plugin (docs/LOGGING.md): name + level per
+  // call and NO console anywhere - the process prints nothing until a deployment
+  // mounts an exporter plugin.
+  const log = (message: string): void => {
+    loggerOf(ctx, name).info(message)
+  }
   const basePath = config.path ?? '/api/events/subscriber-a'
   const parallelDelayMs = config.parallelDelayMs ?? 20
   const events = createEvents(ctx, { namespace: name })

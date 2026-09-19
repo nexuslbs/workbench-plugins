@@ -114,10 +114,14 @@ async function boot(
     effect(callback: () => () => void): void {
       disposers.push(callback())
     },
-    logger: {
-      info: (...args: unknown[]) => logs.push(args.join(' ')),
+    // The logger SERVICE is a CALLABLE that yields the levelled handle
+    // (definitions/logger.ts): `ctx.logger(name).info(...)`, not an object.
+    logger: (name?: string) => ({
+      error: (...args: unknown[]) => logs.push(args.join(' ')),
       warn: (...args: unknown[]) => logs.push(args.join(' ')),
-    },
+      info: (...args: unknown[]) => logs.push(args.join(' ')),
+      debug: (...args: unknown[]) => logs.push(args.join(' ')),
+    }),
     ...(credentials === undefined ? {} : { credentials }),
     email: {
       register(descriptor: Record<string, unknown>): void {
