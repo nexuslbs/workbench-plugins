@@ -37,6 +37,8 @@ export class PageError extends Error {
   readonly detail: string | undefined
   readonly retryable: boolean
   readonly hint: string | undefined
+  /** The `message` argument, WITHOUT the formatted `[url] (detail)` suffix. */
+  private readonly rawMessage: string
 
   constructor(code: PageErrorCode, message: string, options: PageErrorOptions = {}) {
     const where = options.url === undefined ? '' : ` [${options.url}]`
@@ -48,6 +50,24 @@ export class PageError extends Error {
     this.detail = options.detail
     this.retryable = options.retryable ?? false
     this.hint = options.hint
+    this.rawMessage = message
+  }
+
+  /**
+   * A COPY of this failure with every `pattern` scrubbed from its diagnostic
+   * fields (message, url, detail). The plugin applies this at the boundary where
+   * a failure leaves a tool, so a string the operator declared secret (a token a
+   * browser error text happens to quote) never reaches a caller.
+   */
+  withRedaction(patterns: readonly string[]): PageError {
+    if (patterns.length === 0) return this
+    const scrub = (text: string): string => redactText(text, patterns)
+    return new PageError(this.code, scrub(this.rawMessage), {
+      ...(this.url === undefined ? {} : { url: scrub(this.url) }),
+      ...(this.detail === undefined ? {} : { detail: scrub(this.detail) }),
+      retryable: this.retryable,
+      ...(this.hint === undefined ? {} : { hint: this.hint }),
+    })
   }
 
   /** The JSON shape an in-process caller or a test can assert on. */
@@ -62,6 +82,24 @@ export class PageError extends Error {
       hint: this.hint,
     }
   }
+}
+
+/**
+ * Replace every occurrence of each configured pattern with `[redacted]`.
+ *
+ * Plain text matching (never a regex), case sensitive, deterministic: blank
+ * patterns are ignored, and a text with no match is returned unchanged. This is
+ * what the `redact` config row feeds (plugin diagnostics and error messages).
+ */
+export function redactText(text: string, patterns: readonly string[]): string {
+  let out = text
+  for (const pattern of patterns) {
+    const needle = typeof pattern === 'string' ? pattern.trim() : ''
+    if (needle.length === 0) continue
+    if (!out.includes(needle)) continue
+    out = out.split(needle).join('[redacted]')
+  }
+  return out
 }
 
 /** A short single-line form of any thrown value. */
@@ -94,8 +132,8 @@ export function codeForBrowserFailure(text: string): PageErrorCode {
 }
 
 /** Wrap a browser/navigation failure into a named {@link PageError}. */
-export function browserFailure(error: unknown, url: string, timeoutMs: number): PageError {
-  const text = messageOf(error)
+export function browserFailure(error: unknown, url: string, timeoutMs: number, redact: readonly string[] = []): PageError {
+  const text = redactText(messageOf(error), redact)
   const code = codeForBrowserFailure(text)
   if (code === 'timeout') {
     return new PageError('timeout', `the page did not finish loading within ${String(timeoutMs)}ms`, {

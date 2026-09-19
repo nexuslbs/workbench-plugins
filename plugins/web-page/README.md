@@ -71,11 +71,17 @@ Rows under the plugin's `config:` block in the deployment config
 | `maxContexts` | `2` | reusable contexts kept warm |
 | `blockResourceTypes` | `image, media, font` | never downloaded (a text read needs none) |
 | `proxy` | - | `{ server, username?, credential? }`; `credential` is a **NAME** |
-| `redact` | - | strings scrubbed from diagnostics |
+| `redact` | - | strings replaced by `[redacted]` in every error message/diagnostic |
 
 **Secrets**: `proxy.credential` (and the `username`) is a credential NAME. It is
 resolved at launch time through `ctx.credentials` (`${cred:NAME}` semantics) and
-is never logged, never returned, never written to the cache or a spill file.
+is never logged, never returned, never written to the cache or a spill file. The
+resolved value is ALSO added to the redaction set of the renderer, so a browser
+or launch error text that happens to quote it is scrubbed before it is surfaced.
+
+`redact` (config) is the operator side of the same mechanism: every listed
+string is replaced by `[redacted]` in the message, url and detail of any failure
+leaving `page read` / `page map` (plain text match, case sensitive).
 
 ## The two tools
 
@@ -156,8 +162,9 @@ decide what to read. `page map` output never contains the body.
   page can never stall a caller.
 - Failures raise a structured, NAMED error and leave the process serving:
   `invalid_input`, `timeout`, `dns`, `tls`, `connection`, `http_status`,
-  `extract_empty`, `browser_missing`, `internal` - with `url`, `hint` and a
-  `retryable` flag where it applies.
+  `extract_empty`, `browser_unavailable`, `cache`, `internal` - with `url`, `hint`
+  and a `retryable` flag where it applies (`browser_unavailable` also names a
+  missing chromium/playwright-core install).
 
 ## Wiring
 

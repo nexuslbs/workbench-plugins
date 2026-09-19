@@ -93,6 +93,7 @@ the plugins of this checkout plus the Web UI plugins (`plugin-inventory`,
 | `hello-tool` | `tool:hello greet` | by-name tool over HTTP: `POST /api/tools/hello%20greet`, `POST /api/tool/call` (core contract, section 4d) |
 | `email-himalaya` | `email:himalaya` | email PROVIDER: implements `email@1` on the himalaya CLI - multiple accounts plus a configured default account; loads as NOT CONFIGURED without accounts (core contract, section 4e) |
 | `email-tools` | `tool:email accounts`, `tool:email list`, `tool:email get`, `tool:email code` | email CONSUMER: the four operator tools, provider agnostic (it only touches `ctx.email`) |
+| `web-page` | `tool:page read`, `tool:page map` | web-page CONSUMER: ONE-call JS-aware page read - chromium render through `playwright-core`, main content to compact markdown IN CODE, URL + content-hash cache (`unchanged since <hash>`), hard char cap with spill to a file; no browser driver, no model in the loop |
 
 ### Web UI plugins (M1-M4)
 
@@ -131,6 +132,8 @@ NOT a model/agent feature: the callers are plugins and operators. The contract i
 | `email-tools` | `email list` | `account` (string), `folder` (string), `limit` (integer), `unreadOnly` (boolean), `since` (string) | same seam |
 | `email-tools` | `email get` | `id` (string, required), `account` (string), `format` (string, enum `text` / `markdown` / `raw`) | same seam |
 | `email-tools` | `email code` | `account` (string), `id` (string), `query` (string), `pattern` (string), `maxAgeSeconds` (integer) | same seam |
+| `web-page` | `page read` | `url` (string, required), `query` (string), `selectors` (array of string), `max_chars` (integer), `freshness` (string, enum `cache` / `revalidate` / `force`) | same seam (plugin README, "The two tools") |
+| `web-page` | `page map` | `url` (string, required), `max_chars` (integer) | same seam |
 
 The smoke for this end-to-end (the plugin registers a tool, the core lists it
 with its schema, invokes it, validates the body and returns 400/404/500 without
@@ -141,6 +144,12 @@ The email capability seam (core contract, section 4e) is covered by
 executable: accounts, list, get, credential-in-env-only, missing CLI, failing
 and unparseable output) and `test/email-tools.test.ts` (the four tools, their
 schemas, the default-account resolution and a provider swap).
+
+The `web-page` plugin is covered by `test/web-page.test.ts`: the extractor on
+fixture HTML, the cache/hash decision, the cap/spill path, the error envelope and
+the two registered tool schemas driven through a fake renderer (no browser and no
+network in the tests). Its chromium is a DEPLOYMENT input (`playwright-core` plus
+an installed browser), never a test dependency.
 
 ## Develop / verify
 

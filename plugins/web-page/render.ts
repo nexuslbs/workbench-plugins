@@ -17,7 +17,7 @@
 // failure. The type-only import below is erased at run time.
 import type { Browser, BrowserContext, Page } from 'playwright-core'
 import type { ResolvedConfig } from './config.ts'
-import { PageError, browserFailure, messageOf } from './errors.ts'
+import { PageError, browserFailure, messageOf, redactText } from './errors.ts'
 
 // The settle probe below runs INSIDE the page, where `document` exists - but this
 // project's tsconfig carries no DOM lib (the plugin never touches a DOM in the
@@ -83,6 +83,8 @@ export class BrowserPoolRenderer implements Renderer {
   private launchCount = 0
   private renderCount = 0
   private reuseCount = 0
+  /** Resolved credential VALUES: scrubbed from every diagnostic, never logged. */
+  private readonly secrets: string[] = []
 
   constructor(config: ResolvedConfig, resolveCredential: CredentialResolver) {
     this.config = config
@@ -91,6 +93,16 @@ export class BrowserPoolRenderer implements Renderer {
 
   stats(): RenderStats {
     return { launches: this.launchCount, renders: this.renderCount, contextReuses: this.reuseCount, contextsOpen: this.live }
+  }
+
+  /** The strings scrubbed from diagnostics: the config patterns plus any secret. */
+  private redaction(): string[] {
+    return [...this.config.redact, ...this.secrets]
+  }
+
+  /** Redact a diagnostic text (browser/launch error text) before it is surfaced. */
+  private scrub(text: string): string {
+    return redactText(text, this.redaction())
   }
 
   /** The page read of this plugin: render, wait, return the settled DOM. */
@@ -144,7 +156,7 @@ export class BrowserPoolRenderer implements Renderer {
         else await this.destroy(context)
       }
     }
-    throw lastError instanceof PageError ? lastError : browserFailure(lastError, request.url, timeoutMs)
+    throw lastError instanceof PageError ? lastError : browserFailure(lastError, request.url, timeoutMs, this.redaction())
   }
 
   /** Close every pooled context and the browser (registered on the cordis effect). */
@@ -165,7 +177,7 @@ export class BrowserPoolRenderer implements Renderer {
       this.modulePromise = import('playwright-core').catch((error: unknown) => {
         this.modulePromise = undefined
         throw new PageError('browser_unavailable', 'the playwright-core module could not be loaded', {
-          detail: messageOf(error),
+          detail: this.scrub(messageOf(error)),
           hint: 'install the plugin dependencies (npm install) or run the plugin in an image that carries playwright-core',
         })
       })
@@ -201,7 +213,7 @@ export class BrowserPoolRenderer implements Renderer {
       this.launchCount += 1
       return browser
     } catch (error) {
-      const text = messageOf(error)
+      const text = this.scrub(messageOf(error))
       throw new PageError('browser_unavailable', 'chromium could not be launched', {
         detail: text,
         hint: 'provide a chromium through executablePath or PLAYWRIGHT_BROWSERS_PATH (npx playwright-core install chromium)',
@@ -223,6 +235,7 @@ export class BrowserPoolRenderer implements Renderer {
         })
       }
       out.password = value
+      if (!this.secrets.includes(value)) this.secrets.push(value)
     }
     return out
   }
@@ -256,7 +269,7 @@ export class BrowserPoolRenderer implements Renderer {
           return await this.newContext(browser)
         } catch (error) {
           this.live -= 1
-          throw new PageError('browser_unavailable', 'a browser context could not be created', { detail: messageOf(error) })
+          throw new PageError('browser_unavailable', 'a browser context could not be created', { detail: this.scrub(messageOf(error)) })
         }
       }
       await new Promise<void>((resolve) => {

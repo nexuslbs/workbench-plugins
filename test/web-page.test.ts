@@ -12,7 +12,7 @@ import test from 'node:test'
 
 import { PageCache, ageSeconds, cacheKey, contentHash, unchangedAnswer } from '../plugins/web-page/cache.ts'
 import type { CacheEntry } from '../plugins/web-page/cache.ts'
-import { browserFailure, codeForBrowserFailure, PageError } from '../plugins/web-page/errors.ts'
+import { browserFailure, codeForBrowserFailure, PageError, redactText } from '../plugins/web-page/errors.ts'
 import { extractMain, outlineOf, renderOutline, sliceByQuery } from '../plugins/web-page/extract.ts'
 import { apply } from '../plugins/web-page/index.ts'
 import type { RenderRequest, RenderResult, RenderStats, Renderer } from '../plugins/web-page/render.ts'
@@ -499,4 +499,82 @@ test('failure envelope: a bad URL or a failed render names the failure and the T
   const emptyError = await rejection(empty.tool('page read').handler({ url: URL_UNDER_TEST }))
   assert.ok(emptyError instanceof PageError)
   assert.equal(emptyError.code, 'extract_empty')
+})
+
+// ---------------------------------------------------------------------------
+// Cache-hit reads (with a query) and the `redact` config
+// ---------------------------------------------------------------------------
+
+test('cache: a repeat `{url, query}` read is served from a FRESH entry - no browser, cache.state "hit"', async () => {
+  const renderer = new FakeRenderer(FIXTURE_HTML)
+  const { tool } = boot(renderer)
+
+  // First call with a query: nothing cached yet, so exactly one render.
+  const first = (await tool('page read').handler({ url: URL_UNDER_TEST, query: 'requirements', freshness: 'force' })) as Record<string, unknown>
+  assert.equal(first.status, 'rendered')
+  assert.equal(renderer.calls.length, 1)
+
+  // Second call, same query, entry fresh: the slice comes OUT OF THE CACHE. A
+  // `query` must not re-render a page the plugin already has (freshness decides
+  // cache use), and the reported state must say so.
+  const second = (await tool('page read').handler({ url: URL_UNDER_TEST, query: 'requirements' })) as Record<string, unknown>
+  assert.equal(renderer.calls.length, 1, 'a fresh entry answers a query slice without launching a browser')
+  assert.equal((second.cache as { state: string }).state, 'hit')
+  assert.equal(second.hash, first.hash)
+  assert.match(String(second.markdown), /Node 22 or newer/)
+  assert.doesNotMatch(String(second.markdown), /npm install widget/)
+  assert.deepEqual((second.query as { terms: string[] }).terms, ['requirements'])
+  assert.equal(second.render, undefined, 'a cache-served answer carries no render stats')
+
+  // ...and the plain re-read of the same entry is still the ~20 token answer.
+  const third = (await tool('page read').handler({ url: URL_UNDER_TEST })) as Record<string, unknown>
+  assert.equal(third.status, 'unchanged')
+  assert.equal((third.cache as { state: string }).state, 'hit')
+  assert.equal(renderer.calls.length, 1)
+})
+
+test('redact: configured strings are scrubbed from message/url/detail of a failure, and the tool keeps serving', async () => {
+  const secret = 'tok_live_TOP_SECRET'
+  const failing: Renderer = {
+    render: () =>
+      Promise.reject(
+        new PageError('connection', `the browser could not reach ${secret}`, {
+          url: `https://example.test/${secret}/docs`,
+          detail: `net::ERR_CONNECTION_REFUSED while sending ${secret}`,
+          retryable: true,
+        }),
+      ),
+    dispose: () => Promise.resolve(),
+    stats: () => ({ launches: 0, renders: 0, contextReuses: 0, contextsOpen: 0 }),
+  }
+
+  const redacted = await rejection(boot(failing, { redact: [secret] }).tool('page read').handler({ url: URL_UNDER_TEST }))
+  assert.ok(redacted instanceof PageError)
+  assert.equal(redacted.code, 'connection')
+  assert.ok(!redacted.message.includes(secret), 'the configured string is gone from the message')
+  assert.ok(!String(redacted.url).includes(secret), 'the configured string is gone from the url')
+  assert.ok(!String(redacted.detail).includes(secret), 'the configured string is gone from the detail')
+  assert.match(redacted.message, /\[redacted\]/)
+
+  // Without the `redact` row the very same failure is left untouched: the knob
+  // is the ONLY difference.
+  const plain = await rejection(boot(failing).tool('page read').handler({ url: URL_UNDER_TEST }))
+  assert.ok(plain instanceof PageError)
+  assert.ok(plain.message.includes(secret))
+
+  // A redacted failure does not take the plugin down: another call still answers.
+  const healthy = boot(new FakeRenderer(FIXTURE_HTML), { redact: [secret] })
+  const answer = (await healthy.tool('page read').handler({ url: URL_UNDER_TEST })) as Record<string, unknown>
+  assert.equal(answer.status, 'rendered')
+})
+
+test('redactText: plain text (never a regex), deterministic, blank patterns ignored; browserFailure scrubs first', () => {
+  assert.equal(redactText('a SECRET b SECRET', ['SECRET']), 'a [redacted] b [redacted]')
+  assert.equal(redactText('untouched', ['SECRET', '   ']), 'untouched')
+  assert.equal(redactText('a.b', ['.']), 'a[redacted]b', 'the pattern is a literal, not a regex')
+
+  const failure = browserFailure(new Error(`Timeout 5000ms exceeded for ${'tok_live_TOP_SECRET'}`), URL_UNDER_TEST, 5000, ['tok_live_TOP_SECRET'])
+  assert.equal(failure.code, 'timeout')
+  assert.ok(!failure.message.includes('tok_live_TOP_SECRET'))
+  assert.match(failure.message, /\[redacted\]/)
 })

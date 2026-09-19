@@ -84,7 +84,7 @@ export function apply(ctx: PluginContext, config: WebPageConfig = {}, deps: WebP
     void renderer.dispose()
   })
 
-  async function readPage(params: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async function readPageInner(params: Record<string, unknown>): Promise<Record<string, unknown>> {
     const url = requireUrl(params.url, 'url')
     const selectors = selectorList(params.selectors)
     const query = str(params.query)
@@ -94,14 +94,18 @@ export function apply(ctx: PluginContext, config: WebPageConfig = {}, deps: WebP
     const cached = await cache.read(key)
     const decision = cache.decide(cached, freshness)
 
-    // 1) Fresh cache entry, no slice asked for: the ~20 token answer.
-    if (decision === 'hit' && cached !== undefined && query === undefined) {
-      return unchangedAnswer(cached, 'hit', ageSeconds(cached))
+    // 1) Fresh cache entry: the ~20 token answer, or the requested SLICE of it.
+    //    Both are served straight from the cache - a `query` is not a reason to
+    //    launch a browser for a page the plugin already has (freshness decides
+    //    cache use, and `revalidate` never takes this path).
+    if (decision === 'hit' && cached !== undefined) {
+      if (query === undefined) return unchangedAnswer(cached, 'hit', ageSeconds(cached))
+      return await answerFrom(cached, { query, maxChars, state: 'hit', ageSeconds: ageSeconds(cached) })
     }
 
     // 2) Conditional revalidation first (a plain HTTP request, no browser): a
     //    304 proves the page did not change, so the browser is never launched.
-    let state: CacheState = decision === 'hit' ? 'hit' : decision === 'revalidate' ? 'revalidated' : 'render'
+    const state: CacheState = decision === 'revalidate' ? 'revalidated' : 'render'
     if (decision === 'revalidate' && cache.canRevalidate(cached) && cached !== undefined) {
       const revalidated = await revalidateHttp(url, cached)
       if (revalidated === 'not-modified') {
@@ -156,7 +160,7 @@ export function apply(ctx: PluginContext, config: WebPageConfig = {}, deps: WebP
     return { ...answer, render: { attempts: rendered.attempts, elapsedMs: rendered.elapsedMs } }
   }
 
-  async function mapPage(params: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async function mapPageInner(params: Record<string, unknown>): Promise<Record<string, unknown>> {
     const url = requireUrl(params.url, 'url')
     const maxChars = clampChars(params.max_chars, resolved.mapMaxChars, resolved.hardMaxChars)
     const key = cacheKey(url)
@@ -234,6 +238,33 @@ export function apply(ctx: PluginContext, config: WebPageConfig = {}, deps: WebP
       truncation: capped.capped ? { capped: true, shownChars: capped.shownChars, totalChars: capped.totalChars, spillFile: capped.spillFile } : undefined,
       query: slice === undefined ? undefined : { terms: slice.terms, blocks: slice.matched, matchedChars: slice.chars },
       cache: { state: options.state, ageSeconds: options.ageSeconds },
+    }
+  }
+
+  /**
+   * A failure that leaves through a tool is a `PageError`: the `redact` strings
+   * of the config are scrubbed from its message, url and detail before it is
+   * rethrown, so a configured secret never reaches a caller.
+   */
+  function scrubError(error: unknown): unknown {
+    return error instanceof PageError ? error.withRedaction(resolved.redact) : error
+  }
+
+  /** `page read`, with the `redact` config applied to any named failure. */
+  async function readPage(params: Record<string, unknown>): Promise<Record<string, unknown>> {
+    try {
+      return await readPageInner(params)
+    } catch (error) {
+      throw scrubError(error)
+    }
+  }
+
+  /** `page map`, with the `redact` config applied to any named failure. */
+  async function mapPage(params: Record<string, unknown>): Promise<Record<string, unknown>> {
+    try {
+      return await mapPageInner(params)
+    } catch (error) {
+      throw scrubError(error)
     }
   }
 
