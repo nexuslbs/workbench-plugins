@@ -47,7 +47,13 @@ interface WebService {
 
 interface PluginContext extends EventsHostContext {
   web: WebService
-  /** The host log sink (a minimal host may not expose one). */
+  /**
+   * The host log sink. Reading it is legal ONLY because the entry below declares
+   * `inject: ['web', 'workbench']`: cordis answers a service property access with
+   * `cannot get property "workbench" without inject` otherwise (measured, thread
+   * 2529 - the plugin then LOOKS loaded while its `apply()` never ran). A plugin
+   * that prefers not to inject reads it with `ctx.get('workbench', false)`.
+   */
   workbench?: { log?: (message: string) => void }
 }
 
@@ -69,13 +75,17 @@ const consoleLog = (message: string): void => {
   console.log(`events-subscriber-b: ${message}`)
 }
 
-export function apply(ctx: PluginContext, config: Config = {}): void {
-  // The recommended pattern: a release is reported on the host log sink AND on
-  // stdout, so the operator and the test harness both see the effect disposer run.
-  const sink = ctx.workbench?.log
+function applyInner(ctx: PluginContext, config: Config = {}): void {
+  // NOTE: capture the SERVICE object, never the METHOD. `const sink = ctx.workbench?.log`
+  // detaches the function from its receiver, and a host service method that uses
+  // private fields then throws `Cannot read properties of undefined (reading '#log')`
+  // at the FIRST call: applied to the core's own `workbench.log`, that aborted apply()
+  // after the first two effects while the loader still reported the plugin as loaded
+  // (measured, thread 2529; see docs/EVENTS.md "Plugin rules").
+  const sink = ctx.workbench
   const log = (message: string): void => {
     consoleLog(message)
-    sink?.(`events-subscriber-b: ${message}`)
+    sink?.log(`events-subscriber-b: ${message}`)
   }
   const port = config.port ?? 12398
   const heartbeatFile = config.heartbeatFile ?? path.join(os.tmpdir(), 'events-subscriber-b.heartbeat')
@@ -187,4 +197,22 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
   log(`loaded: namespace=${events.namespace} port=${port} heartbeat=${heartbeatFile} state=${basePath}`)
 }
 
-export default { name, inject: ['web'], apply }
+// `workbench` is injected because `log()` below reports every release on the host
+// log sink; a service property read WITHOUT the matching `inject` throws at apply
+// time and the plugin silently stops working (see docs/EVENTS.md, "Plugin rules").
+//
+// The wrapper exists because the loader reports a plugin whose `apply()` threw as
+// LOADED (measured, thread 2529: the boot log said `loaded plugin
+// events-subscriber-b@0.1.0` while the plugin had registered nothing). A plugin
+// that wants a loud failure has to log it itself and rethrow.
+export function apply(ctx: PluginContext, config: Config = {}): void {
+  try {
+    applyInner(ctx, config)
+  } catch (error) {
+    const detail = error instanceof Error ? (error.stack ?? error.message) : String(error)
+    console.error(`${name}: apply() FAILED: ${detail}`)
+    throw error
+  }
+}
+
+export default { name, inject: ['web', 'workbench'], apply }

@@ -260,6 +260,40 @@ publisher and the other subscriber keep answering; unloading `events-subscriber-
 closes its socket (a connection is then REFUSED), kills its child and stops its
 interval.
 
+## Plugin rules (measured against the core, thread 2529)
+
+Two rules a plugin of this contract must respect. Both are enforced by the host
+and violating them is SILENT: the loader still reports the plugin as loaded.
+
+1. **Never keep a handler you registered elsewhere.** A subscription made through
+   `createEvents()` is already bound to the plugin fiber (one host
+   `ctx.effect(() => () => scope.dispose())`), so cordis removes it when the
+   plugin unloads. Do not re-emit an unloaded event by hand: after `dispose()` a
+   registration or an `emit()` fails with `EventsError` code `inactive`, which is
+   the loud signal that the plugin is gone.
+
+2. **A host service is readable only through `inject` (or `ctx.get(name, false)`).**
+   cordis rejects a service property access that the plugin did not declare:
+
+   ```text
+   Error: cannot get property "workbench" without inject
+   ```
+
+   (`cordis/lib/index.js`, the `ReflectService.handler.get` trap). The throw
+   happens INSIDE `apply()`, so the plugin looks loaded in the loader inventory
+   while its body never ran: no subscriptions, no routes, no effects, no
+   disposers. Measured with the example plugins: `events-subscriber-b` reported
+   every release on `ctx.workbench?.log` while declaring only `inject: ['web']`;
+   the boot log still said `loaded plugin events-subscriber-b@0.1.0` while
+   `GET /api/events/subscriber-b` answered 404 and its TCP port was closed.
+   Declaring `inject: ['web', 'workbench']` fixed it (the same run then served the
+   route and bound the port). The inject-free alternative is
+   `ctx.get('workbench', false)` (see `definitions/support.ts`), which returns
+   `undefined` instead of throwing.
+
+   Rule of thumb: every service name a plugin touches must appear in its entry's
+   `inject` array, exactly like `plugins/hello-world` does with `['workbench']`.
+
 ## Host contract (no core change)
 
 The scope needs only what a cordis plugin context already offers, read
