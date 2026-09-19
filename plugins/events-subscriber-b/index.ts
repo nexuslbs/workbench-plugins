@@ -85,7 +85,7 @@ function applyInner(ctx: PluginContext, config: Config = {}): void {
   const sink = ctx.workbench
   const log = (message: string): void => {
     consoleLog(message)
-    sink?.log(`events-subscriber-b: ${message}`)
+    sink?.log?.(`events-subscriber-b: ${message}`)
   }
   const port = config.port ?? 12398
   const heartbeatFile = config.heartbeatFile ?? path.join(os.tmpdir(), 'events-subscriber-b.heartbeat')
