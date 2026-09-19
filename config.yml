@@ -56,6 +56,13 @@ credentials:
     - env
     - file
 
+# THE ROSTER (breaking change): `plugins:` is the ENABLE LIST. A plugin is
+# LOADED only when it is named here; every other plugin discovered in `sources:`
+# is merely AVAILABLE - listed by `workbench plugins` and by the Plugin Inventory
+# page, where it can be enabled in one click (which persists its row here).
+# A row with `disabled: true` PARKS a plugin (configured, deliberately off).
+# A config written for the old scan-and-load semantics must therefore list every
+# plugin it wants loaded (see README.md, "The plugin roster").
 plugins:
   credentials-file:
     # Operator-provided and gitignored, OUTSIDE both repositories (see
@@ -67,12 +74,26 @@ plugins:
   hello-otherworld:
     message: Hello Otherworld
 
-# Web UI (M1 Plugin Inventory, M2 Plugin Manager, M3 Settings, M4 Cordis UI).
-# The UI is composed ONLY of plugins: the list below is discovered from the
-# sources above, nothing is hardcoded in the core. Remove `web.enabled` (or set
-# it to false) and the service keeps its pre-Web-UI behaviour; `workbench web`
-# is the explicit serve entrypoint, `workbench serve` starts the listener too
-# when it is enabled.
+  # Web UI (M1 Plugin Inventory, M2 Plugin Manager, M3 Settings, M4 Cordis UI).
+  # The UI is composed ONLY of plugins: they are discovered in the sources above
+  # and named here, nothing is hardcoded in the core. Drop a row (or set
+  # `disabled: true`) and that page is gone while the others keep working;
+  # remove `web.enabled` (or set it to false) and the service keeps its
+  # pre-Web-UI behaviour. `workbench web` is the explicit serve entrypoint,
+  # `workbench serve` starts the listener too when it is enabled.
+  plugin-inventory: {}
+  plugin-manager: {}
+  settings: {}
+  cordis-ui: {}
+  # credentials-stub: the dev credential provider plugin (the stub vault the docs
+  # use to show the Provider -> Definition <- Consumer seam end to end).
+  credentials-stub: {}
+
+  # The plugin of the EXTERNAL GIT source (`workbench-plugins-git`, subdir
+  # `examples`): cloned from GitHub at boot, so naming it here is what keeps the
+  # real clone path exercised in dev.
+  git-source-demo: {}
+
 web:
   enabled: true
   # Inside the compose service the listener must not bind the container's

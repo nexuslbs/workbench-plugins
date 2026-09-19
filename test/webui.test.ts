@@ -33,9 +33,11 @@ const INVENTORY = {
     { name: 'hello-world', version: '0.1.0', source: 'core', external: false, dir: '/w/workbench/plugins/hello-world' },
     { name: 'plugin-inventory', version: '0.1.0', source: 'workbench-plugins', external: true, dir: '/w/workbench-plugins/plugins/plugin-inventory' },
   ],
+  available: ['plugin-manager'],
   discovered: [
     { name: 'hello-world', version: '0.1.0', source: 'core', external: false, dir: '/w/workbench/plugins/hello-world', state: 'loaded', capabilities: ['command:hello world'], commands: ['hello world'] },
     { name: 'plugin-inventory', version: '0.1.0', source: 'workbench-plugins', external: true, dir: '/w/workbench-plugins/plugins/plugin-inventory', state: 'loaded', capabilities: ['page:plugin-inventory'], commands: [] },
+    { name: 'plugin-manager', version: '0.1.0', source: 'workbench-plugins', external: true, dir: '/w/workbench-plugins/plugins/plugin-manager', state: 'available', roster: false, capabilities: ['page:plugin-manager'], commands: [] },
   ],
   loaded: 2,
   failed: 0,
@@ -181,9 +183,15 @@ test('plugin-inventory reads the loader inventory through the contract (no scrap
   assert.ok(read, 'plugin-inventory must expose a read route for the inventory')
   const response = (await read.handler(request)) as { status: number; body: unknown }
   assert.equal(response.status, 200)
-  const payload = (typeof response.body === 'string' ? JSON.parse(response.body) : response.body) as { entries: unknown[]; loaded: number }
+  const payload = (typeof response.body === 'string' ? JSON.parse(response.body) : response.body) as {
+    entries: unknown[]
+    loaded: number
+    available: string[]
+  }
   assert.equal(payload.loaded, INVENTORY.loaded)
   assert.deepEqual(payload.entries, INVENTORY.discovered, 'the page serves the loader inventory verbatim')
+  // The roster split reaches the page: the AVAILABLE (not rostered) plugins.
+  assert.deepEqual(payload.available, INVENTORY.available)
 })
 
 test('settings: a config reference is served BY NAME - the `${env:VAR}` value is never resolved', async () => {

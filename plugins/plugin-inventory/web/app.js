@@ -16,16 +16,27 @@ function stateClass(state) {
   if (state === 'loaded') return 'ok'
   if (state === 'failed') return 'error'
   if (state === 'disabled') return 'muted'
+  // Roster semantics: a discovered plugin without a `plugins:<name>` row is
+  // AVAILABLE - listed, not loaded, enable-able in one click.
+  if (state === 'available') return 'muted'
   return ''
+}
+
+function stateText(entry) {
+  if (entry.state === 'available') return 'available (not on the plugins: roster - enable it to load)'
+  if (entry.state === 'disabled') return 'disabled (parked in the config)'
+  return entry.state + (entry.error ? `: ${entry.error}` : '')
 }
 
 function render(data, root) {
   root.appendChild(el('h1', undefined, 'Plugin Inventory'))
+  const available = data.available ? data.available.length : 0
   const summary = el(
     'p',
     'muted',
-    `${data.entries.length} plugin(s) discovered, ${data.loaded} loaded, ${data.failed} failed, ` +
-      `${data.disabled.length} disabled. Config: ${data.configFile}`,
+    `${data.entries.length} plugin(s) discovered, ${data.loaded} loaded, ${available} available ` +
+      `(not on the plugins: roster), ${data.disabled.length} disabled, ${data.failed} failed. ` +
+      `Config: ${data.configFile}`,
   )
   root.appendChild(summary)
 
@@ -42,7 +53,7 @@ function render(data, root) {
     row.appendChild(el('td', undefined, entry.version))
     row.appendChild(el('td', undefined, `${entry.source}${entry.external ? ' (external)' : ''}`))
     row.appendChild(el('td', 'muted', entry.dir))
-    const state = el('td', stateClass(entry.state), entry.state + (entry.error ? `: ${entry.error}` : ''))
+    const state = el('td', stateClass(entry.state), stateText(entry))
     row.appendChild(state)
     const caps = entry.capabilities && entry.capabilities.length ? entry.capabilities.join(', ') : ''
     const commands = entry.commands && entry.commands.length ? `commands: ${entry.commands.join(', ')}` : ''

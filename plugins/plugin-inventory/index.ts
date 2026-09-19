@@ -74,6 +74,8 @@ interface InventoryEntry {
   external: boolean
   capabilities: string[]
   state: string
+  /** True when the config NAMES the plugin under `plugins:` (the roster). */
+  roster?: boolean
   error?: string
   commands: string[]
 }
@@ -85,6 +87,11 @@ interface HostInventory {
   sources: unknown[]
   failures: unknown[]
   disabled: string[]
+  /**
+   * Discovered plugins the config does NOT name under `plugins:`: installable in
+   * one click (`enable`), never loaded. The "available plugins to load" list.
+   */
+  available: string[]
   discovered: InventoryEntry[]
   commands: unknown[]
 }
@@ -138,6 +145,9 @@ export function apply(ctx: PluginContext, config: PluginInventoryConfig = {}): v
           loaded: inventory.plugins.length,
           failed: inventory.failures.length,
           disabled: inventory.disabled,
+          // The ROSTER split: discovered plugins the config does not name are
+          // AVAILABLE (installable in one click), never loaded.
+          available: inventory.available,
           sources: inventory.sources,
           commands: inventory.commands,
         })
@@ -150,7 +160,7 @@ export function apply(ctx: PluginContext, config: PluginInventoryConfig = {}): v
     ctx.web.route({
       method: 'GET',
       path: `${API_BASE}/plugins`,
-      description: 'the discovered plugins with their live state',
+      description: 'the discovered plugins with their live state (loaded / available / disabled / failed)',
       handler: () => json(ctx.workbench.inventory().discovered),
     }),
   )
