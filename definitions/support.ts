@@ -87,6 +87,8 @@ export type ServiceErrorCode =
   | 'unreachable'
   /** The transport does not support what the call asked of it (no leak. no fallback). */
   | 'unsupported'
+  /** A PROVIDER cannot honour the config it was handed (no instance API, ...). */
+  | 'unsupported-provider'
   /** The backend answered with something the Definition cannot parse. */
   | 'malformed-output'
   /** A credential was required but the transport cannot deliver it safely. */
