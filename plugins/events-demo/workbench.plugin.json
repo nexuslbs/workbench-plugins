@@ -1,0 +1,21 @@
+{
+  "name": "events-demo",
+  "version": "0.1.0",
+  "description": "Publisher + drive/audit surface of the plugin EVENT API (emit/serial/parallel/bail/waterfall, error isolation, registry)",
+  "entry": "index.ts",
+  "capabilities": [
+    "events:publisher events-demo/{tick,serial-work,parallel-work,bail-work,waterfall-work,flaky}",
+    "route:GET /api/events/demo",
+    "route:GET /api/events/demo/audit"
+  ],
+  "config": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "default": "/api/events/demo",
+        "description": "Base path of the drive route; the audit route is <path>/audit"
+      }
+    }
+  }
+}

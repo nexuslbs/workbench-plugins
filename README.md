@@ -95,6 +95,18 @@ the plugins of this checkout plus the Web UI plugins (`plugin-inventory`,
 | `email-tools` | `tool:email accounts`, `tool:email list`, `tool:email get`, `tool:email code` | email CONSUMER: the four operator tools, provider agnostic (it only touches `ctx.email`) |
 | `web-page` | `tool:page read`, `tool:page map` | web-page CONSUMER: ONE-call JS-aware page read - chromium render through `playwright-core`, main content to compact markdown IN CODE, URL + content-hash cache (`unchanged since <hash>`), hard char cap with spill to a file; no browser driver, no model in the loop |
 
+### Example plugins for the plugin EVENT API
+
+These three are the runnable specification of `docs/EVENTS.md` (they are NOT in
+the default `config.yml` roster - an example binds a TCP port; add a roster row
+to load one):
+
+| Plugin | Capability | Output |
+| --- | --- | --- |
+| `events-demo` | `events:publisher events-demo/{...}` | PUBLISHER: drives `emit` / `serial` / `parallel` / `bail` / `waterfall` incl. a throwing listener; `GET /api/events/demo`, `GET /api/events/demo/audit` |
+| `events-subscriber-a` | `events:subscriber events-demo/{...}` | SUBSCRIBER: `on` / `once` per mode, one listener that throws on purpose; `GET /api/events/subscriber-a` |
+| `events-subscriber-b` | `events:subscriber events-demo/{...}` | SUBSCRIBER that OWNS EXTERNAL RESOURCES (TCP server, interval, child process) released by `effect()`; `GET /api/events/subscriber-b` |
+
 ### Web UI plugins (M1-M4)
 
 The browser-based workbench UI is composed **only** of plugins: each one
@@ -152,6 +164,56 @@ fixture HTML, the cache/hash decision, the cap/spill path, the error envelope an
 the two registered tool schemas driven through a fake renderer (no browser and no
 network in the tests). Its chromium is a DEPLOYMENT input (`playwright-core` plus
 an installed browser), never a test dependency.
+
+## Plugin events and effects (`events@1`)
+
+A plugin gets the deepseek-harness style event surface and a lifecycle-bound
+`effect()` from `lib/events.ts`, typed by `definitions/events.ts`:
+
+```ts
+import { createEvents } from '../../lib/events.ts'
+
+export const name = 'email-watcher'
+export function apply(ctx: any) {
+  const events = createEvents(ctx, { namespace: name })
+
+  events.on('received', (message) => {/* ... */})        // gone when this plugin unloads
+  events.once('email-watcher/started', () => {/* ... */})
+  events.emit('polled', { at: Date.now() })              // fire and forget
+  await events.serial('email-watcher/poll', {}); /* stop at the first answer */
+  await events.parallel('email-watcher/poll', {}); /* all together, isolated */
+  events.bail('email-watcher/who', {}); /* first answer wins */
+  events.waterfall('email-watcher/parse', raw, () => 'done'); /* value threading */
+
+  events.effect(() => {                                  // release on unload / shutdown
+    const timer = setInterval(() => events.emit('polled'), 30_000)
+    return () => clearInterval(timer)
+  })
+}
+```
+
+- Modes: `on` / `once` / `off` / `emit` / `serial` / `parallel` / `bail` /
+  `waterfall`. The DISPATCH ENGINE is the host's cordis `EventsService` (not
+  re-implemented); this repository adds the typed contract, the event NAME
+  convention (`<namespace>/<event>`, reserved `internal/`, `plugin/`, `events/`,
+  collision detection), the missing `off`, ERROR ISOLATION (a throwing listener is
+  logged and never kills the emitter, the other listeners or the process) and the
+  `waterfall` value threading. See `docs/EVENTS.md` for the per-mode semantics.
+- Auto-unsubscribe: subscriptions are bound to the registering plugin's FIBER
+  (cordis' own fiber effect), the scope checks `disposed` before every call, and
+  every registration returns an IDEMPOTENT disposer - no leaked handler, no call
+  after unload, no listener growth over load/unload cycles.
+- `effect(callback)`: the callback acquires now and returns the releaser(s);
+  disposers run EXACTLY ONCE, LIFO, isolated (a throwing one is logged and the
+  rest still run), async ones awaited with a bound, on plugin unload AND on
+  SIGTERM/SIGINT (`shutdown: false` opts out). This is THE recommended way to
+  release HTTP agents/sockets, DB pools, fs watchers, timers, subprocesses and
+  browser contexts.
+
+Documents: `docs/EVENTS.md` (contract, semantics, examples, verification).
+Tests: `test/events.test.ts` (the layer) and `test/events-plugins.test.ts` (the
+three example plugins end to end, incl. the REAL release of a socket, a child
+process and an interval).
 
 ## Develop / verify
 

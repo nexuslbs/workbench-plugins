@@ -1,0 +1,19 @@
+{
+  "name": "events-subscriber-b",
+  "version": "0.1.0",
+  "description": "Subscriber that owns EXTERNAL resources (TCP server, child process, heartbeat interval) released through effect() on unload/shutdown",
+  "entry": "index.ts",
+  "capabilities": [
+    "events:subscriber events-demo/{tick,parallel-work,bail-work,waterfall-work}",
+    "effect:releases tcp-server child-process interval",
+    "route:GET /api/events/subscriber-b"
+  ],
+  "config": {
+    "type": "object",
+    "properties": {
+      "port": { "type": "integer", "default": 12398 },
+      "heartbeatFile": { "type": "string" },
+      "path": { "type": "string", "default": "/api/events/subscriber-b" }
+    }
+  }
+}

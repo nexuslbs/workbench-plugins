@@ -1,0 +1,17 @@
+{
+  "name": "events-subscriber-a",
+  "version": "0.1.0",
+  "description": "Subscriber of another plugin events (on/once/serial/parallel/bail/waterfall) incl. a listener that throws on purpose",
+  "entry": "index.ts",
+  "capabilities": [
+    "events:subscriber events-demo/{tick,flaky,serial-work,parallel-work,bail-work,waterfall-work}",
+    "route:GET /api/events/subscriber-a"
+  ],
+  "config": {
+    "type": "object",
+    "properties": {
+      "path": { "type": "string", "default": "/api/events/subscriber-a" },
+      "parallelDelayMs": { "type": "integer", "default": 20 }
+    }
+  }
+}
