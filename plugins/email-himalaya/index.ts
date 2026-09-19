@@ -107,9 +107,14 @@ export function toSummary(envelope: HimalayaEnvelope, folder?: string): EmailSum
   }
 }
 
-/** Builds the raw RFC 5322 message himalaya submits over SMTP. */
-export function buildRawMessage(input: EmailSendInput): string {
+/**
+ * Builds the raw RFC 5322 message himalaya submits over SMTP. `from` is the
+ * account's own address (from the account row, never from the caller): himalaya
+ * v1.2 rejects a message without a sender.
+ */
+export function buildRawMessage(input: EmailSendInput, from?: string): string {
   const headers: string[] = []
+  if (from !== undefined && from.length > 0) headers.push(`From: ${from}`)
   const recipients = (value: string | string[] | undefined): string[] =>
     value === undefined ? [] : typeof value === 'string' ? [value] : value
   headers.push(`To: ${recipients(input.to).join(', ')}`)
@@ -118,6 +123,11 @@ export function buildRawMessage(input: EmailSendInput): string {
   const bcc = recipients(input.bcc)
   if (bcc.length > 0) headers.push(`Bcc: ${bcc.join(', ')}`)
   if (input.replyTo !== undefined) headers.push(`Reply-To: ${input.replyTo}`)
+/**
+ * Heredoc delimiter that carries the raw message on STDIN. Quoted, so the
+ * target shell expands nothing inside the message body.
+ */
+export const SEND_HEREDOC = 'WB_HIMALAYA_MESSAGE_EOF'
   headers.push(`Subject: ${input.subject}`)
   headers.push(`MIME-Version: 1.0`)
   headers.push(`Content-Type: ${input.html === true ? 'text/html' : 'text/plain'}; charset=utf-8`)
@@ -134,7 +144,12 @@ export function buildRawMessage(input: EmailSendInput): string {
  * quotes.
  */
 export function sendArgv(raw: string): string {
-  return ['message', 'send', shellQuote(raw)].join(' ')
+  // himalaya v1.2 CRASHES on a positional raw message (`message send <raw>`
+  // panics in mail-parser with `index out of bounds: the len is 0`), while it
+  // reads the same message from STDIN. A quoted heredoc is the portable way for
+  // the TARGET shell (sh/ash, no bashisms) to feed that stdin: the operator's
+  // message never becomes a shell word, so no split/glob/expansion can happen.
+  return ['message', 'send', `<<'${SEND_HEREDOC}'`, raw, SEND_HEREDOC].join('\n')
 }
 
 /**
@@ -248,7 +263,7 @@ export function createEmailProvider(himalaya: HimalayaService, config: EmailHima
     send: async (input: EmailSendInput): Promise<EmailSendResult> => {
       const target = resolve(input.ref)
       await checkCredential(target.row)
-      const raw = buildRawMessage(input)
+      const raw = buildRawMessage(input, target.row.address)
       const result = await himalaya.run({ args: sendArgv(raw), account: target.accountName })
       return {
         account: target.label,

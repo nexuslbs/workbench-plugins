@@ -280,11 +280,14 @@ test('send() builds the RFC 5322 message and hands ONE quoted argv string to him
   )
   assert.ok(!argv.includes('himalaya'), 'the fragment carries NO binary: the himalaya service owns it')
   assert.ok(
-    argv.startsWith("message send '"),
-    'the raw RFC 5322 message is handed over as ONE single-quoted argument',
+    argv.startsWith("message send <<'WB_HIMALAYA_MESSAGE_EOF'\n"),
+    'the raw message rides on STDIN: a POSITIONAL raw message crashes himalaya v1.2 (mail-parser panic)',
   )
-  assert.ok(argv.endsWith("'"), 'the quoted message closes at the very end of the argv string')
-  assert.ok(argv.includes('To: hermes@nexuslbs.org'), 'the recipient header rides in the quoted message')
+  assert.ok(
+    argv.trimEnd().endsWith('WB_HIMALAYA_MESSAGE_EOF'),
+    'the quoted heredoc closes at the very end (the target shell expands nothing in the body)',
+  )
+  assert.ok(argv.includes('To: hermes@nexuslbs.org'), 'the recipient header rides in the message body')
   assert.ok(argv.includes('Cc: copy@nexuslbs.org'))
   assert.ok(argv.includes('Subject: workbench smoke'))
   assert.ok(argv.includes('hello from the test'))
@@ -295,12 +298,14 @@ test('send() builds the RFC 5322 message and hands ONE quoted argv string to him
 test('the argv builders are pure: headers, quoting and the account flag', () => {
   const raw = buildRawMessage({ to: ['a@x.test', 'b@x.test'], subject: 's', body: 'b' })
   assert.equal(raw, 'To: a@x.test, b@x.test\r\nSubject: s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nb')
-  const html = buildRawMessage({ to: 'a@x.test', subject: "it's here", body: 'b', html: true })
+  const withFrom = buildRawMessage({ to: 'a@x.test', subject: 's', body: 'b' }, 'hermes@nexuslbs.org')
+  assert.ok(withFrom.startsWith('From: hermes@nexuslbs.org\r\n'), 'himalaya rejects a message without a sender')
+  const html = buildRawMessage({ to: 'a@x.test', subject: "it's here", body: 'b', html: true }, 'hermes@nexuslbs.org')
   assert.ok(html.includes("Subject: it's here"))
   assert.ok(html.includes('Content-Type: text/html'))
   const argv = sendArgv(html)
   assert.ok(argv.startsWith('message send '), 'the fragment starts AFTER the binary and carries no account flag')
-  assert.ok(argv.includes("'Subject: it's here'") === false, 'the message is ONE quoted word')
+  assert.ok(argv.includes("<<'WB_HIMALAYA_MESSAGE_EOF'"), 'the message travels on stdin, never as a positional word')
   assert.deepEqual(toSummary({ id: '1', flags: [], subject: 's', from: 'f', to: '', date: 'd', hasAttachment: false }).to, [])
 })
 
