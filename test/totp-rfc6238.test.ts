@@ -1,11 +1,16 @@
 // Unit test for the TOTP PROVIDER: RFC 4226/6238 correctness (published
 // vectors), base32 decoding, the boundary behaviour of `at`/remainingSeconds,
+// entry metadata without a secret, and the not-configured paths (a literal key,
+// a `credential: NAME` and a `${cred:NAME}` SECRET - the last one because a
+// capability-provider row reaches apply before the kernel's expansion step).
+// Nothing here imports the core or the consumer.viour of `at`/remainingSeconds,
 // entry metadata without a secret, and the not-configured paths. Nothing here
 // imports the core or the consumer.
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   apply,
+  credentialRefName,
   decodeBase32,
   encodeBase32,
   hotp,
@@ -40,7 +45,7 @@ interface Boot {
 }
 
 /** Boots the plugin with a fake context: records the registration and logs. */
-function boot(config: Config, credentials?: Credentials): Boot {
+async function boot(config: Config, credentials?: Credentials): Promise<Boot> {
   const registered: ProviderLike[] = []
   const logs: string[] = []
   const ctx = {
@@ -63,7 +68,7 @@ function boot(config: Config, credentials?: Credentials): Boot {
     logs.push(args.map((arg) => String(arg)).join(' '))
   }
   try {
-    apply(ctx as never, config)
+    await apply(ctx as never, config)
   } finally {
     console.error = original
   }
@@ -142,8 +147,8 @@ test('the boundary of a 30s step: T=59 and T=60 roll over and remainingSeconds i
   assert.equal(totp(secret, 59, 60).remainingSeconds, 1)
 })
 
-test('entries() reports metadata only: labels, digits/period/algorithm and configured', () => {
-  const { provider } = boot({
+test('entries() reports metadata only: labels, digits/period/algorithm and configured', async () => {
+  const { provider } = await boot({
     entries: {
       github: { secret: 'JBSWY3DPEHPK3PXP', issuer: 'GitHub', account: 'me@example.com' },
       'aws-root': { secret: 'JBSWY3DPEHPK3PXP', digits: 8, period: 60, algorithm: 'SHA256' },
@@ -177,17 +182,22 @@ test('entries() reports metadata only: labels, digits/period/algorithm and confi
 })
 
 test('code() generates for a named entry, defaults to now and honours `at`', async () => {
-  const { provider } = boot({ entries: { github: { secret: 'JBSWY3DPEHPK3PXP' } } })
-  const fixed = (await provider?.code('github', { at: 59 })) as CodeResult
-  assert.deepEqual(fixed, {
+  const secret = encodeBase32(Buffer.from(SHA1_SECRET_ASCII))
+  const booted = boot({ entries: { github: { secret } } })
+  assert.ok(booted instanceof Promise, 'apply() is async so that entries() can report resolvability truthfully')
+  const { provider } = await booted
+  // `at` pins the step exactly: RFC 6238 appendix B, SHA1, T=59 -> 94287082;
+  // at the 6-digit default that is the low digits, 287082.
+  assert.deepEqual(await provider?.code('github', { at: 59 }), {
     label: 'github',
-    code: totp(decodeBase32('JBSWY3DPEHPK3PXP'), 59, 30, 6, 'SHA1').code,
+    code: '287082',
     digits: 6,
     period: 30,
     algorithm: 'SHA1',
     generatedAt: 59,
     remainingSeconds: 1,
   })
+  // No `at`: the plugin reads the wall clock and never shifts it.
   const now = (await provider?.code('github')) as CodeResult
   assert.match(now.code, /^[0-9]{6}$/)
   assert.ok(now.generatedAt > 1_600_000_000, 'defaults to the current clock')
@@ -195,7 +205,7 @@ test('code() generates for a named entry, defaults to now and honours `at`', asy
 })
 
 test('an unknown label is a structured error, never a crash', async () => {
-  const { provider } = boot({ entries: { github: { secret: 'JBSWY3DPEHPK3PXP' } } })
+  const { provider } = await boot({ entries: { github: { secret: 'JBSWY3DPEHPK3PXP' } } })
   await assert.rejects(async () => await provider?.code('nope'), (error: unknown) => {
     assert.equal((error as Error).name, 'TotpUnknownEntryError')
     assert.equal((error as { label?: string }).label, 'nope')
@@ -206,7 +216,7 @@ test('an unknown label is a structured error, never a crash', async () => {
   assert.equal(provider?.entries().length, 1)
 })
 
-test('a credential-backed entry resolves at CALL time through ctx.credentials', async () => {
+test('a credential-backed entry is resolved once at LOAD time and again at CALL time through ctx.credentials', async () => {
   const asked: string[] = []
   const credentials: Credentials = {
     resolve: async (ref) => {
@@ -215,7 +225,7 @@ test('a credential-backed entry resolves at CALL time through ctx.credentials', 
       return undefined
     },
   }
-  const { provider } = boot(
+  const { provider, logs } = await boot(
     {
       entries: {
         github: { credential: 'TOTP_GITHUB_KEY' },
@@ -224,10 +234,15 @@ test('a credential-backed entry resolves at CALL time through ctx.credentials', 
     },
     credentials,
   )
-  assert.deepEqual(asked, [], 'resolution happens at call time, not at load time')
+  assert.deepEqual(asked, ['TOTP_GITHUB_KEY', 'TOTP_ABSENT'], 'each reference is probed once while loading')
+  const infos = provider?.entries() ?? []
+  assert.equal(infos[0]?.configured, true, 'a resolvable reference is reported configured')
+  assert.equal(infos[1]?.configured, false, 'an unresolvable reference is reported NOT configured')
+  assert.equal(logs.length, 1, 'the unresolved entry is logged once, never thrown out of apply')
+  assert.match(logs[0] ?? '', /entry 'missing' is not configured: credential 'TOTP_ABSENT' did not resolve/)
   const result = (await provider?.code('github', { at: 59 })) as CodeResult
   assert.equal(result.code, totp(decodeBase32('JBSWY3DPEHPK3PXP'), 59).code)
-  assert.deepEqual(asked, ['TOTP_GITHUB_KEY'])
+  assert.equal(asked.filter((name) => name === 'TOTP_GITHUB_KEY').length, 2, 'resolved again on the call')
   await assert.rejects(async () => await provider?.code('missing'), (error: unknown) => {
     assert.equal((error as Error).name, 'TotpEntryNotConfiguredError')
     assert.match((error as Error).message, /entry 'missing' is not configured: credential 'TOTP_ABSENT' did not resolve/)
@@ -235,10 +250,36 @@ test('a credential-backed entry resolves at CALL time through ctx.credentials', 
   })
 })
 
+test('a `${cred:NAME}` SECRET resolves at call time (a provider row reaches apply unexpanded)', async () => {
+  assert.equal(credentialRefName('${cred:TOTP_GITHUB_KEY}'), 'TOTP_GITHUB_KEY')
+  assert.equal(credentialRefName('${cred:team/TOTP_KEY}'), 'team/TOTP_KEY')
+  assert.equal(credentialRefName('JBSWY3DPEHPK3PXP'), undefined)
+  const scopeAsked: ({ name: string; scope?: string })[] = []
+  const credentials: Credentials = {
+    resolve: async (ref) => {
+      scopeAsked.push(ref)
+      if (ref.name === 'TOTP_SCOPED' && ref.scope === 'team') return { value: 'JBSWY3DPEHPK3PXP' }
+      return undefined
+    },
+  }
+  const { provider } = await boot(
+    { entries: { scoped: { secret: '${cred:team/TOTP_SCOPED}' }, absent: { secret: '${cred:TOTP_NOPE}' } } },
+    credentials,
+  )
+  assert.deepEqual(scopeAsked[0], { name: 'TOTP_SCOPED', scope: 'team' }, 'SCOPE/NAME is parsed')
+  const infos = provider?.entries() ?? []
+  assert.equal(infos[0]?.configured, true)
+  assert.equal(infos[1]?.configured, false)
+  assert.equal(JSON.stringify(infos).includes('${cred:'), false, 'the reference never leaks into entries()')
+  const result = (await provider?.code('scoped', { at: 59 })) as CodeResult
+  assert.equal(result.code, totp(decodeBase32('JBSWY3DPEHPK3PXP'), 59).code)
+  await assert.rejects(async () => await provider?.code('absent'), /entry 'absent' is not configured: credential 'TOTP_NOPE' did not resolve/)
+})
+
 test('a credential that is not base32, and a literal key that is not base32, are NOT CONFIGURED (never echoed)', async () => {
   const credentials: Credentials = { resolve: () => ({ value: 'not base32 !!!' }) }
   const literal = 'JBSWY3DP!HPK3PXP'
-  const { provider } = boot(
+  const { provider } = await boot(
     {
       entries: {
         cred: { credential: 'TOTP_BAD' },
@@ -268,8 +309,8 @@ test('maskSecret redacts a key in diagnostics', () => {
   assert.equal(maskSecret(''), '(empty)')
 })
 
-test('with no entries the plugin LOADS, logs NOT CONFIGURED and registers nothing', () => {
-  const { registered, logs } = boot({})
+test('with no entries the plugin LOADS, logs NOT CONFIGURED and registers nothing', async () => {
+  const { registered, logs } = await boot({})
   assert.deepEqual(registered, [])
   assert.equal(logs.length, 1)
   assert.match(logs[0] ?? '', /totp-rfc6238: not configured/)

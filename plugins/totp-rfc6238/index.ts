@@ -94,7 +94,13 @@ export interface ResolvedEntry {
   credential?: string
 }
 
-/** What `entries()` reports: METADATA ONLY (never a key, never a code). */
+/**
+ * What `entries()` reports: METADATA ONLY (never a key, never a code).
+ * `configured` is the TRUTH about resolvability, not merely the presence of a
+ * configuration field: a reference that resolves (checked when the plugin
+ * loads, and again on every call) reports `true`, a literal key reports `true`,
+ * and a reference that does not resolve reports `false`.
+ */
 export interface EntryInfo {
   label: string
   issuer?: string
@@ -135,6 +141,44 @@ interface PluginContext {
   totp: { register(provider: ProviderLike): () => void }
   credentials?: CredentialsLike
   effect(callback: () => () => void): void
+}
+
+/**
+ * The core's credential-reference spelling, `${cred:NAME}` (or
+ * `${cred:SCOPE/NAME}`), as `docs/CREDENTIALS.md` defines it.
+ *
+ * WHY A PROVIDER SEES ONE: the kernel expands `${cred:...}` references in the
+ * `plugins:` rows of the plugins it applies AFTER its capability-provider phase,
+ * and a capability PROVIDER is applied in that first phase (its services must
+ * exist before the consumers can be configured). A `secret: ${cred:NAME}` in a
+ * provider row therefore arrives here UNEXPANDED, and this plugin resolves it
+ * itself, at CALL time. That also keeps contract rule 6 (see the file header):
+ * an unresolvable reference leaves the plugin LOADED with that entry NOT
+ * configured, instead of failing the whole load.
+ */
+const CREDENTIAL_REF = /^\$\{cred:([^}]+)\}$/
+
+/**
+ * The credential NAME a configured value references, or `undefined` when the
+ * value is a LITERAL key. Never returns a value this plugin produced.
+ */
+export function credentialRefName(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const match = CREDENTIAL_REF.exec(value.trim())
+  if (!match) return undefined
+  const body = (match[1] ?? '').trim()
+  return body.length === 0 ? undefined : body
+}
+
+/**
+ * Splits a credential NAME into the reference `ctx.credentials.resolve` takes:
+ * `NAME` stays unscoped, `SCOPE/NAME` gains a scope. A malformed scope is
+ * treated as part of the name (the credentials service decides).
+ */
+function parseCredentialName(name: string): { name: string; scope?: string } {
+  const slash = name.indexOf('/')
+  if (slash <= 0 || slash === name.length - 1) return { name }
+  return { name: name.slice(slash + 1), scope: name.slice(0, slash) }
 }
 
 const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
@@ -313,8 +357,26 @@ export function normalizeEntries(config: Config = {}): ResolvedEntry[] {
   return entries
 }
 
+/** ONE entry plus the runtime state the plugin tracks for it. */
+export interface RuntimeEntry {
+  entry: ResolvedEntry
+  /** The credential NAME this entry's key comes from, when it is a reference. */
+  reference?: string
+  /** TRUE only when a real key is available (literal, or a resolved reference). */
+  configured: boolean
+  /** Why the key is unavailable; NEVER a key, only a name/mask. */
+  reason?: string
+}
+
+/** The credential NAME an entry's key comes from, or `undefined` for a literal. */
+export function referenceOf(entry: ResolvedEntry): string | undefined {
+  if (entry.credential !== undefined) return entry.credential
+  return entry.secret === undefined ? undefined : credentialRefName(entry.secret)
+}
+
 /** The metadata of one entry (never a secret). */
-function infoOf(entry: ResolvedEntry): EntryInfo {
+function infoOf(runtime: RuntimeEntry): EntryInfo {
+  const entry = runtime.entry
   return {
     label: entry.label,
     ...(entry.issuer === undefined ? {} : { issuer: entry.issuer }),
@@ -322,7 +384,7 @@ function infoOf(entry: ResolvedEntry): EntryInfo {
     digits: entry.digits,
     period: entry.period,
     algorithm: entry.algorithm,
-    configured: entry.secret !== undefined || entry.credential !== undefined,
+    configured: runtime.configured,
   }
 }
 
@@ -350,12 +412,17 @@ export function notConfiguredError(label: string, reason: string): Error {
 
 /**
  * The plugin entrypoint. Contract rule 6: a MISSING `entries` row is not a
- * failure - the plugin loads, reports NOT CONFIGURED and registers nothing, so
- * the capability reports itself as not configured. An entry with no key, or with
- * a credential that does not resolve, keeps the plugin loaded too: only a call
- * for THAT entry fails.
+ * failure - the plugin loads, reports NOT CONFIGURED and registers nothing. An
+ * entry whose key cannot be resolved keeps the plugin loaded too and reports
+ * `configured: false`; only a call for THAT entry fails.
+ *
+ * `apply` is ASYNC because a credential REFERENCE is resolved once while
+ * loading, so `entries()` reports resolvability truthfully instead of merely
+ * echoing the configuration. It never throws on a missing credential: a failed
+ * resolution is logged (credential NAME only, never a value) and the entry is
+ * marked not configured.
  */
-export function apply(ctx: PluginContext, config: Config = {}): void {
+export async function apply(ctx: PluginContext, config: Config = {}): Promise<void> {
   const entries = normalizeEntries(config)
   if (entries.length === 0) {
     console.error(
@@ -365,30 +432,53 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
     return
   }
 
-  const infos = entries.map(infoOf)
+  const runtimes: RuntimeEntry[] = entries.map((entry) => {
+    const reference = referenceOf(entry)
+    const hasKey = reference !== undefined || entry.secret !== undefined
+    return {
+      entry,
+      ...(reference === undefined ? {} : { reference }),
+      // An entry with NEITHER a credential NOR a literal key is not configured:
+      // it loads (the plugin stays loaded) but only a call for it fails.
+      configured: hasKey && reference === undefined,
+    }
+  })
 
-  /** The key of one entry, as bytes, or a structured error - never a key in text. */
-  const keyOf = async (entry: ResolvedEntry): Promise<Buffer> => {
-    if (entry.credential !== undefined) {
+  /**
+   * The key of one entry as bytes. A REFERENCE is resolved through
+   * `ctx.credentials` at CALL time (a credential that appears after load starts
+   * working, and one that is missing never affects another entry); a literal base32
+   * key is decoded directly. Every failure names the credential NAME or a MASKED
+   * key - never a value.
+   */
+  const keyOf = async (runtime: RuntimeEntry): Promise<Buffer> => {
+    const { entry, reference } = runtime
+    if (reference !== undefined) {
       const credentials = ctx.credentials
       if (!credentials) {
-        throw notConfiguredError(entry.label, `credential '${entry.credential}' cannot be resolved (the credentials capability is not available)`)
+        throw notConfiguredError(
+          entry.label,
+          `credential '${reference}' cannot be resolved (the credentials capability is not available)`,
+        )
       }
-      const resolution = await credentials.resolve({ name: entry.credential })
+      const resolution = await credentials.resolve(parseCredentialName(reference))
       const value = resolution?.value
       if (typeof value !== 'string' || value.trim().length === 0) {
-        throw notConfiguredError(entry.label, `credential '${entry.credential}' did not resolve to a value`)
+        throw notConfiguredError(entry.label, `credential '${reference}' did not resolve to a value`)
       }
       try {
         return decodeBase32(value)
       } catch (error) {
         throw notConfiguredError(
           entry.label,
-          `credential '${entry.credential}' is not a base32 key (${messageOf(error)})`,
+          `credential '${reference}' is not a base32 key (${messageOf(error)})`,
         )
       }
     }
-    const secret = entry.secret as string
+    if (entry.secret === undefined) {
+      throw notConfiguredError(entry.label, "the entry declares neither a 'credential' nor a 'secret'")
+    }
+    const secret = entry.secret
     try {
       return decodeBase32(secret)
     } catch (error) {
@@ -399,18 +489,34 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
     }
   }
 
+  // Best-effort resolution while loading: `entries()` then tells the truth about
+  // every entry instead of repeating its configuration.
+  for (const runtime of runtimes) {
+    if (runtime.reference === undefined) continue
+    try {
+      await keyOf(runtime)
+      runtime.configured = true
+    } catch (error) {
+      runtime.reason = messageOf(error)
+      console.error(`totp-rfc6238: ${runtime.reason}`)
+    }
+  }
+
   ctx.effect(() =>
     ctx.totp.register({
       id: providerId,
       version: CONTRACT_VERSION,
       describe: () =>
-        `RFC 6238 TOTP over HMAC (${ALGORITHMS.join('/')}), ${String(entries.length)} configured entr${entries.length === 1 ? 'y' : 'ies'}: ${entries.map((entry) => entry.label).join(', ')}`,
-      entries: () => infos,
+        `RFC 6238 TOTP over HMAC (${ALGORITHMS.join('/')}), ${String(runtimes.filter((runtime) => runtime.configured).length)}/${String(runtimes.length)} entr${runtimes.length === 1 ? 'y' : 'ies'} configured: ${runtimes.map((runtime) => runtime.entry.label).join(', ')}`,
+      entries: () => runtimes.map(infoOf),
       code: async (label: string, options: { at?: number } = {}): Promise<CodeResult> => {
         const name = typeof label === 'string' ? label.trim() : ''
-        const entry = entries.find((candidate) => candidate.label === name)
-        if (!entry) throw unknownEntryError(name, entries.map((candidate) => candidate.label))
-        const key = await keyOf(entry)
+        const runtime = runtimes.find((candidate) => candidate.entry.label === name)
+        if (!runtime) throw unknownEntryError(name, runtimes.map((candidate) => candidate.entry.label))
+        const entry = runtime.entry
+        const key = await keyOf(runtime)
+        runtime.configured = true
+        delete runtime.reason
         const at = options.at ?? Math.floor(Date.now() / 1000)
         const { code, remainingSeconds } = totp(key, at, entry.period, entry.digits, entry.algorithm)
         return {
@@ -432,4 +538,8 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-export default { name, inject: ['totp'], apply }
+// `credentials` is INJECTED (and required) because the provider resolves the
+// credential references of its own rows: without the declaration cordis refuses
+// the `ctx.credentials` access outright ("cannot get property credentials without
+// inject"). The core always registers the credentials service.
+export default { name, inject: ['totp', 'credentials'], apply }
