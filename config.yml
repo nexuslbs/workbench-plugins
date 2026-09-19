@@ -9,11 +9,8 @@
 # (config/workbench.yml -> /opt/omni/config/workbench.yml), where this repository
 # is a REMOTE git source instead of the local checkout used here.
 sources:
-  # core plugins: the sibling core checkout, edited live during development
-  - kind: path
-    id: core
-    path: ../workbench/plugins
-    external: false
+  # NO core plugin source: the core repo (nexuslbs/workbench) ships ZERO plugins
+  # since v0.0.2 - every plugin, including this repository's, is EXTERNAL.
   # THIS repository, referenced LOCALLY: a plugin under development is picked up
   # at the next boot, with no clone and no push.
   - kind: path

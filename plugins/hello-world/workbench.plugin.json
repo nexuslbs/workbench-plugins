@@ -1,0 +1,13 @@
+{
+  "name": "hello-world",
+  "version": "0.1.0",
+  "description": "Greeting plugin (moved out of the core): registers the 'hello world' command",
+  "entry": "index.ts",
+  "capabilities": ["command:hello world"],
+  "config": {
+    "type": "object",
+    "properties": {
+      "message": { "type": "string", "default": "Hello World" }
+    }
+  }
+}
