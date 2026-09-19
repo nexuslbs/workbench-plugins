@@ -17,11 +17,18 @@ export type PageErrorCode =
   | 'connection'
   | 'extract_empty'
   | 'cache'
+  // The RECIPE read-through: a recipe-driven read that cannot be honoured. The
+  // caller sees why and (by policy) falls back to the plain render path.
+  | 'recipe_missing_api'
+  | 'recipe_credential_missing'
+  | 'recipe_failed'
   | 'internal'
 
 export interface PageErrorOptions {
   /** The URL the failure belongs to (never a credential value). */
   url?: string
+  /** The recipe DOMAIN the failure belongs to, when no URL is at hand (never a credential). */
+  domain?: string
   /** The underlying transport/browser text, kept verbatim for diagnosis. */
   detail?: string
   /** Whether calling again can plausibly succeed (a 404 is not retryable). */
@@ -34,6 +41,7 @@ export interface PageErrorOptions {
 export class PageError extends Error {
   readonly code: PageErrorCode
   readonly url: string | undefined
+  readonly domain: string | undefined
   readonly detail: string | undefined
   readonly retryable: boolean
   readonly hint: string | undefined
@@ -41,12 +49,13 @@ export class PageError extends Error {
   private readonly rawMessage: string
 
   constructor(code: PageErrorCode, message: string, options: PageErrorOptions = {}) {
-    const where = options.url === undefined ? '' : ` [${options.url}]`
+    const where = options.url === undefined ? (options.domain === undefined ? '' : ` [${options.domain}]`) : ` [${options.url}]`
     const why = options.detail === undefined || options.detail.length === 0 ? '' : ` (${truncate(options.detail, 300)})`
     super(`web-page: ${code}: ${message}${where}${why}`)
     this.name = 'PageError'
     this.code = code
     this.url = options.url
+    this.domain = options.domain
     this.detail = options.detail
     this.retryable = options.retryable ?? false
     this.hint = options.hint

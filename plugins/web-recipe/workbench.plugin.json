@@ -1,0 +1,27 @@
+{
+  "name": "web-recipe",
+  "version": "0.1.0",
+  "description": "External web-recipe STORE + PROVIDER: a durable per-domain recipe (read path, named selectors, discovered JSON endpoints, login flow by credential NAME, quirks, provenance) in one human-readable file per domain, exposed as the tools 'recipe get', 'recipe save', 'recipe list', 'recipe delete', 'recipe verify' and as the cordis service `web-recipe` (contract web-recipe@1) that web-page consumes for its read-through",
+  "entry": "index.ts",
+  "capabilities": [
+    "service:web-recipe@1",
+    "tool:recipe get",
+    "tool:recipe save",
+    "tool:recipe list",
+    "tool:recipe delete",
+    "tool:recipe verify"
+  ],
+  "config": {
+    "type": "object",
+    "properties": {
+      "dir": { "type": "string", "description": "where the recipes live, one JSON file per domain (default: <tmp>/workbench-web-recipe; the dev config points it at .workbench/web-recipe, which is git-ignored)" },
+      "minConfidence": { "type": "number", "default": 0.2, "description": "a recipe below this confidence is not offered to the read-through" },
+      "maxAgeDays": { "type": "number", "default": 0, "description": "when > 0, a recipe whose lastVerifiedAt is older than this many days is ignored (0 = no age limit)" },
+      "demoteOnFailure": { "type": "boolean", "default": true, "description": "a failed verification lowers confidence (and after enough failures the recipe falls below minConfidence and stops being used)" },
+      "demoteStep": { "type": "number", "default": 0.2, "description": "how much one verification moves confidence" },
+      "acceptRecords": { "type": "boolean", "default": true, "description": "may a CONSUMER record a discovered read path at all (a discovery never overwrites an existing recipe)" },
+      "recordConfidence": { "type": "number", "default": 0.3, "description": "confidence a freshly recorded, never verified recipe starts with" },
+      "verifyTimeoutMs": { "type": "number", "default": 10000, "description": "HTTP timeout of a `recipe verify` API probe" }
+    }
+  }
+}

@@ -106,6 +106,30 @@ plugins:
   web-page:
     cacheDir: /opt/workspace/workbench-plugins/.workbench/web-page-cache
     cacheTtlSeconds: 900
+    # The READ-THROUGH of the recipe store below (plugins/web-recipe): a usable
+    # recipe for the domain is consulted BEFORE the browser is launched - its
+    # discovered API endpoint when it has one, else its saved selectors. Both
+    # gates are spelled out, and `record` is OFF on purpose: recipes stay
+    # curated, not accidental.
+    recipes:
+      enabled: true
+      record: false
+
+  # The per-domain RECIPE STORE (see plugins/web-recipe/README.md): durable,
+  # agent-agnostic knowledge about a site (read path, named selectors,
+  # discovered JSON endpoints, login flow by credential NAME, quirks) in ONE
+  # human-readable JSON file per domain. It PROVIDES the cordis service
+  # `web-recipe` (contract web-recipe@1) that web-page consumes, and registers
+  # the tools 'recipe get', 'recipe save', 'recipe list', 'recipe delete' and
+  # 'recipe verify'. `.workbench/` is git-ignored, so recipes are local state.
+  web-recipe:
+    dir: /opt/workspace/workbench-plugins/.workbench/web-recipe
+    minConfidence: 0.2
+    maxAgeDays: 0
+    demoteOnFailure: true
+    demoteStep: 0.2
+    acceptRecords: true
+    verifyTimeoutMs: 10000
 
   # The plugin of the EXTERNAL GIT source (`workbench-plugins-git`, subdir
   # `examples`): cloned from GitHub at boot, so naming it here is what keeps the

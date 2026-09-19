@@ -3,6 +3,8 @@
 // into the shape the code uses.
 import os from 'node:os'
 import path from 'node:path'
+import { resolveRecipeConfig } from './recipe.ts'
+import type { RecipeConfig } from './recipe.ts'
 
 /** The `plugins: web-page:` row, exactly as an operator writes it. */
 export interface WebPageConfig {
@@ -40,6 +42,17 @@ export interface WebPageConfig {
   mapMaxChars?: number
   /** Extra strings that must never appear in a log line (values are NOT put in config). */
   redact?: string[]
+  /**
+   * Read-through of the `web-recipe` store (plugins/web-recipe): a stored recipe
+   * for the domain is consulted BEFORE the page is rendered. `record` writes a
+   * discovered read path back into the store and is OFF by default, so recipes
+   * stay curated rather than accidental.
+   */
+  recipes?: {
+    enabled?: boolean
+    record?: boolean
+    sourceThread?: string
+  }
 }
 
 /** The resolved configuration: every field concrete, nothing optional. */
@@ -61,6 +74,7 @@ export interface ResolvedConfig {
   proxy: { server: string; credential?: string; username?: string } | undefined
   mapMaxChars: number
   redact: string[]
+  recipes: RecipeConfig
 }
 
 export const DEFAULT_BROWSER_ARGS = ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
@@ -101,6 +115,7 @@ export function resolveConfig(raw: WebPageConfig | undefined): ResolvedConfig {
     proxy: proxyOf(config.proxy),
     mapMaxChars: boundInt(config.mapMaxChars, 4000, 200, 200000),
     redact: stringList(config.redact) ?? [],
+    recipes: resolveRecipeConfig(config.recipes),
   }
 }
 
