@@ -152,6 +152,41 @@ plugins:
   totp-tools:
     reportEntryMetadata: true
 
+  # The SMS capability (core docs/PLUGIN-CONTRACT.md 4g): the PROVIDER below
+  # implements `sms@1` READ-ONLY on the Twilio REST API 2010-04-01 (Messages
+  # resource, GET only - no sending, no webhook, no number provisioning), the
+  # CONSUMER exposes it as the tools 'sms numbers', 'sms list', 'sms get' and
+  # 'sms code'.
+  #
+  # The numbers are placeholders and NO TOKEN VALUE IS IN THIS FILE: `authToken`
+  # is a credential NAME, resolved at CALL time through ctx.credentials. The
+  # `${cred:NAME}` spelling is supported too (the plugin resolves both forms) and
+  # is preferred when the credential is GUARANTEED to exist: the core expands it
+  # BEFORE the plugins load, and a missing one aborts the boot - which is why the
+  # rows below, like the totp/email rows, use the plain NAME form so the dev
+  # config boots with an empty credential store. The required credential NAMES are
+  # TWILIO_PERSONAL_TOKEN and TWILIO_WORK_TOKEN; with them absent the plugin
+  # stays LOADED and reports every number `configured: false` - only a call for
+  # one of them fails.
+  sms-twilio:
+    defaultNumber: personal
+    numbers:
+      personal:
+        number: "+15551234567"
+        accountSid: ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+        authToken: TWILIO_PERSONAL_TOKEN
+        description: personal phone
+      work:
+        number: "+15557654321"
+        accountSid: ACyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy
+        authToken: TWILIO_WORK_TOKEN
+    timeoutMs: 8000
+    maxPages: 3
+  sms-tools:
+    defaultListLimit: 10
+    maxListLimit: 50
+    includeBodies: true
+
 web:
   enabled: true
   # Inside the compose service the listener must not bind the container's
