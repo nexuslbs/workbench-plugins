@@ -108,6 +108,12 @@ export function toSummary(envelope: HimalayaEnvelope, folder?: string): EmailSum
 }
 
 /**
+ * Heredoc delimiter that carries the raw message on STDIN. Quoted, so the
+ * target shell expands nothing inside the message body.
+ */
+export const SEND_HEREDOC = 'WB_HIMALAYA_MESSAGE_EOF'
+
+/**
  * Builds the raw RFC 5322 message himalaya submits over SMTP. `from` is the
  * account's own address (from the account row, never from the caller): himalaya
  * v1.2 rejects a message without a sender.
@@ -123,11 +129,6 @@ export function buildRawMessage(input: EmailSendInput, from?: string): string {
   const bcc = recipients(input.bcc)
   if (bcc.length > 0) headers.push(`Bcc: ${bcc.join(', ')}`)
   if (input.replyTo !== undefined) headers.push(`Reply-To: ${input.replyTo}`)
-/**
- * Heredoc delimiter that carries the raw message on STDIN. Quoted, so the
- * target shell expands nothing inside the message body.
- */
-export const SEND_HEREDOC = 'WB_HIMALAYA_MESSAGE_EOF'
   headers.push(`Subject: ${input.subject}`)
   headers.push(`MIME-Version: 1.0`)
   headers.push(`Content-Type: ${input.html === true ? 'text/html' : 'text/plain'}; charset=utf-8`)
