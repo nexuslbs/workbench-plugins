@@ -388,8 +388,11 @@ DEPLOYMENT MODEL: the browser is a SEPARATE IMAGE (operator decision,
 telegram thread 2593: "the browser image is a separate image, not the workbench
 image"). The published `ghcr.io/nexuslbs/workbench` image stays BROWSER-FREE: it
 ships no chromium and no browser cache. A deployment runs ONE browser service
-from its own image (`mcr.microsoft.com/playwright:vX-noble`, or any image
-shipping chromium) and the provider ATTACHES to it over CDP. The service is
+from its own image - the browser service image published FROM THIS repository as
+`ghcr.io/nexuslbs/workbench-plugins/browser:X.Y.Z` (source `browser/`, publishing
+workflow `.github/workflows/browser-publish.yml`, built FROM
+`mcr.microsoft.com/playwright:vX-noble`; any image shipping chromium works too)
+- and the provider ATTACHES to it over CDP. The service is
 declared - and, when it does not answer yet, STARTED - through the
 `general-service@1` seam, so the transport (container / ssh / shell / http) is
 CONFIG, never a hard-wired docker or ssh call inside the provider.
@@ -403,7 +406,7 @@ browser-use-playwright:           # the provider: it OWNS NO BROWSER
   viewport: { width: 1280, height: 720 }
   browserService:
     endpoint: http://127.0.0.1:9222   # where the browser image answers (or a ws:// CDP URL)
-    image: mcr.microsoft.com/playwright:v1.63.0-noble
+    image: ghcr.io/nexuslbs/workbench-plugins/browser:0.0.1
     generalService: { type: container, params: { container: workbench-browser } }
     start: '<start chromium with --remote-debugging-port=9222>'
     startTimeoutMs: 20000

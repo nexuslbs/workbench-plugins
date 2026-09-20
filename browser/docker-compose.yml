@@ -1,0 +1,25 @@
+# The browser service, as its OWN compose project - never part of the workbench
+# image and never part of a production project. A workbench deployment either
+# joins this container's network, or reaches it on a host port, and points
+# `browser-use-playwright.browserService.endpoint` at it.
+#
+#   docker compose -f browser/docker-compose.yml -p workbench-browser up -d
+#
+# The published variant of this image is
+# `ghcr.io/nexuslbs/workbench-plugins/browser:X.Y.Z` (published from THIS
+# repository on a `browser-X.Y.Z` tag, see browser/README.md);
+# `mcr.microsoft.com/playwright:v1.63.0-noble` is the upstream equivalent.
+name: workbench-browser
+
+services:
+  browser:
+    image: ${BROWSER_IMAGE:-ghcr.io/nexuslbs/workbench-plugins/browser:latest}
+    container_name: ${BROWSER_CONTAINER:-workbench-browser}
+    restart: unless-stopped
+    shm_size: 1gb
+    environment:
+      BROWSER_CDP_PORT: "9222"
+    ports:
+      # Bind the CDP endpoint to the loopback of the host by default: a browser
+      # service is a privileged capability, expose it deliberately.
+      - "127.0.0.1:${BROWSER_CDP_PORT:-9222}:9222"

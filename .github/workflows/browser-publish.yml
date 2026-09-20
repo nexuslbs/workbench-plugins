@@ -1,0 +1,110 @@
+# Publish the BROWSER SERVICE image of workbench to GitHub Container Registry.
+#
+# TRIGGERS / TAG POLICY (the operator's spec):
+#   * push of tag `browser-X.Y.Z` -> ghcr.io/nexuslbs/workbench-plugins/browser:X.Y.Z AND :latest
+#
+# A `browser-*` tag is the ONLY trigger: this workflow builds nothing on a
+# branch push and nothing on a `v*` (core) tag. The image tag is the git tag with
+# the `browser-` prefix stripped (`browser-0.0.1` -> `.../browser:0.0.1`).
+#
+# The image is a SEPARATE artifact from the workbench core image
+# (`ghcr.io/nexuslbs/workbench`, published by nexuslbs/workbench): it carries NO
+# workbench code and NO workbench dependency, only chromium + the `start-browser`
+# entrypoint (see browser/README.md). The core image stays browser-free.
+#
+# The image is built ONCE, smoke-tested (the CDP endpoint must answer), and only
+# then pushed - the pushed image is the tested one.
+#
+# Auth: GHCR only via the workflow's own GITHUB_TOKEN (`packages: write`).
+# No PAT, no app key, no secret is referenced or committed anywhere here.
+name: browser publish
+
+on:
+  push:
+    tags:
+      - 'browser-*'
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: browser-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # The artifact of THIS repository: <repository>/browser.
+  IMAGE: ghcr.io/nexuslbs/workbench-plugins/browser
+
+jobs:
+  publish:
+    name: Build, smoke-test and publish the browser service image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve the image version from the tag
+        id: version
+        run: |
+          set -euo pipefail
+          REF="${GITHUB_REF_NAME}"
+          case "$REF" in
+            browser-*) VERSION="${REF#browser-}" ;;
+            *)
+              echo "::error::ref '$REF' is not a browser-* tag; this workflow publishes only browser-* tags"
+              exit 1 ;;
+          esac
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'; then
+            echo "::error::tag '$REF' does not carry a version (expected browser-X.Y.Z)"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "publishing ${IMAGE}:${VERSION} and ${IMAGE}:latest"
+
+      - name: Build the browser service (no push)
+        run: |
+          set -euo pipefail
+          docker build -t "$IMAGE:local" browser
+          docker image inspect --format '{{.Id}} {{.RepoTags}}' "$IMAGE:local"
+
+      # The image is only worth publishing if the CDP endpoint it promises really
+      # answers: run it and require /json/version. A build-only job would publish
+      # an image nobody knows is usable.
+      - name: Smoke-test the built image (CDP must answer)
+        run: |
+          set -euo pipefail
+          docker run -d --name browser-smoke -p 9222:9222 "$IMAGE:local"
+          ok=0
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:9222/json/version > /tmp/version.json 2>/dev/null; then
+              ok=1
+              break
+            fi
+            sleep 2
+          done
+          cat /tmp/version.json 2>/dev/null || true
+          echo
+          docker logs browser-smoke 2>&1 | tail -n 20 || true
+          docker rm -f browser-smoke >/dev/null 2>&1 || true
+          test "$ok" = "1" || { echo "::error::the browser image never answered on the CDP endpoint /json/version"; exit 1; }
+          grep -q '"Browser"' /tmp/version.json
+          echo "OK: the browser service answers CDP on 127.0.0.1:9222"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag and push the SAME tested image
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          docker tag "$IMAGE:local" "$IMAGE:$VERSION"
+          docker tag "$IMAGE:local" "$IMAGE:latest"
+          docker push "$IMAGE:$VERSION"
+          docker push "$IMAGE:latest"
+          docker image inspect --format '{{.Id}}' "$IMAGE:$VERSION"
+          echo "pushed ${IMAGE}:${VERSION} and ${IMAGE}:latest"
