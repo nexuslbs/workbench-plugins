@@ -47,7 +47,8 @@ import type {
   ScreenshotRequest,
 } from '../definitions/computer-use.ts'
 import { createComputerUseService, validateComputerUseConfig } from '../core/computer-use-impl/index.ts'
-import { X11_TOOLS, createX11Provider, validateX11Config } from '../core/computer-use-x11/index.ts'
+import { X11_TOOLS, X11Provider, createX11Provider, spawnExec, validateX11Config } from '../core/computer-use-x11/index.ts'
+import type { ExecRequest, ExecResult, X11Runner } from '../core/computer-use-x11/index.ts'
 import * as computerTools from '../plugins/computer-use-tools/index.ts'
 
 // ---------------------------------------------------------------------------
@@ -441,6 +442,148 @@ test('x11: the driver config is normalized and its toolchain table is explicit',
 })
 
 // ---------------------------------------------------------------------------
+// core/computer-use-x11 - the driver against a FAKE runner. No display is
+// touched, yet the two rules a real display would hide are asserted: an owned
+// display is brought up BEFORE it is probed/reported, and a call never waits for
+// the pipes of a process that forks a descendant (xclip).
+// ---------------------------------------------------------------------------
+
+/** A structural X11 runner: the fake display answers only once Xvfb started. */
+class FakeX11Runner implements X11Runner {
+  readonly kind: RunnerKind = 'local'
+  readonly calls: Array<{ argv: readonly string[]; input?: string; stdio: string }> = []
+  private readonly options: { xvfb: boolean }
+  private displayPid?: number
+
+  constructor(options: { xvfb?: boolean } = {}) {
+    this.options = { xvfb: options.xvfb ?? true }
+  }
+
+  get displayUp(): boolean {
+    return this.displayPid !== undefined
+  }
+
+  async run(request: ExecRequest): Promise<ExecResult> {
+    this.calls.push({
+      argv: request.argv,
+      ...(request.input === undefined ? {} : { input: request.input.toString() }),
+      stdio: request.stdio ?? 'capture',
+    })
+    const [binary] = request.argv as string[]
+    if (binary === 'xdpyinfo') {
+      if (!this.displayUp) return { code: 1, stdout: Buffer.alloc(0), stderr: "xdpyinfo:  unable to open display ':77'" }
+      return { code: 0, stdout: Buffer.from('dimensions:    640x480 pixels\ndepth of root window:    24 planes\n'), stderr: '' }
+    }
+    if (binary === 'sh') return { code: 0, stdout: Buffer.from('state=absent\n'), stderr: '' }
+    if (binary === 'xclip') return { code: 0, stdout: Buffer.from('FAKE-CLIPBOARD'), stderr: '' }
+    return { code: 0, stdout: Buffer.alloc(0), stderr: '' }
+  }
+
+  async background(argv: readonly string[]): Promise<number | undefined> {
+    this.calls.push({ argv, stdio: 'background' })
+    this.displayPid = 4242
+    return this.displayPid
+  }
+
+  async kill(): Promise<void> {
+    this.displayPid = undefined
+  }
+
+  async has(binary: string): Promise<boolean> {
+    if (binary === 'Xvfb') return this.options.xvfb
+    return true
+  }
+}
+
+/** The driver of a fake `:77` that OWNS its display (windowManager: none). */
+function fakeOwnedProvider(runner: FakeX11Runner): X11Provider {
+  return new X11Provider(validateX11Config({ target: 'xvfb', display: ':77', windowManager: 'none' }), runner)
+}
+
+test('x11: spawnExec settles on the EXIT of the process, not on pipes a forked child holds', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'wb-spawn-exec-'))
+  const script = path.join(dir, 'forker.sh')
+  // The background child inherits stdout/stderr, so the pipes stay open after the
+  // parent exited - exactly what `xclip -i` does with its selection owner.
+  await fs.writeFile(script, '#!/bin/sh\nsleep 30 &\nprintf "done"\nexit 0\n', { mode: 0o755 })
+  try {
+    const started = Date.now()
+    const result = await spawnExec([script], { timeoutMs: 20_000 })
+    const elapsed = Date.now() - started
+    assert.equal(result.code, 0)
+    assert.equal(result.stdout.toString(), 'done')
+    assert.ok(elapsed < 5_000, `the call must answer when the process exited, not when its descendant died (took ${elapsed} ms)`)
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('x11: spawnExec still answers a TYPED timeout when the process itself does not exit', async () => {
+  const started = Date.now()
+  await assert.rejects(
+    () => spawnExec(['sh', '-c', 'sleep 30'], { timeoutMs: 400 }),
+    (error: unknown) => {
+      assert.ok(isComputerUseError(error), `expected a typed computer-use error, got ${String(error)}`)
+      assert.equal((error as ComputerUseError).reason, 'computer-use.timeout')
+      assert.equal((error as ComputerUseError).details?.binary, 'sh')
+      return true
+    },
+  )
+  assert.ok(Date.now() - started < 5_000, 'the deadline must answer, never wait for the pipes')
+})
+
+test('x11: capabilities() brings an OWNED display up itself (no false negative on `computer open`)', async () => {
+  const runner = new FakeX11Runner()
+  const provider = fakeOwnedProvider(runner)
+  try {
+    assert.equal(runner.displayUp, false, 'the fake display starts DOWN')
+    const report = await provider.capabilities()
+    assert.equal(runner.displayUp, true, 'the capability report must start the display this driver owns')
+    assert.equal(report.reachable, true, `the owned display must be reported reachable: ${String(report.unreachableReason)}`)
+    assert.equal(report.actions.screenshot, true)
+    assert.equal(report.actions.clipboard, true)
+    assert.deepEqual(report.unavailable, [])
+    assert.equal(report.unreachableReason, undefined)
+    assert.deepEqual(report.screen, { width: 640, height: 480, depth: 24 })
+  } finally {
+    await provider.dispose()
+  }
+})
+
+test('x11: capabilities() REPORTS an owned display that cannot start instead of throwing', async () => {
+  const runner = new FakeX11Runner({ xvfb: false })
+  const provider = fakeOwnedProvider(runner)
+  const report = await provider.capabilities()
+  assert.equal(report.reachable, false)
+  assert.match(String(report.unreachableReason), /Xvfb/, 'the typed reason must name the missing half')
+  assert.equal(report.actions.screenshot, false)
+  assert.ok(report.unavailable.some((entry) => entry.action === 'screenshot'))
+  await provider.dispose()
+})
+
+test('x11: clipboard() starts the owned display, and a write never inherits a captured pipe', async () => {
+  const runner = new FakeX11Runner()
+  const provider = fakeOwnedProvider(runner)
+  try {
+    const written = await provider.clipboard({ text: 'copy me' })
+    assert.equal(written.action, 'clipboard.write')
+    assert.equal(written.bytes, 7)
+    assert.equal(runner.displayUp, true, 'the clipboard path must bring the owned display up, like the screenshot path')
+    const clips = runner.calls.filter((call) => call.argv[0] === 'xclip')
+    assert.equal(clips.length, 1, 'the write must really run xclip once')
+    assert.equal(clips[0]?.stdio, 'ignore', 'writes hand the selection to a fork: no captured pipe may keep the call pending')
+    assert.equal(clips[0]?.input, 'copy me')
+
+    const read = await provider.clipboard({})
+    assert.equal(read.action, 'clipboard.read')
+    assert.equal(read.text, 'FAKE-CLIPBOARD')
+    assert.equal(runner.calls.filter((call) => call.argv[0] === 'xclip')[1]?.stdio, 'capture')
+  } finally {
+    await provider.dispose()
+  }
+})
+
+// ---------------------------------------------------------------------------
 // plugins/computer-use-tools - the consumer tool (routing + typed failures)
 // ---------------------------------------------------------------------------
 
@@ -667,8 +810,21 @@ function isAlive(pid: number): boolean {
   }
 }
 
-test('LIVE x11: screenshot, pointer, keyboard and window listing on an owned display', async (t) => {
-  const required = ['Xvfb', 'xdpyinfo', 'xdotool', 'import', 'wmctrl']
+/** Fails LOUDLY when a call does not answer in time: a hang IS the defect here. */
+function within<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`${what} did not answer within ${ms} ms`)), ms)
+      timer.unref()
+    }),
+  ])
+}
+
+test('LIVE x11: capability report, screenshot, pointer, keyboard, clipboard and window listing on an owned display', async (t) => {
+  // `xclip` is required too: the clipboard round-trip below is a REAL call, and a
+  // missing binary must SKIP the gate instead of failing it.
+  const required = ['Xvfb', 'xdpyinfo', 'xdotool', 'import', 'xclip', 'wmctrl']
   const missing = required.filter((binary) => spawnSync('sh', ['-c', `command -v ${binary}`]).status !== 0)
   if (process.env.COMPUTER_USE_LIVE === '0') {
     t.skip('COMPUTER_USE_LIVE=0: the live gate was disabled by the caller')
@@ -692,21 +848,26 @@ test('LIVE x11: screenshot, pointer, keyboard and window listing on an owned dis
   const service = createComputerUseService({} as never, { provider: 'x11', screenshotDir: dir })
 
   try {
+    const unregister = service.register(provider)
+
+    // The FIRST call of a fresh process is the capability report (`computer open`):
+    // it must bring the owned display up itself, or an agent is told the desktop
+    // is unusable one call before it works (D2).
+    const report = await within(service.capabilities(), 30_000, 'the capability report')
+    assert.equal(report.reachable, true, `the owned display must answer: ${String(report.unreachableReason)}`)
+    assert.ok(report.tools.length > 0, 'the capability report must list the probed binaries')
+    assert.ok(report.tools.every((tool) => tool.present), `every probed binary must be present: ${JSON.stringify(report.tools.filter((tool) => !tool.present))}`)
+    assert.equal(report.actions.screenshot, true)
+    assert.equal(report.actions.clipboard, true)
+
     const started = await provider.start?.()
     assert.ok(started === undefined || typeof started === 'object', 'start() answers the geometry of the display it owns')
-    const unregister = service.register(provider)
 
     const info = await service.screenInfo()
     assert.equal(info.provider, 'x11')
     assert.equal(info.display, display)
     assert.equal(info.width, 640)
     assert.equal(info.height, 480)
-
-    const report = await service.capabilities()
-    assert.equal(report.reachable, true, `the owned display must answer: ${String(report.unreachableReason)}`)
-    assert.ok(report.tools.length > 0, 'the capability report must list the probed binaries')
-    assert.ok(report.tools.every((tool) => tool.present), `every probed binary must be present: ${JSON.stringify(report.tools.filter((tool) => !tool.present))}`)
-    assert.equal(report.actions.screenshot, true)
 
     const shots: string[] = []
     const shot = await service.screenshot({ format: 'png', label: 'live' })
@@ -725,6 +886,16 @@ test('LIVE x11: screenshot, pointer, keyboard and window listing on an owned dis
     assert.match(moved.action, /mouse/)
     await service.keyboard('type', { text: 'hello' })
     await service.keyboard('key', { chord: 'Return' })
+
+    // The clipboard must round-trip AND answer: `xclip -i` hands the selection to
+    // a forked child, so a call that waits for the pipes of that fork never
+    // returns (D1). Both calls are bounded, so a hang fails the gate loudly.
+    const written = await within(service.clipboard({ text: 'wb-computer-use-clip' }), 15_000, 'clipboard write')
+    assert.equal(written.action, 'clipboard.write')
+    assert.equal(written.bytes, 'wb-computer-use-clip'.length)
+    const pasted = await within(service.clipboard({}), 15_000, 'clipboard read')
+    assert.equal(pasted.action, 'clipboard.read')
+    assert.equal(pasted.text, 'wb-computer-use-clip')
 
     const windows = await service.windows({ action: 'list' })
     assert.equal(windows.action, 'list')

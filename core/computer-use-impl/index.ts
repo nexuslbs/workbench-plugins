@@ -541,10 +541,15 @@ export function createComputerUseService(
       const answer = await invoke<ClipboardAnswer>(driver, 'clipboard', 'clipboard', [input, callOptions()])
       const text = typeof answer?.text === 'string' ? answer.text : ''
       const max = bounds.maxTextChars
+      // A WRITE carries no payload back (the driver answers `text: ''` and the
+      // byte count of what it handed to the selection owner), so the host must
+      // report the DRIVER's count: recomputing it from the empty `text` used to
+      // answer `bytes: 0` for every successful copy.
+      const reported = typeof answer?.bytes === 'number' && Number.isFinite(answer.bytes) && answer.bytes >= 0 ? answer.bytes : 0
       return {
         selection: input.selection ?? 'clipboard',
         text: text.length > max ? text.slice(0, max) : text,
-        bytes: Buffer.byteLength(text, 'utf8'),
+        bytes: input.text === undefined ? Buffer.byteLength(text, 'utf8') : reported,
         truncated: text.length > max,
         action: input.text === undefined ? 'clipboard.read' : 'clipboard.write',
       }

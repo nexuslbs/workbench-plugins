@@ -29,6 +29,11 @@
 // filesystems is ever needed, and the answer is always a path on the side the
 // caller reads from.
 //
+// THE CLIPBOARD IS SPECIAL: `xclip -i` publishes the selection and hands
+// ownership to a FORKED child, which inherits the pipes of its parent. The
+// driver therefore spawns it without captured pipes and settles on the EXIT of
+// the process it started, never on the close of pipes a descendant still holds.
+//
 // It runs commands, so its manifest declares `execution: "host"`.
 
 import { spawn } from 'node:child_process'
@@ -234,6 +239,8 @@ export interface ExecRequest {
   argv: readonly string[]
   input?: Buffer | string
   timeoutMs?: number
+  /** `ignore` when the tool must be able to outlive the pipes of this call. */
+  stdio?: StdioMode
 }
 
 /** Where the toolchain runs. */
@@ -253,18 +260,46 @@ interface SpawnOptions {
   input?: Buffer | string
   timeoutMs?: number
   env?: Record<string, string>
+  /** Default `capture`: read stdout/stderr. See `StdioMode`. */
+  stdio?: StdioMode
 }
 
-/** Spawns one process with no shell in between, bounded by a deadline. */
-function spawnExec(argv: readonly string[], options: SpawnOptions = {}): Promise<ExecResult> {
-  const { input, timeoutMs, env } = options
+/**
+ * How a spawned tool may use the pipes of the driver.
+ *
+ * `capture` (default) reads stdout and stderr. `ignore` gives the process NO
+ * captured pipe at all, which is what a tool that FORKS a long-lived descendant
+ * needs: the descendant inherits the file descriptors of its parent, so a
+ * captured pipe stays open after the parent exited - `xclip -i` hands the
+ * selection to exactly such a fork.
+ */
+export type StdioMode = 'capture' | 'ignore'
+
+/**
+ * How long a process that ALREADY EXITED may keep its pipes open before the
+ * output collected so far is answered. A tool whose descendant inherited the
+ * pipes never closes them, so waiting for them would hang the call.
+ */
+export const EXIT_FLUSH_GRACE_MS = 250
+
+/**
+ * Spawns one process with no shell in between, bounded by a deadline.
+ *
+ * It settles on `exit` (the process is GONE), not on `close` (which also waits
+ * for the stdio pipes): a forking tool leaves the pipes open in a child that
+ * outlives it, and waiting for them used to keep `clipboard.write` pending far
+ * past its deadline - which then killed the very process that owned the
+ * selection, so the following paste could not see the value either.
+ */
+export function spawnExec(argv: readonly string[], options: SpawnOptions = {}): Promise<ExecResult> {
+  const { input, timeoutMs, env, stdio = 'capture' } = options
   return new Promise<ExecResult>((resolve, reject) => {
     const [binary, ...args] = argv as string[]
     let child: ChildProcess
     try {
       child = spawn(binary ?? '', args, {
         env: env === undefined ? process.env : { ...process.env, ...env },
-        stdio: ['pipe', 'pipe', 'pipe'],
+        stdio: stdio === 'ignore' ? ['pipe', 'ignore', 'ignore'] : ['pipe', 'pipe', 'pipe'],
       })
     } catch (error) {
       reject(
@@ -277,38 +312,79 @@ function spawnExec(argv: readonly string[], options: SpawnOptions = {}): Promise
     }
     const stdout: Buffer[] = []
     const stderr: Buffer[] = []
+    let settled = false
     let timedOut = false
-    const timer =
-      timeoutMs !== undefined && timeoutMs > 0
-        ? setTimeout(() => {
-            timedOut = true
-            child.kill('SIGKILL')
-          }, timeoutMs)
-        : undefined
-    child.stdout?.on('data', (chunk: Buffer) => stdout.push(chunk))
-    child.stderr?.on('data', (chunk: Buffer) => stderr.push(chunk))
-    child.on('error', (error) => {
+    let exited = false
+    let exitCode: number | null = null
+    let pending = 0
+    let timer: NodeJS.Timeout | undefined
+    let grace: NodeJS.Timeout | undefined
+    const stopTimers = (): void => {
       if (timer !== undefined) clearTimeout(timer)
-      reject(
+      if (grace !== undefined) clearTimeout(grace)
+    }
+    const answer = (): void => {
+      if (settled) return
+      settled = true
+      stopTimers()
+      // The pipes of a descendant that outlived its parent are not ours to wait
+      // for: release them so no handle leaks per call.
+      child.stdout?.destroy()
+      child.stderr?.destroy()
+      resolve({ code: exitCode ?? -1, stdout: Buffer.concat(stdout), stderr: Buffer.concat(stderr).toString('utf8') })
+    }
+    const fail = (error: ComputerUseError): void => {
+      if (settled) return
+      settled = true
+      stopTimers()
+      reject(error)
+    }
+    const watch = (stream: NodeJS.ReadableStream | null | undefined, sink: Buffer[]): void => {
+      if (stream === null || stream === undefined) return
+      pending += 1
+      stream.on('data', (chunk: Buffer) => sink.push(chunk))
+      stream.on('error', () => undefined)
+      stream.on('end', () => {
+        pending -= 1
+        if (exited && pending <= 0) answer()
+      })
+    }
+    watch(child.stdout, stdout)
+    watch(child.stderr, stderr)
+    if (timeoutMs !== undefined && timeoutMs > 0) {
+      timer = setTimeout(() => {
+        timedOut = true
+        child.kill('SIGKILL')
+        fail(
+          new ComputerUseError('computer-use.timeout', `'${binary}' did not finish within ${timeoutMs} ms`, {
+            stage: 'target',
+            details: { binary, timeoutMs },
+          }),
+        )
+      }, timeoutMs)
+    }
+    child.on('error', (error) => {
+      fail(
         new ComputerUseError('computer-use.command-failed', `'${binary}' could not be executed: ${error.message}`, {
           stage: 'target',
           details: { binary, code: (error as NodeJS.ErrnoException).code },
         }),
       )
     })
-    child.on('close', (code) => {
-      if (timer !== undefined) clearTimeout(timer)
-      if (timedOut) {
-        reject(
-          new ComputerUseError('computer-use.timeout', `'${binary}' did not finish within ${timeoutMs} ms`, {
-            stage: 'target',
-            details: { binary, timeoutMs },
-          }),
-        )
+    child.on('exit', (code) => {
+      exited = true
+      exitCode = code
+      if (settled || timedOut) return
+      if (pending <= 0) {
+        answer()
         return
       }
-      resolve({ code: code ?? -1, stdout: Buffer.concat(stdout), stderr: Buffer.concat(stderr).toString('utf8') })
+      grace = setTimeout(answer, EXIT_FLUSH_GRACE_MS)
+      grace.unref()
     })
+    // A tool that exits without reading its input must not crash the driver with
+    // an unhandled EPIPE on the stdin pipe.
+    child.stdin?.on('error', () => undefined)
     child.stdin?.end(input)
   })
 }
@@ -325,6 +401,7 @@ export class LocalX11Runner implements X11Runner {
   run(request: ExecRequest): Promise<ExecResult> {
     return spawnExec(request.argv, {
       ...(request.input === undefined ? {} : { input: request.input }),
+      ...(request.stdio === undefined ? {} : { stdio: request.stdio }),
       timeoutMs: request.timeoutMs,
       env: this.environment,
     })
@@ -373,6 +450,7 @@ export class DockerX11Runner implements X11Runner {
   run(request: ExecRequest): Promise<ExecResult> {
     return spawnExec(this.wrap(request.argv, true), {
       ...(request.input === undefined ? {} : { input: request.input }),
+      ...(request.stdio === undefined ? {} : { stdio: request.stdio }),
       timeoutMs: request.timeoutMs,
     })
   }
@@ -622,9 +700,23 @@ export class X11Provider implements ComputerUseProvider {
     const tools = await this.probeTools(true)
     const present = new Map(tools.map((tool) => [tool.binary, tool.present]))
     const has = (binary: string): boolean => present.get(binary) === true
+    // An OWNED display is brought up ON DEMAND (`resolveDisplay`), so this report
+    // must do the same: the documented first call of an agent is `computer open`,
+    // and answering "no usable display" one call before the desktop works is a
+    // false negative. A start failure is REPORTED through the typed reason
+    // (this call answers a report, so it never throws for that).
+    let startFailure: string | undefined
+    if (this.config.target === 'xvfb' && !this.stopped) {
+      try {
+        await this.resolveDisplay()
+      } catch (error) {
+        startFailure = error instanceof Error ? error.message : String(error)
+      }
+    }
     const probe = await this.probeDisplay()
     this.lastProbe = probe
     const reachable = probe.reachable
+    const reason = reachable ? undefined : startFailure ?? probe.reason
     const actions: Record<string, boolean> = {
       screen: reachable && has('xdpyinfo'),
       screenshot: reachable && has('import'),
@@ -647,7 +739,7 @@ export class X11Provider implements ComputerUseProvider {
     for (const [action, ok] of Object.entries(actions)) {
       if (ok) continue
       if (!reachable) {
-        unavailable.push({ action, reason: `no usable display at '${this.display ?? '(none)'}': ${probe.reason ?? 'unknown reason'}` })
+        unavailable.push({ action, reason: `no usable display at '${this.display ?? '(none)'}': ${reason ?? 'unknown reason'}` })
         continue
       }
       const missing = needed[action]
@@ -668,7 +760,7 @@ export class X11Provider implements ComputerUseProvider {
       notes: this.notes(),
     }
     if (this.display !== undefined) report.display = this.display
-    if (!reachable && probe.reason !== undefined) report.unreachableReason = probe.reason
+    if (!reachable && reason !== undefined) report.unreachableReason = reason
     if (reachable && probe.width !== undefined && probe.height !== undefined) {
       const screen: { width: number; height: number; depth?: number } = { width: probe.width, height: probe.height }
       if (probe.depth !== undefined) screen.depth = probe.depth
@@ -1073,9 +1165,17 @@ export class X11Provider implements ComputerUseProvider {
 
   async clipboard(request: ClipboardRequest, options: ComputerUseCallOptions = {}): Promise<ClipboardAnswer> {
     await this.need('xclip', 'clipboard')
+    // The clipboard is served by an X client (xclip), so it needs the display
+    // exactly like a screenshot does: on an OWNED display this starts it. Without
+    // this step the FIRST action of a process was `xclip: Can't open display`.
+    await this.resolveDisplay()
     const selection = request.selection ?? 'clipboard'
     if (request.text !== undefined) {
-      await this.ok(['xclip', '-selection', selection, '-i'], 'clipboard.write', options, Buffer.from(request.text, 'utf8'))
+      // `stdio: 'ignore'`: writing hands the selection to a FORKED child that
+      // inherits the pipes of its parent, so captured stdout would stay open
+      // after xclip exited and would keep this call pending. The exit code is
+      // still reported, which is what a failed write needs.
+      await this.ok(['xclip', '-selection', selection, '-i'], 'clipboard.write', options, Buffer.from(request.text, 'utf8'), 'ignore')
       return {
         selection,
         text: '',
@@ -1271,10 +1371,16 @@ export class X11Provider implements ComputerUseProvider {
   // -- tool plumbing --------------------------------------------------------
 
   /** Runs a tool with the bounds of the call (no shell is ever involved). */
-  private run(argv: readonly string[], options: ComputerUseCallOptions = {}, input?: Buffer | string): Promise<ExecResult> {
+  private run(
+    argv: readonly string[],
+    options: ComputerUseCallOptions = {},
+    input?: Buffer | string,
+    stdio?: StdioMode,
+  ): Promise<ExecResult> {
     return this.exec.run({
       argv,
       ...(input === undefined ? {} : { input }),
+      ...(stdio === undefined ? {} : { stdio }),
       timeoutMs: options.timeoutMs ?? this.config.toolTimeoutMs,
     })
   }
@@ -1285,8 +1391,9 @@ export class X11Provider implements ComputerUseProvider {
     action: string,
     options: ComputerUseCallOptions = {},
     input?: Buffer | string,
+    stdio?: StdioMode,
   ): Promise<ExecResult> {
-    const result = await this.run(argv, options, input)
+    const result = await this.run(argv, options, input, stdio)
     if (result.code !== 0) {
       throw new ComputerUseError(
         'computer-use.command-failed',
