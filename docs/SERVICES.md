@@ -136,8 +136,13 @@ unavailable while the rest of the stack keeps running - the tools resolve
 Sandbox extension point (no hard dependency): the provider accepts an OPTIONAL
 `FsSandboxPolicy` (`writeRoots` / `readRoots` / `readOnly`), either from its
 own `sandbox:` config block or from a `sandbox@1` service when one is loaded
-(`sandboxPolicyFrom(ctx)`); a policy only NARROWS the configured roots. Which
-policy a `sandbox@1` provider hands out is ITS decision (see "Sandbox
+(`sandboxPolicyFrom(ctx)`). BOTH are resolved on EVERY read/write, never once at
+apply time: plugins apply in discovery order, so `fs-local` is always applied
+BEFORE any `sandbox-*` provider is provided, and a policy cached at apply time
+silently ignored the provider's deny (thread 2553). Every policy in force is
+INTERSECTED, so a policy only NARROWS the configured roots, `readOnly: true`
+refuses every write and an empty intersection denies every write. Which policy a
+`sandbox@1` provider hands out is ITS decision (see "Sandbox
 capability" below); with no provider loaded the behaviour is exactly the
 config-only confinement above.
 

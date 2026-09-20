@@ -79,14 +79,21 @@ default because it needs no binary and answers identically on every deployment;
 `{ writeRoots?, readRoots?, readOnly?, source? }` handle. This provider accepts it
 
 * in its own config (`sandbox:`), and
-* from the context when a `sandbox@1` service happens to be loaded
+* from the context when a `sandbox@1` service is loaded
   (`sandboxPolicyFrom(ctx)` reads it structurally; absent = no policy).
 
-The `sandbox` capability is a SEPARATE task. Nothing here imports it, nothing
+It asks for the SERVICE policy on EVERY read and write, never once at apply
+time: plugins apply in discovery order, so `fs-local` is always applied BEFORE
+any `sandbox-*` provider is provided, and a lookup cached at apply time saw
+nothing and silently ignored the provider's deny (thread 2553). Every policy in
+force is INTERSECTED, so the seam is exactly as strict as the strictest policy.
+
+The `sandbox` capability lives in separate plugins (`definitions/sandbox.ts`,
+`core/sandbox-policy`, `core/sandbox-enforce`). Nothing here imports it, nothing
 here requires it, and with no sandbox loaded the behaviour is exactly the
-config-only confinement above. When the sandbox task lands, its provider either
-publishes a `sandbox@1` service (picked up automatically) or is wired by adding
-a `sandbox:` block to this plugin's config.
+config-only confinement above. A loaded provider either publishes a `sandbox@1`
+service (picked up automatically, lazily) or is wired by adding a `sandbox:`
+block to this plugin's config.
 
 ## Policy declaration
 

@@ -13,6 +13,9 @@
 //      the host probe really found (no claim that is not backed by the probe).
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import {
   DEFAULT_LIMITS,
   SANDBOX_CONTRACT,
@@ -43,7 +46,8 @@ import {
   probeMechanisms,
   providerId as LOCAL_OS,
 } from '../core/sandbox-enforce/index.ts'
-import { sandboxPolicyFrom } from '../definitions/fs.ts'
+import { apply as applyFsLocal } from '../core/fs-local/index.ts'
+import { FsError, fsOf, sandboxPolicyFrom } from '../definitions/fs.ts'
 import { sandboxOf } from '../definitions/subprocess.ts'
 import type { ServiceContext } from '../definitions/support.ts'
 
@@ -424,6 +428,60 @@ test('sandbox: a provider mounted on `ctx.sandbox` is consumed by the fs and sub
   // A deployment without the provider: the seam is OPTIONAL, the hook is absent.
   assert.equal(sandboxOf({} as unknown as ServiceContext), undefined)
   assert.equal(sandboxPolicyFrom({} as unknown as ServiceContext), undefined)
+})
+
+test('sandbox: a policy published AFTER fs-local applied still confines the fs seam (boot order)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-sandbox-order-'))
+  try {
+    const root = path.join(dir, 'root')
+    const inside = path.join(root, 'allowed')
+    const outside = path.join(root, 'outside')
+    fs.mkdirSync(inside, { recursive: true })
+    fs.mkdirSync(outside, { recursive: true })
+
+    // A boot-shaped context: `provide` arrives as the loader mounts a plugin,
+    // `get(name, false)` is the non-strict lookup every seam helper uses.
+    const services = new Map<string, unknown>()
+    const ctx = {
+      provide: (name: string, value: unknown) => {
+        services.set(name, value)
+      },
+      get: (name: string) => services.get(name),
+    } as unknown as ServiceContext
+
+    // 1. fs-local applies FIRST (discovery order: `fs-local` sorts before every
+    //    `sandbox-*` directory), while NO sandbox provider is loaded yet.
+    applyFsLocal(ctx, { cwd: root, roots: [root] })
+    const service = fsOf(ctx)
+    assert.ok(service !== undefined, 'fs-local registered its service')
+    const before = await service.write({ path: path.join(outside, 'before.txt'), content: 'x' })
+    assert.equal(before.created, true, 'with no policy loaded, the configured roots are the only confinement')
+
+    // 2. ONLY NOW the sandbox provider is provided, exactly like a plugin that
+    //    applies later in the boot.
+    services.set('sandbox', {
+      contract: SANDBOX_CONTRACT,
+      policyFor: (capability: string) =>
+        capability === 'fs' ? { writeRoots: [inside], source: 'late-provider' } : undefined,
+    })
+    assert.deepEqual(
+      [...(sandboxPolicyFrom(ctx)?.writeRoots ?? [])],
+      [inside],
+      'the late provider is visible on the context',
+    )
+
+    // 3. The deny is HONORED: the seam must REFUSE, never silently write.
+    await assert.rejects(
+      () => service.write({ path: path.join(outside, 'after.txt'), content: 'x' }),
+      (error: unknown) => error instanceof FsError && error.reason === 'fs.outside-root',
+      'a policy published after apply must still deny the write',
+    )
+    assert.equal(fs.existsSync(path.join(outside, 'after.txt')), false, 'nothing reached the disk')
+    const late = await service.write({ path: path.join(inside, 'ok.txt'), content: 'ok\n' })
+    assert.equal(late.created, true, 'a write inside the provider roots still works')
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('sandbox: the enforcing provider carries the measured mechanisms and the contract', () => {

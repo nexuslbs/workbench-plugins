@@ -386,7 +386,10 @@ plugins:
   # diagnose a deployment must be able to look at it), WRITES are confined to
   # these directories - outside them a call fails with fs.outside-root, never
   # silently. Drop the `fs-local` row and every fs tool stops working while the
-  # rest of the stack keeps running (core/fs-local/README.md).
+  # rest of the stack keeps running (core/fs-local/README.md). A loaded
+  # `sandbox@1` provider is asked on EVERY read/write (never cached at apply
+  # time, which would miss a provider applied later), so its policy narrows the
+  # writes of this seam too.
   fs-local:
     cwd: ${env:OMNI_DIR}
     roots:
@@ -480,6 +483,9 @@ plugins:
   # network); add a `resources:` rule for a resource to narrow it further.
   # `unconfigured: deny` REFUSES a resource only when the policy has no
   # `defaults` to fall back on - that is the fail-closed case (`sandbox.no-policy`).
+  # The `fs` seam consumes this policy LAZILY (per read/write), so the
+  # `resources.fs.writeRoots` below really confine `fs write` even though
+  # `fs-local` applies first in discovery order (thread 2553).
   sandbox-policy:
     source: config.yml (dev)
     unconfigured: deny

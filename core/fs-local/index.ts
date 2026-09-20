@@ -121,7 +121,11 @@ export interface FsLocalConfig {
   ignore?: readonly string[]
   /** The optional `grep` engine config (see {@link FsLocalGrepConfig}). */
   grep?: FsLocalGrepConfig
-  /** An explicit sandbox policy (an extension point; see `definitions/fs.ts`). */
+  /**
+   * An explicit sandbox policy (an extension point; see `definitions/fs.ts`).
+   * A `sandbox@1` provider that is loaded LATER publishes its policy through the
+   * service seam and is picked up on every call (see `createFsService`).
+   */
   sandbox?: FsSandboxPolicy
 }
 
@@ -255,32 +259,75 @@ export function looksBinary(buffer: Buffer): boolean {
 }
 
 /**
+ * Options of {@link createFsService}. `policy` is the LAZY `sandbox@1` lookup:
+ * a provider may be provided AFTER this service is created (the loader applies
+ * plugins in discovery order), so the seam asks for the policy on every read
+ * and write instead of caching an answer at apply time.
+ */
+export interface FsServiceOptions {
+  policy?: () => FsSandboxPolicy | undefined
+}
+
+/**
  * Builds the service of this provider for a validated config. Exported (not just
  * used by `apply`) so a test can drive the provider without a cordis context,
  * exactly like `createShellService` in `shell-impl`.
  */
-export function createFsService(config: FsLocalConfig = {}): FsService {
+export function createFsService(config: FsLocalConfig = {}, options: FsServiceOptions = {}): FsService {
   const cfg = validateFsLocalConfig(config)
   let sandbox: FsSandboxPolicy | undefined = config.sandbox
   let spillCounter = 0
 
   /**
-   * The configured roots, narrowed by the sandbox policy when one is set.
+   * EVERY policy in force: the explicit one (`config.sandbox`, or whatever
+   * `setSandboxPolicy` installed) PLUS the one a `sandbox@1` provider publishes
+   * RIGHT NOW. The provider is asked on every call, never once at apply time:
+   * plugins apply in discovery order, so `fs-local` always applies BEFORE any
+   * `sandbox-*` provider exists, and an apply-time lookup would silently see
+   * nothing and ignore a deny (thread 2553).
+   */
+  const policies = (): FsSandboxPolicy[] => {
+    const list: FsSandboxPolicy[] = sandbox === undefined ? [] : [sandbox]
+    const external = options.policy?.()
+    if (external !== undefined) list.push(external)
+    return list
+  }
+
+  /** The roots a policy declares, kept only where a configured root covers them. */
+  const narrowRoots = (declared: readonly string[]): string[] =>
+    declared
+      .map((root) => path.resolve(cfg.cwd, root))
+      .filter((narrow) => cfg.roots.some((root) => within(realpathOr(root), realpathOr(narrow))))
+
+  /**
+   * The configured roots, narrowed by EVERY policy in force.
    * INTERSECTION (never a union): only the policy roots that lie inside a
    * configured root survive, so a policy can only make the seam STRICTER. An
    * empty intersection denies every write.
    */
-  const writeRoots = (): string[] => {
-    const policy = sandbox?.writeRoots
-    if (policy === undefined || policy.length === 0) return cfg.roots
-    const resolved = policy.map((root) => path.resolve(cfg.cwd, root))
-    return resolved.filter((narrow) => cfg.roots.some((root) => within(realpathOr(root), realpathOr(narrow))))
+  const writeRoots = (active: FsSandboxPolicy[]): string[] => {
+    let roots: string[] | undefined
+    for (const policy of active) {
+      if (policy.writeRoots === undefined || policy.writeRoots.length === 0) continue
+      const narrowed = narrowRoots(policy.writeRoots)
+      roots = roots === undefined
+        ? narrowed
+        : roots.filter((previous) => narrowed.some((narrow) => within(realpathOr(narrow), realpathOr(previous))))
+    }
+    return roots ?? cfg.roots
   }
-  /** The read roots, when a policy narrows them. */
-  const readRoots = (): string[] | undefined => {
-    const policy = sandbox?.readRoots
-    if (policy === undefined || policy.length === 0) return undefined
-    return policy.map((root) => path.resolve(cfg.cwd, root))
+
+  /** The read roots, when a policy narrows them (intersection of every declaration). */
+  const readRoots = (active: FsSandboxPolicy[]): string[] | undefined => {
+    let roots: string[] | undefined
+    for (const policy of active) {
+      if (policy.readRoots === undefined || policy.readRoots.length === 0) continue
+      const narrowed = policy.readRoots.map((root) => path.resolve(cfg.cwd, root))
+      roots = roots === undefined
+        ? narrowed
+        : roots.filter((previous) => narrowed.some((narrow) => within(realpathOr(narrow), realpathOr(previous))))
+    }
+    return roots
   }
 
   const resolveTarget = (input: string | undefined): string => {
@@ -292,7 +339,7 @@ export function createFsService(config: FsLocalConfig = {}): FsService {
   }
 
   const assertReadable = (abs: string): void => {
-    const roots = readRoots()
+    const roots = readRoots(policies())
     if (roots === undefined) return
     const real = realish(abs)
     if (roots.map(realpathOr).some((root) => within(root, real))) return
@@ -303,13 +350,15 @@ export function createFsService(config: FsLocalConfig = {}): FsService {
   }
 
   const assertWritable = (abs: string): void => {
-    if (sandbox?.readOnly === true) {
-      throw new FsError('fs.outside-root', `write denied: the sandbox policy makes this capability read-only${sandbox.source ? ` (${sandbox.source})` : ''}`, {
+    const active = policies()
+    const readOnly = active.find((policy) => policy.readOnly === true)
+    if (readOnly !== undefined) {
+      throw new FsError('fs.outside-root', `write denied: the sandbox policy makes this capability read-only${readOnly.source ? ` (${readOnly.source})` : ''}`, {
         stage: 'fs.write',
         details: { path: abs, readOnly: true },
       })
     }
-    const roots = writeRoots()
+    const roots = writeRoots(active)
     const real = realish(abs)
     if (roots.map(realpathOr).some((root) => within(root, real))) return
     throw new FsError('fs.outside-root', `write denied: ${displayPath(abs)} is outside the allowed roots (${roots.map(displayPath).join(', ')})`, {
@@ -573,8 +622,11 @@ export function createFsService(config: FsLocalConfig = {}): FsService {
     cwd: cfg.cwd,
 
     setSandboxPolicy(policy?: FsSandboxPolicy): void {
-      // A policy replaces the previous one; `undefined` clears it. It can only
-      // ever NARROW the roots (see writeRoots) and never widen them.
+      // A policy replaces the previous EXPLICIT one; `undefined` clears it.
+      // It can only ever NARROW the roots (see writeRoots) and never widen
+      // them, and a `sandbox@1` provider policy still applies on top (both are
+      // INTERSECTED on every call, so the seam stays as strict as the strictest
+      // policy in force).
       sandbox = policy
     },
 
@@ -807,9 +859,11 @@ export function createFsService(config: FsLocalConfig = {}): FsService {
  */
 export function apply(ctx: ServiceContext, config: FsLocalConfig = {}): void {
   assertPolicyDeclared(import.meta.url, { execution: 'host', capabilities: [FS] })
-  const service = createFsService(config)
-  const policy = config.sandbox ?? sandboxPolicyFrom(ctx)
-  if (policy !== undefined) service.setSandboxPolicy(policy)
+  // The `sandbox@1` policy is resolved LAZILY, on every read and write: the
+  // loader applies plugins in discovery order, so this provider is always
+  // applied BEFORE any `sandbox-*` provider is provided, and a lookup done here
+  // would cache `undefined` and silently ignore a later deny (thread 2553).
+  const service = createFsService(config, { policy: () => sandboxPolicyFrom(ctx) })
   provideService(ctx, FS, service)
 }
 
