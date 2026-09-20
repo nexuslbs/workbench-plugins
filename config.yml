@@ -42,10 +42,13 @@ sources:
     ref: main
     subdir: examples
   # A PRIVATE repository, the shape the operator asked for: the config carries a
-  # credential REFERENCE BY NAME (never a value). It is resolved BEFORE any
-  # plugin is loaded - a source is fetched before plugin discovery, so the
-  # credential can only come from the BOOTSTRAP set below (core providers, no
-  # plugin). See docs/CREDENTIALS.md (layering) and docs/PLUGIN-CONTRACT.md.
+  # credential REFERENCE BY NAME (never a value). It is resolved through the
+  # credentials SERVICE, whose implementation is a PLUGIN (credentials-basic
+  # below) - the CORE ships the credentials DEFINITION only, never a provider.
+  # The GATE is what makes this source work: sources that need NO credential are
+  # walked FIRST (that is where the provider plugin comes from) and THIS source
+  # is DEFERRED until such a plugin is loaded. See docs/CREDENTIALS.md
+  # (section 6, the GATE) and docs/PLUGIN-CONTRACT.md.
   - kind: git
     id: workbench-plugins-private
     url: https://github.com/nexuslbs/workbench-plugins-private
@@ -62,14 +65,18 @@ sources:
       appId: 3967918
       installationId: 138119822
 
-# Credentials provider SELECTION. `bootstrap` is the set usable BEFORE any
-# plugin is loaded: exactly what a source fetch needs. `env` is listed first (a
-# directly exported value beats a file), then `file` for the PEM (a multiline
-# value is awkward in an env var).
-credentials:
-  bootstrap:
-    - env
-    - file
+# Credentials provider SELECTION: WHICH declared providers may answer, and in
+# which order. The loader reads `credentials.providers` ONLY (list order =
+# precedence) and there is NO core provider: the core ships the credentials
+# DEFINITION, every implementation is a PLUGIN. With NO `credentials:` key - as
+# here - every provider a LOADED plugin declares is enabled: `env` first (a
+# directly exported value beats a file) and `file` for the PEM (a multiline
+# value is awkward in an env var). Both are declared by the `credentials-basic`
+# plugin row below. To narrow or reorder the set, name the providers explicitly:
+#   credentials:
+#     providers: [env, file]     # precedence = list order
+# A `credentials.bootstrap` key from an older config is DEAD: no core code path
+# reads it (see the core docs/CREDENTIALS.md, section 6).
 
 # THE ROSTER (breaking change): `plugins:` is the ENABLE LIST. A plugin is
 # LOADED only when it is named here; every other plugin discovered in `sources:`
