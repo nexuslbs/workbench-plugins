@@ -402,7 +402,7 @@ browser-use-impl:                 # the service host
   provider: playwright            # -> plugins.browser-use-playwright row
   fallback: []
 browser-use-playwright:           # the provider: it OWNS NO BROWSER
-  headless: true
+  headless: false                 # the service runs a REAL headful chromium on Xvfb
   viewport: { width: 1280, height: 720 }
   browserService:
     endpoint: http://127.0.0.1:9222   # where the browser image answers (or a ws:// CDP URL)

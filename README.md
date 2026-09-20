@@ -407,6 +407,25 @@ docker run --rm -v "$PWD:/repo" -w /repo mcr.microsoft.com/playwright:v1.63.0-no
 `.github/workflows/browser-tests.yml` runs exactly this on every push and PR, so
 a browser regression can never land behind a skipped test.
 
+### The DEPLOYED gate (`npm run test:browser` against the browser service)
+
+The suite above launches a LOCAL chromium, so it cannot see a deployment-level
+regression (the browser SERVICE image launching headless, which is exactly what
+makes a Cloudflare-protected origin answer 403 "Just a moment..."). That half is
+gated by pointing the same suite at the RUNNING browser service over CDP, which is
+what `test/browser-cloudflare.test.ts` does when `BROWSER_USE_CDP_ENDPOINT` is set
+(a local chromium cannot pass those pages, so without the endpoint the test FAILS
+under `BROWSER_USE_REQUIRE_BROWSER=1` instead of skipping quietly).
+
+ONE command, on a clean boot of the DEPLOYED configuration (the image built from
+`browser/`, its own entrypoint, no override) - the exit code is the suite's:
+
+```bash
+BROWSER_IMAGE=workbench-browser:local \
+  docker compose -f browser/docker-compose.yml -p wb-browser-test \
+    --profile test up --build --abort-on-container-exit --exit-code-from suite
+```
+
 ## License
 
 MIT.

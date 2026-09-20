@@ -9,17 +9,74 @@
 # `ghcr.io/nexuslbs/workbench-plugins/browser:X.Y.Z` (published from THIS
 # repository on a `browser-X.Y.Z` tag, see browser/README.md);
 # `mcr.microsoft.com/playwright:v1.63.0-noble` is the upstream equivalent.
+#
+# THE BROWSER GATE, one command, on a CLEAN boot of the DEPLOYED configuration
+# (the image below, its own entrypoint, NO override), where the browser-required
+# suite runs against the running service and asserts the Cloudflare targets:
+#
+#   BROWSER_IMAGE=workbench-browser:local \
+#     docker compose -f browser/docker-compose.yml -p wb-browser-test \
+#       --profile test up --build --abort-on-container-exit --exit-code-from suite
+#
+# The exit code IS the suite's, and `--abort-on-container-exit` tears the whole
+# project down when it returns.
 name: workbench-browser
 
 services:
   browser:
     image: ${BROWSER_IMAGE:-ghcr.io/nexuslbs/workbench-plugins/browser:latest}
+    # Built from THIS directory (the release workflow builds the same context).
+    # `up --build` uses it; `docker compose pull browser` uses the published tag.
+    build:
+      context: .
     container_name: ${BROWSER_CONTAINER:-workbench-browser}
     restart: unless-stopped
     shm_size: 1gb
     environment:
       BROWSER_CDP_PORT: "9222"
+      # The DEPLOYED default is a REAL HEADFUL chromium under the Xvfb the
+      # entrypoint starts; set BROWSER_HEADLESS=1 only to run the old headless
+      # launch (which Cloudflare-protected origins refuse).
+      BROWSER_HEADLESS: ${BROWSER_HEADLESS:-0}
     ports:
       # Bind the CDP endpoint to the loopback of the host by default: a browser
       # service is a privileged capability, expose it deliberately.
       - "127.0.0.1:${BROWSER_CDP_PORT:-9222}:9222"
+
+  # THE GATE (profile `test`, never started by a plain `up`): the SAME
+  # browser-required suite the release runs, in a browser-capable container that
+  # talks to the browser service above over the CDP endpoint
+  # (`BROWSER_USE_CDP_ENDPOINT`) - so the suite exercises the DEPLOYED browser,
+  # not a locally launched chromium. A suite that is green only because the
+  # Cloudflare tests skipped is a FAILURE here (`BROWSER_USE_REQUIRE_BROWSER=1`).
+  suite:
+    profiles: ["test"]
+    image: mcr.microsoft.com/playwright:v1.63.0-noble
+    depends_on:
+      - browser
+    working_dir: /repo
+    volumes:
+      # The repository, so the suite container runs the SAME code as the image
+      # next to it (read/write: npm may need to write nothing but the report).
+      - ..:/repo
+    environment:
+      BROWSER_USE_CDP_ENDPOINT: http://browser:9222
+      BROWSER_USE_REQUIRE_BROWSER: "1"
+      # A SKIP of the Cloudflare tests is a FAILURE here: this gate exists to
+      # measure the DEPLOYED browser, so a suite that is green because those tests
+      # skipped is not a green gate.
+      BROWSER_USE_REQUIRE_CDP: "1"
+    command:
+      - sh
+      - -lc
+      - |
+        set -eu
+        [ -d node_modules ] || npm ci --no-audit --no-fund
+        BROWSER_USE_CHROMIUM="$(find /ms-playwright -maxdepth 3 -name chrome -path '*chrome-linux64*' -print -quit)"
+        if [ -z "$BROWSER_USE_CHROMIUM" ]; then
+          echo "no chromium binary under /ms-playwright in this image" >&2
+          exit 1
+        fi
+        export BROWSER_USE_CHROMIUM
+        echo "cfgate: browser service $BROWSER_USE_CDP_ENDPOINT, local chromium $BROWSER_USE_CHROMIUM"
+        exec npm run test:browser

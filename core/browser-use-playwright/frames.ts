@@ -837,6 +837,111 @@ async function pollPassed(page: Page): Promise<{ passed: boolean; tokenField?: s
 }
 
 /**
+ * An interstitial/refusal marker a document carries, matched against the title,
+ * the HTML AND the visible text. Exported so a caller (or a test) can assert the
+ * marker without copying the list.
+ */
+export const INTERSTITIAL_MARKERS = [
+  'just a moment',
+  'checking your browser',
+  'unusual traffic',
+  'non-human interaction',
+  'verify you are human',
+  'enable javascript and cookies to continue',
+  'attention required',
+  'cf-chl',
+] as const
+
+/** The first interstitial/refusal marker the document carries, when any. */
+export function interstitialMarker(title: string, html: string, text?: string): string | undefined {
+  const haystack = `${title}\n${html}\n${text ?? ''}`.toLowerCase()
+  return INTERSTITIAL_MARKERS.find((marker) => haystack.includes(marker))
+}
+
+/**
+ * What the ORIGIN answered AFTER the validator accepted: the post-solve
+ * re-navigation. A challenge the validator accepts while the origin keeps
+ * serving the interstitial is a FAILED navigation - this record is what tells
+ * the two apart, so `solved` is never claimed off a token alone.
+ */
+export interface ChallengeRecheck {
+  /** The URL that was re-navigated (the page the challenge was found on). */
+  url: string
+  /** The HTTP status of the re-navigation, when the engine exposed one. */
+  httpStatus?: number
+  /** The document title AFTER the re-navigation. */
+  title: string
+  /** The classification of the RE-NAVIGATED document. */
+  classification: ChallengeClassification
+  /** The interstitial/refusal marker the re-navigated body still carries. */
+  interstitialMarker?: string
+  /** The navigation error, when the re-navigation itself failed. */
+  navigationError?: string
+}
+
+/** One line describing a recheck (never invents a status the engine did not give). */
+function statusText(recheck: ChallengeRecheck): string {
+  const status = recheck.httpStatus === undefined ? 'unknown' : String(recheck.httpStatus)
+  return `HTTP ${status}, title ${JSON.stringify(recheck.title)}, classification ${recheck.classification}`
+}
+
+/**
+ * True when the RE-NAVIGATED document is still a challenge/refusal page. A
+ * clearance cookie on an otherwise ordinary page (`managed-pass`) and `none` both
+ * mean the origin served the real page; a marker, a hard refusal or a challenge
+ * DOCUMENT mean it did not.
+ */
+export function stillInterstitial(reading: ChallengeReading, marker: string | undefined): boolean {
+  if (marker !== undefined) return true
+  if (reading.verdict.classification === 'blocked-ip') return true
+  const corpus = `${reading.document.html}\n${reading.document.text ?? ''}`
+  return reading.verdict.classification !== 'none' && CHALLENGE_PAGE_PATTERNS.some((entry) => entry.pattern.test(corpus))
+}
+
+/**
+ * RE-NAVIGATES the URL the challenge was found on, gives a managed challenge the
+ * chance to clear by waiting (bounded), and reads what the ORIGIN served. This is
+ * the check that turns "the widget accepted me" into an answer about the PAGE,
+ * and the only thing that can report `validator_passed_origin_blocked`.
+ */
+async function recheckOrigin(
+  page: Page,
+  cdp: CDPSession | undefined,
+  url: string,
+  timeoutMs: number,
+  log: string[],
+): Promise<{ recheck: ChallengeRecheck; reading: ChallengeReading }> {
+  let navigationError: string | undefined
+  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs }).catch((error: unknown) => {
+    navigationError = error instanceof Error ? error.message : String(error)
+  })
+  await page.waitForTimeout(Math.min(5_000, timeoutMs)).catch(() => undefined)
+  const reading = await readChallenge(page, cdp, { maxFrames: 200, excerptChars: 4_000 })
+  const marker = interstitialMarker(reading.document.title, reading.document.html, reading.document.text)
+  log.push(
+    `recheck ${url} -> ${statusText({
+      url,
+      ...(reading.document.httpStatus === undefined ? {} : { httpStatus: reading.document.httpStatus }),
+      title: reading.document.title,
+      classification: reading.verdict.classification,
+    })}` +
+      (marker === undefined ? '' : `, interstitial marker ${JSON.stringify(marker)}`) +
+      (navigationError === undefined ? '' : `, navigation error ${navigationError}`),
+  )
+  return {
+    recheck: {
+      url,
+      ...(reading.document.httpStatus === undefined ? {} : { httpStatus: reading.document.httpStatus }),
+      title: reading.document.title,
+      classification: reading.verdict.classification,
+      ...(marker === undefined ? {} : { interstitialMarker: marker }),
+      ...(navigationError === undefined ? {} : { navigationError }),
+    },
+    reading,
+  }
+}
+
+/**
  * Solves an INTERACTIVE challenge: locate the widget frame, find its checkbox
  * (or fall back to the widget box's checkbox offset), click it with the REAL
  * mouse and WAIT for the evidence (token / `cf_clearance` / the widget's own
@@ -861,6 +966,10 @@ export async function solveChallenge(
   let reading = await readChallenge(page, cdp, { maxFrames: 200, excerptChars: 4_000 })
   const cookieByPage = await page.context().cookies().catch(() => [])
   let widget = widgetOf(reading, kinds, log, options.preferFrameUrl)
+  // The URL the challenge was found on: the post-solve re-navigation targets it
+  // (Cloudflare serves its interstitial ON the requested URL).
+  const targetUrl = readerUrl(page, reading)
+  const recheckTimeoutMs = Math.min(30_000, Math.max(10_000, waitMs))
 
   if (action !== 'solve') {
     return {
@@ -886,6 +995,38 @@ export async function solveChallenge(
     // Nothing to click: a hard block, a page that already passed, or an
     // interstitial that a real browser clears by waiting. The answer is the
     // STRUCTURED verdict - never a silent "empty read".
+    // A verdict that CLAIMS a pass (`already-passed`) is never taken on faith:
+    // the caller is owed the ORIGIN's answer, so the page is re-navigated exactly
+    // like the widget path. A headless launch reports a clearance cookie and still
+    // gets the interstitial back - that is `validator_passed_origin_blocked`.
+    if (reading.verdict.outcome === 'already-passed') {
+      const rechecked = await recheckOrigin(page, cdp, targetUrl, recheckTimeoutMs, log)
+      const blocked = stillInterstitial(rechecked.reading, rechecked.recheck.interstitialMarker)
+      const claimed: ChallengeOutcome = blocked ? 'validator_passed_origin_blocked' : 'already-passed'
+      const marker = rechecked.recheck.interstitialMarker
+      return {
+        action: 'challenge',
+        session: sessionId,
+        challengeAction: action,
+        url: rechecked.recheck.url,
+        title: rechecked.recheck.title,
+        classification: rechecked.recheck.classification,
+        outcome: claimed,
+        unsolvableFromThisIp: rechecked.reading.verdict.unsolvableFromThisIp,
+        reason: blocked
+          ? `${reading.verdict.reason} - BUT the post-solve re-navigation still served a challenge/refusal document ` +
+            `(${statusText(rechecked.recheck)}${marker === undefined ? '' : `, marker ${JSON.stringify(marker)}`}): ` +
+            'the page is NOT readable through this browser (a headless launch or an IP/edge refusal), so this is a FAILED navigation, not a pass'
+          : `${reading.verdict.reason} - the post-solve re-navigation got the same ordinary page back (${statusText(rechecked.recheck)})`,
+        signals: [...reading.verdict.signals, ...log],
+        ...(rechecked.recheck.httpStatus === undefined ? {} : { httpStatus: rechecked.recheck.httpStatus }),
+        ...excerptOf(rechecked.reading),
+        ...(widget.found ? { widget } : {}),
+        cookie: cookieView(await page.context().cookies().catch(() => cookieByPage)),
+        recheck: rechecked.recheck,
+        elapsedMs: Date.now() - started,
+      }
+    }
     const outcome: ChallengeOutcome =
       reading.verdict.outcome === 'unsolved' ? (reading.verdict.unsolvableFromThisIp ? 'unsolvable-from-this-ip' : 'unsolved') : reading.verdict.outcome
     return {
@@ -914,10 +1055,28 @@ export async function solveChallenge(
   reading = passed.reading
   widget = passed.widget
   const cookies = await page.context().cookies().catch(() => [])
+  const validatorPassed = widget.tokenPresent || widget.widgetReportedSuccess === true || cookies.some((cookie) => cookie.name === 'cf_clearance')
+  // THE VALIDATOR IS NOT THE ORIGIN. When the validator accepted, the page the
+  // challenge was found on is re-navigated and the ORIGIN's answer decides: a
+  // token plus an interstitial is `validator_passed_origin_blocked`, never
+  // `solved` (production failure of thread 2691: cf_clearance present, 403 for
+  // ever, `outcome: solved` reported).
+  let recheck: ChallengeRecheck | undefined
   let outcome: ChallengeOutcome
-  if (widget.tokenPresent || widget.widgetReportedSuccess === true || cookies.some((cookie) => cookie.name === 'cf_clearance')) outcome = 'solved'
-  else if (reading.verdict.unsolvableFromThisIp) outcome = 'unsolvable-from-this-ip'
+  if (validatorPassed) {
+    const rechecked = await recheckOrigin(page, cdp, targetUrl, recheckTimeoutMs, log)
+    recheck = rechecked.recheck
+    reading = rechecked.reading
+    outcome = stillInterstitial(reading, recheck.interstitialMarker) ? 'validator_passed_origin_blocked' : 'solved'
+  } else if (reading.verdict.unsolvableFromThisIp) outcome = 'unsolvable-from-this-ip'
   else outcome = 'unsolved'
+  const evidence = [
+    widget.tokenPresent ? `token in '${widget.tokenField ?? 'unknown'}'` : '',
+    widget.widgetReportedSuccess === true ? 'widget reported success' : '',
+    cookies.some((cookie) => cookie.name === 'cf_clearance') ? 'cf_clearance present' : '',
+  ]
+    .filter((part) => part.length > 0)
+    .join(', ')
   return {
     action: 'challenge',
     session: sessionId,
@@ -929,13 +1088,18 @@ export async function solveChallenge(
     unsolvableFromThisIp: reading.verdict.unsolvableFromThisIp,
     reason:
       outcome === 'solved'
-        ? `the ${widget.kind} widget was completed (${widget.tokenPresent ? `token in '${widget.tokenField ?? 'unknown'}'` : ''}${widget.widgetReportedSuccess === true ? 'widget reported success' : ''}${cookies.some((cookie) => cookie.name === 'cf_clearance') ? 'cf_clearance present' : ''})`.replace('  ', ' ')
-        : `${reading.verdict.reason} - ${String(widget.attempts)} interaction(s) were driven and the token/clearance did not appear within ${String(waitMs)} ms`,
+        ? `the ${widget.kind} widget was completed (${evidence}) and the post-solve re-navigation got the real page back (${recheck === undefined ? 'no recheck' : statusText(recheck)})`
+        : outcome === 'validator_passed_origin_blocked'
+          ? `the validator ACCEPTED the challenge (${evidence === '' ? 'no token/cookie evidence' : evidence}) but the post-solve re-navigation to ${recheck?.url ?? targetUrl} still served a challenge/refusal document ` +
+            `(${recheck === undefined ? 'no recheck' : statusText(recheck)}${recheck?.interstitialMarker === undefined ? '' : `, marker ${JSON.stringify(recheck.interstitialMarker)}`}): ` +
+            'the page is NOT readable through this browser (typically a headless launch or an IP/edge refusal) - a FAILED navigation, not a solve'
+          : `${reading.verdict.reason} - ${String(widget.attempts)} interaction(s) were driven and the token/clearance did not appear within ${String(waitMs)} ms`,
     signals: [...reading.verdict.signals, ...widget.log],
     ...(reading.document.httpStatus === undefined ? {} : { httpStatus: reading.document.httpStatus }),
     ...excerptOf(reading),
     widget,
     cookie: cookieView(cookies),
+    ...(recheck === undefined ? {} : { recheck }),
     elapsedMs: Date.now() - started,
   }
 }

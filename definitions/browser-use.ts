@@ -229,6 +229,16 @@ export const CHALLENGE_OUTCOMES = [
   'no-challenge',
   'already-passed',
   'solved',
+  /**
+   * The VALIDATOR accepted the challenge (token and/or `cf_clearance` present)
+   * but the ORIGIN still answers the interstitial/block page on the post-solve
+   * re-navigation: typically a headless launch, or an IP-reputation refusal that
+   * no amount of browser realism on this side can clear. NEVER reported as
+   * `solved` - a challenge the validator accepts while the origin keeps the door
+   * shut is a FAILED navigation, and it is named separately so a caller can tell
+   * "I solved a widget" from "the page is now readable".
+   */
+  'validator_passed_origin_blocked',
   'unsolved',
   'unsolvable-from-this-ip',
   'unknown',
@@ -429,8 +439,36 @@ export interface BrowserChallengeAnswer {
   widget?: BrowserChallengeWidget
   /** The `cf_clearance` cookie state (never its value). */
   cookie?: { name: string; present: boolean; domain?: string; expires?: number }
+  /**
+   * The POST-SOLVE re-navigation, when the validator had something to pass. THE
+   * ORIGIN decides, not the validator: `outcome: 'solved'` is only reported when
+   * this record shows the origin served the real page, and a validator that was
+   * accepted while the origin kept the interstitial is reported as
+   * `validator_passed_origin_blocked` (a FAILED navigation).
+   */
+  recheck?: BrowserChallengeRecheck
   /** How long the call took. */
   elapsedMs: number
+}
+
+/**
+ * The POST-SOLVE re-navigation of a challenge: what the ORIGIN served once the
+ * validator accepted. It is the evidence that separates "the widget accepted me"
+ * from "the page is readable".
+ */
+export interface BrowserChallengeRecheck {
+  /** The URL that was re-navigated (the page the challenge was found on). */
+  url: string
+  /** The HTTP status of the re-navigation, when the engine exposed one. */
+  httpStatus?: number
+  /** The document title AFTER the re-navigation. */
+  title: string
+  /** The classification of the RE-NAVIGATED document. */
+  classification: ChallengeClassification
+  /** The interstitial/refusal marker the re-navigated body still carries. */
+  interstitialMarker?: string
+  /** The navigation error, when the re-navigation itself failed. */
+  navigationError?: string
 }
 
 // ---------------------------------------------------------------------------

@@ -399,7 +399,14 @@ plugins:
   # `executablePath` is therefore DELIBERATELY ABSENT: in attach mode it is dead
   # config, and keeping it would let a local chromium hide a stopped service.
   browser-use-playwright:
-    headless: true
+    # HEADFUL is the DEPLOYED default. `headless` is a LAUNCH-time setting, and in
+    # this attach deployment the browser service image owns the launch: it runs a
+    # REAL headful chromium on its own Xvfb display (browser/start-browser.sh),
+    # because a headless chromium is refused by Cloudflare-protected origins even
+    # after the validator passes the challenge. `false` here keeps the config and
+    # the running browser in agreement (a local launch - no `browserService` -
+    # must be headful for the same reason).
+    headless: false
     viewport:
       width: 1280
       height: 800

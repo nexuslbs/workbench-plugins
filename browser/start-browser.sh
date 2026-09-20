@@ -39,6 +39,35 @@ WAIT_SECONDS="${BROWSER_START_WAIT_SECONDS:-60}"
 LOG="${BROWSER_LOG:-/tmp/start-browser.log}"
 FORWARDER="${BROWSER_FORWARDER:-/usr/local/bin/cdp-forward.js}"
 
+# ---------------------------------------------------------------------------
+# THE LAUNCH MODE - the DEPLOYED DEFAULT is a REAL, HEADFUL browser.
+#
+# A headless chromium is REFUSED by Cloudflare-protected origins: the managed
+# challenge passes (a `cf_clearance` cookie appears) and the origin STILL answers
+# 403 "Just a moment..." on the next navigation. The SAME image served the page
+# directly (HTTP 200, classification `none`, no widget at all) as soon as
+# chromium ran HEADFUL under Xvfb (measured on downdetector.com.br, threads 2607
+# and 2688). That is why the default here is headful: not a fingerprint trick but
+# an ordinary desktop chromium on a real X display.
+#
+#   BROWSER_HEADLESS=0 (default) headful chromium on the Xvfb display below
+#   BROWSER_HEADLESS=1           the old `--headless=new` launch (opt-in; a
+#                                deployment that must not run an X server)
+HEADLESS=""
+case "${BROWSER_HEADLESS:-0}" in
+  1|true|yes|on) HEADLESS="1" ;;
+  0|false|no|off|"") HEADLESS="" ;;
+  *)
+    echo "start-browser: BROWSER_HEADLESS must be 0 or 1 (got '$BROWSER_HEADLESS')" >&2
+    exit 2
+    ;;
+esac
+DISPLAY_NAME="${BROWSER_DISPLAY:-:99}"
+SCREEN="${BROWSER_SCREEN:-1440x1000x24}"
+WINDOW_SIZE="${BROWSER_WINDOW_SIZE:-1440,1000}"
+PROFILE_DIR="${BROWSER_PROFILE_DIR:-/tmp/chrome-profile}"
+XVFB_PID=""
+
 # Does the CDP HTTP endpoint answer on a given port?
 cdp_answers() {
   node -e '
@@ -80,22 +109,26 @@ if [ "$MODE" = "background" ]; then
 fi
 
 # The playwright image keeps its builds under /ms-playwright/<name>-<rev>/.
-# Prefer the full chromium (CDP + real rendering), fall back to the headless
-# shell, and fail LOUDLY when the image really carries no browser.
+# HEADFUL needs the FULL chromium: `chromium_headless_shell` is a separate binary
+# that can only ever run headless. In headless mode the shell stays an acceptable
+# fallback, and an image carrying no browser at all fails LOUDLY either way.
 BIN=""
-for candidate in \
-  /ms-playwright/chromium-*/chrome-linux/chrome \
-  /ms-playwright/chromium-*/chrome-linux64/chrome \
-  /ms-playwright/chromium_headless_shell-*/chrome-linux/headless_shell \
-  /ms-playwright/chromium_headless_shell-*/chrome-linux64/headless_shell \
-  /usr/bin/chromium /usr/bin/google-chrome
-do
+CANDIDATES="
+  /ms-playwright/chromium-*/chrome-linux/chrome
+  /ms-playwright/chromium-*/chrome-linux64/chrome
+  /usr/bin/chromium /usr/bin/google-chrome"
+if [ -n "$HEADLESS" ]; then
+  CANDIDATES="$CANDIDATES
+  /ms-playwright/chromium_headless_shell-*/chrome-linux/headless_shell
+  /ms-playwright/chromium_headless_shell-*/chrome-linux64/headless_shell"
+fi
+for candidate in $CANDIDATES; do
   for path in $candidate; do
     if [ -x "$path" ]; then BIN="$path"; break 2; fi
   done
 done
 if [ -z "$BIN" ]; then
-  echo "start-browser: no chromium binary found under /ms-playwright - this is not a browser image" >&2
+  echo "start-browser: no usable browser binary found (headful mode refuses the headless shell): this is not a browser image" >&2
   exit 1
 fi
 
@@ -104,6 +137,7 @@ FWD_PID=""
 stop_children() {
   if [ -n "$CHROME_PID" ]; then kill -TERM "$CHROME_PID" 2>/dev/null || true; fi
   if [ -n "$FWD_PID" ]; then kill -TERM "$FWD_PID" 2>/dev/null || true; fi
+  if [ -n "$XVFB_PID" ]; then kill -TERM "$XVFB_PID" 2>/dev/null || true; fi
 }
 trap 'stop_children; exit 143' TERM INT
 
@@ -115,10 +149,44 @@ fail_loudly() {
   exit 1
 }
 
-echo "start-browser: $BIN ($($BIN --version 2>/dev/null || echo version-unknown)) on 127.0.0.1:$INTERNAL_PORT, CDP forwarded on 0.0.0.0:$PORT"
+# The X DISPLAY: started and owned HERE in headful mode. Readiness is the X
+# socket, not a sleep: chromium refuses to start against a display that is not
+# there yet, and a container that half-started must never look healthy.
+if [ -z "$HEADLESS" ]; then
+  if ! command -v Xvfb >/dev/null 2>&1; then
+    fail_loudly "Xvfb is not installed in this image: a headful chromium needs an X server (set BROWSER_HEADLESS=1 to run headless instead)"
+  fi
+  export DISPLAY="$DISPLAY_NAME"
+  XNUM="${DISPLAY_NAME#:}"
+  XNUM="${XNUM%%.*}"
+  XSOCK="/tmp/.X11-unix/X${XNUM}"
+  rm -f "$XSOCK" 2>/dev/null || true
+  Xvfb "$DISPLAY_NAME" -screen 0 "$SCREEN" -nolisten tcp >>"$LOG" 2>&1 &
+  XVFB_PID=$!
+  xwaited=0
+  while [ "$xwaited" -lt "$WAIT_SECONDS" ]; do
+    if ! kill -0 "$XVFB_PID" 2>/dev/null; then
+      fail_loudly "Xvfb exited during startup"
+    fi
+    if [ -S "$XSOCK" ]; then break; fi
+    sleep 1
+    xwaited=$((xwaited + 1))
+  done
+  if [ ! -S "$XSOCK" ]; then
+    fail_loudly "no X display on $DISPLAY_NAME (socket $XSOCK) within ${WAIT_SECONDS}s"
+  fi
+  MODE="headful on $DISPLAY_NAME ($SCREEN), window $WINDOW_SIZE"
+  LAUNCH_ARGS="--no-first-run --no-default-browser-check --disable-infobars --window-size=$WINDOW_SIZE --user-data-dir=$PROFILE_DIR --disable-blink-features=AutomationControlled"
+else
+  MODE="headless (--headless=new, BROWSER_HEADLESS=1)"
+  LAUNCH_ARGS="--headless=new"
+fi
 
+echo "start-browser: mode=$MODE, chromium $BIN ($($BIN --version 2>/dev/null || echo version-unknown)) on 127.0.0.1:$INTERNAL_PORT, CDP forwarded on 0.0.0.0:$PORT"
+
+# shellcheck disable=SC2086
 "$BIN" \
-  --headless=new \
+  $LAUNCH_ARGS \
   --no-sandbox \
   --disable-dev-shm-usage \
   --disable-gpu \
@@ -156,6 +224,9 @@ fi
 # Foreground (the container entrypoint): supervise both children and leave as soon
 # as one of them dies - a half-dead browser service must not look healthy.
 while kill -0 "$CHROME_PID" 2>/dev/null && kill -0 "$FWD_PID" 2>/dev/null; do
+  if [ -n "$XVFB_PID" ] && ! kill -0 "$XVFB_PID" 2>/dev/null; then
+    fail_loudly "Xvfb exited"
+  fi
   sleep 5
 done
 fail_loudly "a child process exited"
