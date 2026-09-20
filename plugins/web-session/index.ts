@@ -19,7 +19,7 @@
 // `ctx.credentials` at login time, never logged, echoed or persisted).
 //
 // It is a CONSUMER plugin: the core stays a host/registry, the browser comes
-// from the SHARED launcher in `plugins/web-shared/` (web-page uses the same one,
+// from the SHARED launcher in `shared/` (web-page uses the same one,
 // so the two plugins never fight over chromium), and no per-site knowledge is
 // hardcoded here - a site is config (and, later, the recipe store).
 import { loggerOf, type LoggerHandle, type LoggerServiceLike } from '../../definitions/logger.ts'

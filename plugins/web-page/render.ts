@@ -16,7 +16,7 @@
 // errors) instead of taking the whole workbench process down with an import
 // failure. The type-only import below is erased at run time.
 import type { Browser, BrowserContext, Page } from 'playwright-core'
-import { acquireSharedBrowser, releaseSharedBrowser } from '../web-shared/browser.ts'
+import { acquireSharedBrowser, releaseSharedBrowser } from '../../shared/browser.ts'
 import type { ResolvedConfig } from './config.ts'
 import { PageError, browserFailure, messageOf, redactText } from './errors.ts'
 

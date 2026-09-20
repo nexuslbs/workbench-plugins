@@ -330,6 +330,68 @@ a `sandbox` provider when one is loaded (the request names the target) and
 degrades to "no policy handle" when none is - the same optional shape `fs@1` and
 `subprocess@1` use.
 
+## Browser-use capability (`browser-use@1`)
+
+`definitions/browser-use.ts` is the seam for DRIVING a real browser: an agent
+opens a session, navigates, takes a compact SNAPSHOT whose nodes carry SHORT
+STABLE refs, acts on those refs (click / type / fill / select / hover / scroll /
+press / upload / check / focus / back / forward / reload / waitFor), evaluates
+JS, extracts text / markdown / html / tables / attributes / links / json, takes a
+screenshot FILE, manages tabs, waits and observes the requests and downloads of
+the session - all through ONE typed contract. The shape follows the DeepSeek
+harness `browser-use` group (MIT, see `THIRD_PARTY.md`): ONE capability, a
+PROVIDER that owns a browser, a SERVICE HOST that selects among providers, and a
+CONSUMER that exposes it as a tool. The core repo stays untouched.
+
+| role | plugin | provider | what it does |
+| --- | --- | --- | --- |
+| Definition | `definitions/browser-use.ts` | - | the typed model (engine info, provider capabilities, session spec/info, snapshot + refs, navigate/act/evaluate/extract/screenshot/tabs/wait/observe/state requests and answers), the typed reasons (`browser-use.no-browser`, `stale-ref`, `timeout`, `navigation-failed`, `selector-not-found`, `not-implemented`, `unknown-provider`, `provider-unavailable`, `oversized`, `session-missing`, `invalid-input`, ...), the pure helpers (bounds resolution, viewport/URL/ref validation, slugging) and the shared caps |
+| Service host | `core/browser-use-impl` | `registry` | owns the provider registry (duplicate ids rejected), the selection (`provider` -> configured default -> ordered `fallback` -> the single usable provider), the bounds of one call (snapshot nodes, text chars, screenshot bytes, deadlines, max sessions), the typed failure when nothing is usable, and the OPTIONAL `sandbox@1` gate. It imports no provider and launches no browser (`execution: none`) |
+| Provider | `core/browser-use-playwright` | `playwright` | the REAL provider on `playwright-core`: one refcounted chromium launcher shared with `web-page`/`web-session` (`shared/browser.ts`), an ISOLATED browser CONTEXT per session id (viewport, locale, timezone, user agent, proxy, downloads, storage state), a snapshot that mints stable `e12` refs, ref-resolving actions with the page-change -> `stale-ref` rule, extract with `web-recipe`, screenshot written to a file with a byte cap, tab management, request/download observation, storage-state save/read/clear, and an `effect()` disposer that closes every context, the browser and the profile/temp dirs it owns |
+| Tools / consumer | `plugins/browser-use-tools` | - | the action-enum tool `browser` (`providers` / `capabilities` / `open` / `navigate` / `snapshot` / `act` / `evaluate` / `extract` / `screenshot` / `tabs` / `wait` / `observe` / `state` / `sessions` / `close`) |
+
+Exactly ONE host is mounted (`browser-use-impl`); providers are separate plugins
+that register themselves on `ctx['browser-use']`, so a deployment adds a browser
+backend by adding a row and the tool schema does not change.
+
+REUSE BOUNDARY: the seam does NOT fork a second browser stack. `web-page` (the
+one-call renderer), `web-session` (ONE action-enum tool with persistent sessions
+and change deltas) and `web-recipe` (the per-domain recipe store) keep their
+tools and behaviour; `browser-use-playwright` shares their chromium LAUNCHER
+(`shared/browser.ts`, refcounted, one browser process per host) and consults
+`web-recipe` from `extract` when that service is loaded (a missing recipe never
+fails the call: the answer carries `recipe.used: false`). A consumer that wants a
+one-shot render should keep calling `page read`; `browser` is for INTERACTION.
+
+ENGINE HONESTY: `capabilities` reports the engine actually used (`engine`), its
+binary (`executablePath`) and whether it is launchable RIGHT NOW (`available`),
+plus the exact `requirement` when it is not. There is NO silent fallback: a
+missing browser is the typed `browser-use.no-browser` naming the prerequisite
+(install the chromium build, or point `executablePath` at one), never a plain
+HTTP fetch pretending to be a browser.
+
+The `sandbox@1` gate is an EXTENSION POINT, not a dependency: the host consults a
+`sandbox` provider when one is loaded (the session opens a browser, so the
+request names the network/download roots) and degrades to "no policy handle" when
+none is - the same optional shape `fs@1`, `subprocess@1` and `computer-use@1` use.
+
+Prerequisites for a REAL browser: `playwright-core` (already a dependency) plus
+a chromium build reachable through `executablePath`, the `PLAYWRIGHT_BROWSERS_PATH`
+cache, or a system chromium; without one every browser action answers the typed
+`browser-use.no-browser` and the plugin still loads (no boot failure).
+
+```yaml
+browser-use-impl:                 # the service host
+  provider: playwright            # -> plugins.browser-use-playwright row
+  fallback: []
+browser-use-playwright:           # the provider
+  headless: true
+  viewport: { width: 1280, height: 720 }
+  executablePath: $env:WB_BROWSER # a chromium/chrome binary (absent: playwright's own cache)
+  storageStateDir: <tmp>/workbench-browser-use/state
+  screenshotDir: <tmp>/workbench-browser-use
+```
+
 ## Sandbox capability (`sandbox@1`)
 
 `definitions/sandbox.ts` is the POLICY seam every local capability consults

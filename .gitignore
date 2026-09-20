@@ -1,6 +1,9 @@
 node_modules/
 dist/
 .workbench/
+# Runtime output of the browser-use provider: screenshots and the SPAWNED browser
+# profile. Never committed (the e2e test run writes it relative to the cwd).
+workbench-browser-use/
 # Operator-supplied runtime material for the PRIVATE source (see .env.example):
 # never committed, never referenced by value.
 .env

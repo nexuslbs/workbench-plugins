@@ -33,6 +33,8 @@ type Tree = (typeof TREES)[number]
 
 /** The core service implementations: the capability providers / service hosts. */
 const CORE = [
+  'browser-use-impl',
+  'browser-use-playwright',
   'capabilities-impl',
   'computer-use-impl',
   'computer-use-x11',
@@ -67,6 +69,7 @@ const CORE = [
 
 /** The consumers, operator tools, UI plugins and shared libs. */
 const PLUGINS = [
+  'browser-use-tools',
   'computer-use-tools',
   'config-watch',
   'cordis-ui',
@@ -93,11 +96,14 @@ const PLUGINS = [
   'web-recipe',
   'web-search-tools',
   'web-session',
-  'web-shared',
 ].sort()
 
-/** A source/util dir that is NOT a plugin and therefore carries no manifest. */
-const NOT_A_PLUGIN = ['web-shared']
+/**
+ * A source/util dir that is NOT a plugin and therefore carries no manifest.
+ * Empty now: the shared chromium launcher moved OUT of the plugin tree to
+ * `shared/` (see README, "Shared modules"), so no `plugins/` entry is exempt.
+ */
+const NOT_A_PLUGIN: string[] = []
 
 /** The runnable examples that carry a manifest. */
 const EXAMPLES = ['git-source-demo']
@@ -213,8 +219,8 @@ test('every plugin lives in exactly ONE tree (no duplicate, no rename)', () => {
       seen.set(manifest.name, tree)
     }
   }
-  // the whole plugin set is accounted for: 27 core services, 24 plugins (web-shared is
-  // not a plugin) and the manifest-bearing examples
+  // the whole plugin set is accounted for: the core service implementations, the
+  // plugins and the manifest-bearing examples (`shared/` holds modules, not plugins)
   assert.equal(
     seen.size,
     CORE.length + (PLUGINS.length - NOT_A_PLUGIN.length) + EXAMPLES.length,

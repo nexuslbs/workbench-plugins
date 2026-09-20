@@ -10,9 +10,15 @@
 //   releaseSharedBrowser()        -> drops THIS holder; the browser is closed
 //                                    only when the last holder releases it
 //
-// It lives in `plugins/web-shared/` WITHOUT a `workbench.plugin.json`, so the
-// core's discovery walk (a directory must carry a manifest) never treats it as
-// a plugin: it is an internal module of this repository, not a roster entry.
+// It lives in `shared/` (OUTSIDE the `core/`, `plugins/` and `examples/`
+// trees) WITHOUT a `workbench.plugin.json`, so the core's discovery walk (a
+// source scans exactly ONE directory, and a plugin directory must carry a
+// manifest) never treats it as a plugin: it is an internal module of this
+// repository, not a roster entry. It sits outside the plugin trees on purpose:
+// `scripts/check-seam.ts` rule 4 lets a PROVIDER import its own directory and
+// the definitions only, so the shared launcher must live where both the
+// consumers (`plugins/web-page`, `plugins/web-session`) and the provider
+// (`core/browser-use-playwright`) may import it.
 //
 // `playwright-core` is imported DYNAMICALLY, here, inside the launch path: a
 // deployment without the module still LOADS every plugin and answers a
@@ -85,6 +91,15 @@ export function sharedBrowserStats(): { launches: number; holders: number; conne
     holders: shared === undefined ? 0 : shared.holders,
     connected: shared !== undefined && shared.browser.isConnected(),
   }
+}
+
+/**
+ * The version of the RUNNING browser (playwright reports it), or undefined when
+ * no browser is up. It is read from the live process, never guessed from the
+ * path: an engine report must not claim a version it did not observe.
+ */
+export function sharedBrowserVersion(): string | undefined {
+  return shared !== undefined && shared.browser.isConnected() ? shared.browser.version() : undefined
 }
 
 /** Close the shared browser unconditionally (tests / a host shutdown hook). */

@@ -17,7 +17,7 @@ import type { Snapshot } from './delta.ts'
 import type { ObservedRequest } from './intercept.ts'
 import { SessionError } from './errors.ts'
 import type { ParsedSelector } from './selectors.ts'
-import { acquireSharedBrowser, releaseSharedBrowser } from '../web-shared/browser.ts'
+import { acquireSharedBrowser, releaseSharedBrowser } from '../../shared/browser.ts'
 
 export interface ElementRead {
   tag: string

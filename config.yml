@@ -338,6 +338,58 @@ plugins:
     windowManager: openbox
     screenshotDir: /opt/workspace/workbench-plugins/.workbench/computer-use
   computer-use-tools: {}
+  # The BROWSER-USE seam (definitions/browser-use.ts, contract `browser-use@1`),
+  # modelled on the DeepSeek harness `browser-use` group (MIT, see
+  # THIRD_PARTY.md): an agent DRIVES a real browser - navigate, snapshot with
+  # stable element refs, click/type/select/hover/scroll/press/upload, JS eval,
+  # readable extract (recipe-aware), screenshots as FILES, tabs, storage-state
+  # reuse and waits - instead of every task re-implementing playwright.
+  # It builds ON the existing web stack (`web-page`, `web-session`,
+  # `web-recipe`) and shares the ONE chromium process with them through
+  # `shared/browser.ts`; their behaviour and their tools are unchanged.
+  #   * browser-use-impl        the SERVICE HOST (`registry`): the provider
+  #                            registry, the selection (named provider ->
+  #                            configured default -> ordered fallback -> the
+  #                            single usable provider), the bounds of one call
+  #                            (deadline, navigation/action timeouts, snapshot
+  #                            node cap, text cap, screenshot byte cap, session
+  #                            cap) and the optional sandbox@1 gate. It imports
+  #                            no provider and starts no browser, so it declares
+  #                            `execution: none`.
+  #   * browser-use-playwright the PLAYWRIGHT PROVIDER (`playwright`): launches
+  #                            chromium through the SHARED launcher, isolates one
+  #                            browser CONTEXT per session, persists the storage
+  #                            state per session, observes requests/downloads and
+  #                            answers the DSH-style "snapshot + ref" model (an
+  #                            `act` takes the `ref` a previous `snapshot`
+  #                            answered; a ref of an older snapshot is a typed
+  #                            `browser-use.stale-ref`). A missing browser is a
+  #                            typed `browser-use.no-browser` naming the exact
+  #                            requirement - never a silent fetch pretending to be
+  #                            a browser.
+  #   * browser-use-tools       the CONSUMER: the ONE action-enum tool `browser`
+  #                            (providers | capabilities | sessions | open |
+  #                            navigate | snapshot | act | evaluate | extract |
+  #                            screenshot | tabs | wait | observe | state | close).
+  browser-use-impl:
+    provider: playwright
+    maxImageBytes: 8388608
+    timeoutMs: 60000
+    maxSessions: 4
+  # The dev roster reuses a chromium that is already on this workspace. Any
+  # chrome/chromium works: point `executablePath` at it, or drop it and install
+  # playwright's cache instead (`PLAYWRIGHT_BROWSERS_PATH=<dir> npx playwright-core
+  # install chromium`). A deployment WITHOUT a browser still loads every plugin
+  # and answers the typed `browser-use.no-browser` error naming the requirement.
+  browser-use-playwright:
+    headless: true
+    viewport:
+      width: 1280
+      height: 800
+    executablePath: /opt/workspace/workbench-plugins/.workbench/browsers/chromium-1243/chrome-linux64/chrome
+    storageStateDir: /opt/workspace/workbench-plugins/.workbench/browser-use/state
+    screenshotDir: /opt/workspace/workbench-plugins/.workbench/browser-use/shots
+  browser-use-tools: {}
 
   # The per-domain RECIPE STORE (see plugins/web-recipe/README.md): durable,
   # agent-agnostic knowledge about a site (read path, named selectors,

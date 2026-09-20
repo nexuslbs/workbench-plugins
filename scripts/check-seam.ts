@@ -24,7 +24,7 @@
  *      (`definitions/<id>.ts`) - the contract is what the seam is checked on.
  *
  * Deliberately ALLOWED: consumer <-> consumer imports (shared helpers such as
- * `plugins/web-shared` are ordinary modules), and `examples/**`.
+ * `shared/**` are ordinary modules outside the trees), and `examples/**`.
  *
  * Usage: node scripts/check-seam.ts [root]
  * Exit code 1 when a violation is found, 0 otherwise.
