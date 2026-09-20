@@ -1,0 +1,17 @@
+{
+  "name": "sandbox-tools",
+  "version": "0.1.0",
+  "description": "The consumer of the sandbox@1 seam: `sandbox check` (the raw decision for one request plus the active policy), `sandbox policy` (active policy + the provider's measured enforcement matrix) and `sandbox run` (run a command through an ENFORCING provider). Publishes only tool surfaces; the policy itself comes from a core provider plugin.",
+  "entry": "index.ts",
+  "capabilities": [],
+  "surfaces": {
+    "tools": ["sandbox check", "sandbox policy", "sandbox run"]
+  },
+  "config": {
+    "type": "object",
+    "description": "How verbose the decision answers are.",
+    "properties": {
+      "reportPolicy": { "type": "boolean", "default": true, "description": "Include the active policy in every `sandbox check` answer." }
+    }
+  }
+}

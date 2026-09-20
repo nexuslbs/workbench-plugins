@@ -143,6 +143,8 @@ implements is `definitions/<id>.ts`, and its consumer side stays under
 | `sms-twilio` | `sms` (`twilio`) | read-only SMS over the Twilio REST API |
 | `totp-rfc6238` | `totp` (`rfc6238`) | RFC 4226/6238 TOTP on `node:crypto` HMAC |
 | `capabilities-impl` | SERVICE HOST of `totp@1` + `sms@1` | declares the discovered provider ids and provides `ctx.totp` / `ctx.sms` |
+| `sandbox-policy` | `sandbox` (`declarative`) | the DECLARATIVE policy provider: per-resource rules decided in process, fail-closed by default, no host access and no `exec` |
+| `sandbox-enforce` | `sandbox` (`local-os`) | the ENFORCING provider: decides AND constrains a real child process (namespaces, rlimits, filtered env, pinned cwd, deadline on the process group, output cap) and reports every constraint it could NOT enforce as a gap |
 
 The two trees are discovered through two separate `sources:` (see above) and the
 `plugins:` roster names every plugin by NAME (never by path), so moving a plugin
@@ -157,6 +159,8 @@ consumer still talks to the Definition, never to a provider plugin.
 | `hello-otherworld` | `command:hello otherworld` | `Hello Otherworld` |
 | `hello-tool` | `tool:hello greet` | by-name tool over HTTP: `POST /api/tools/hello%20greet`, `POST /api/tool/call` (core contract, section 4d) |
 | `email-tools` | `tool:email accounts`, `tool:email list`, `tool:email get`, `tool:email code` | email CONSUMER: the four operator tools, provider agnostic (it only touches `ctx.email`) |
+| `sandbox-tools` | `tool:sandbox check`, `tool:sandbox policy`, `tool:sandbox run` | sandbox CONSUMER: the inspectable decision surface (`check`), the active policy plus the measured enforcement matrix (`policy`) and an ENFORCED run (`run`) |
+| `sandbox-consumer` | `tool:sandbox guarded run` | the REFERENCE consumer: asks for a decision and HONOURS a deny (a refused call never starts a process) |
 | `web-page` | `tool:page read`, `tool:page map` | web-page CONSUMER: ONE-call JS-aware page read - chromium render through `playwright-core`, main content to compact markdown IN CODE, URL + content-hash cache (`unchanged since <hash>`), hard char cap with spill to a file; no browser driver, no model in the loop |
 
 ### Example plugins for the plugin EVENT API
@@ -237,6 +241,10 @@ NOT a model/agent feature: the callers are plugins and operators. The contract i
 | `email-tools` | `email code` | `account` (string), `id` (string), `query` (string), `pattern` (string), `maxAgeSeconds` (integer) | same seam |
 | `web-page` | `page read` | `url` (string, required), `query` (string), `selectors` (array of string), `max_chars` (integer), `freshness` (string, enum `cache` / `revalidate` / `force`) | same seam (plugin README, "The two tools") |
 | `web-page` | `page map` | `url` (string, required), `max_chars` (integer) | same seam |
+| `sandbox-tools` | `sandbox check` | `resource` (string, required), `operation` (string), `path` (string), `argv` (array of string), `shell` (boolean), `cwd` (string), `envNames` (array of string), `network` (json), `bytes` (integer), `wallTimeMs` (integer), `approvalGranted` (boolean) | same seam (raw decision + active policy) |
+| `sandbox-tools` | `sandbox policy` | none | same seam (active policy + enforcement matrix) |
+| `sandbox-tools` | `sandbox run` | `argv` (array of string, required), `cwd` (string), `resource` (string), `env` (object), `envNames` (array of string), `stdin` (string), `timeoutMs` (integer), `maxOutputBytes` (integer), `approvalGranted` (boolean) | same seam (enforced run, needs an enforcing provider) |
+| `sandbox-consumer` | `sandbox guarded run` | `argv` (array of string, required), `cwd` (string), `resource` (string), `network` (json), `approvalGranted` (boolean) | same seam (decision honoured; deny -> nothing runs) |
 
 The smoke for this end-to-end (the plugin registers a tool, the core lists it
 with its schema, invokes it, validates the body and returns 400/404/500 without

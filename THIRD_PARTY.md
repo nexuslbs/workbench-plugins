@@ -47,9 +47,10 @@ and the workbench error/service conventions (`definitions/support.ts`).
 | `subprocess/*` (`types.ts`, `index.ts`), `subprocess-local` | `definitions/subprocess.ts`, `core/subprocess-local/index.ts` | the command shape (an argv ARRAY run WITHOUT a host shell, plus the explicit `shell: true` escape hatch), the deadline that kills the whole process GROUP (SIGTERM, then SIGKILL after a grace), the inline output cap whose overflow is handed to `spill`, the streaming chunk callback for live output, the "a non-zero exit is a normal result" rule |
 | `jobs/*` (`types.ts`, `index.ts`) | `definitions/jobs.ts`, `core/jobs-local/index.ts` | the background-job registry (stable id, the `running`/`exited`/`failed`/`killed` state machine), the durable log file, the CURSOR-based log paging (`cursor` in, `nextCursor` out), the log ceiling, the `stop` (process group) / `cleanup` lifecycle and the unload disposer |
 | `spill/*` (`types.ts`, `index.ts`), `tools/output-spill` | `definitions/spill.ts`, `core/spill-local/index.ts` | the oversized-payload file (`path`, `bytes`, `sha256`, `preview`), the RANGE read (`offset`/`limit` -> `nextOffset`/`eof`), the line-aligned default window, the retention policy (max age, max total bytes, explicit purge) |
+| `sandbox/*` (`types.ts`, `index.ts`), `sandbox-local` | `definitions/sandbox.ts`, `core/sandbox-policy/index.ts`, `core/sandbox-enforce/index.ts` | the vocabulary and semantics of the policy seam: the three modes (`read-only` / `workspace-write` / `danger-full-access`), the per-CALL policy view, the fail-closed default when no policy is available, the writable-root derivation and the escalation/approval flag. Adapted to this repository: the decision is a PURE function (`evaluateSandbox`) and the enforcement is a separate, probe-driven mechanism plan, so a host that cannot isolate says so instead of pretending |
 
 No file of the harness was copied verbatim; the modules above are re-expressed
 in this repository's own plugin/definition layout, and every one of them has a
 workbench-side test (`test/fs.test.ts`, `test/fs-local.test.ts`,
 `test/subprocess.test.ts`, `test/jobs.test.ts`, `test/spill.test.ts`,
-`test/process-tools.test.ts`).
+`test/process-tools.test.ts`, `test/sandbox.test.ts`).

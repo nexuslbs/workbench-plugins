@@ -136,9 +136,10 @@ unavailable while the rest of the stack keeps running - the tools resolve
 Sandbox extension point (no hard dependency): the provider accepts an OPTIONAL
 `FsSandboxPolicy` (`writeRoots` / `readRoots` / `readOnly`), either from its
 own `sandbox:` config block or from a `sandbox@1` service when one is loaded
-(`sandboxPolicyFrom(ctx)`); a policy only NARROWS the configured roots. The
-sandbox capability is a separate task; with none loaded the behaviour is exactly
-the config-only confinement above.
+(`sandboxPolicyFrom(ctx)`); a policy only NARROWS the configured roots. Which
+policy a `sandbox@1` provider hands out is ITS decision (see "Sandbox
+capability" below); with no provider loaded the behaviour is exactly the
+config-only confinement above.
 
 ## Local execution capabilities (`subprocess@1`, `jobs@1`, `spill@1`)
 
@@ -182,10 +183,86 @@ the same cap-then-spill rule the `fs` `grep` overflow follows.
 ### Optional sandbox extension point (no hard dependency)
 
 `definitions/subprocess.ts` exposes `sandboxOf(ctx)` and `definitions/jobs.ts`
-consults it too: when a `sandbox@1` provider (see the `sandbox` task) is present
+consults it too: when a `sandbox@1` provider (see "Sandbox capability" below) is present
 in the context, its `checkCommand` runs BEFORE a process is started and a refusal
 is a structured error. Nothing here imports or requires that seam: a deployment
 without it behaves exactly as documented above.
+## Sandbox capability (`sandbox@1`)
+
+`definitions/sandbox.ts` is the POLICY seam every local capability consults
+BEFORE it touches the host. A capability (`fs`, `subprocess`, `jobs`,
+`computer-use`, `browser-use`, or a custom name) hands it ONE request - resource
++ operation + target (path, argv, cwd, environment NAMES, network, bytes, wall
+time) - and gets back a DECISION: `allow` with the constraints that apply, or
+`deny` with a machine-readable `sandbox.*` reason. The provider DECIDES, the
+CONSUMER APPLIES: a consumer that cannot enforce a constraint must still honour
+a deny (never silently ignore it) and report the enforcement gap it leaves.
+
+| role | plugin | provider | what it does |
+| --- | --- | --- | --- |
+| Definition | `definitions/sandbox.ts` | - | the typed model (resources, requests, constraints, rules, allow/deny), the PURE decision engine (`evaluateSandbox`, fail-closed), the constraint views (`constraintView`, `policyViews`) and the enforcement PLAN (`buildEnforcementPlan`, `ulimitScript`, `filterSandboxEnv`) |
+| Provider (declarative) | `core/sandbox-policy` | `declarative` | per-resource rules from config; DECIDES only, touches nothing, has no `exec` |
+| Provider (enforcing) | `core/sandbox-enforce` | `local-os` | the same policy shape PLUS a mechanism PROBE and real enforcement: `check` decides, `exec` runs a command under the strongest mechanism the host measurably has, and every constraint it cannot enforce is reported as a GAP |
+| Tools / consumer | `plugins/sandbox-tools` | - | tools `sandbox check`, `sandbox policy`, `sandbox run` |
+| Reference consumer | `plugins/sandbox-consumer` | - | tool `sandbox guarded run`: asks for a decision, runs only when it is allowed, reports the deny otherwise |
+
+Exactly ONE provider is mounted (both provide the service name `sandbox`), so
+swapping them is a config edit and no consumer changes. With NO provider the
+deployment still boots: `sandboxOf(ctx)` / `sandboxPolicyFrom(ctx)` answer
+`undefined` and every consumer degrades to "no policy handle" - the seam is
+optional by construction.
+
+Config (the same shape for both providers; documented in `config.yml`):
+
+```yaml
+sandbox-policy:            # or `sandbox-enforce:` for the enforcing one
+  source: config.yml (dev) # reported by `sandbox policy`
+  unconfigured: deny       # fail-closed: a resource with no rule is REFUSED
+  defaults:                # narrowed per resource, NEVER widened
+    mode: workspace-write  # read-only | workspace-write | danger-full-access
+    env: [PATH, HOME, ...] # environment NAMES the child may receive
+    network: none          # none | allow-list (hosts) | unrestricted
+    limits: { wallTimeMs: 30000, maxOutputBytes: 65536, cpuSeconds: 30,
+              memoryBytes: 1073741824, nofile: 256 }
+  resources:
+    fs:         { mode: workspace-write, readRoots: [], writeRoots: [] }
+    subprocess: { mode: danger-full-access, denyCommands: [], approval: false }
+```
+
+Decision order (the FIRST refusal wins): resource denied outright -> resource
+unconfigured (fail-closed) -> a requested limit above the ceiling -> an
+environment name outside the allow-list -> an `fs` path outside the roots or a
+write under `read-only` -> argv deny-list, missing allow-list entry or a `cwd`
+outside the roots -> a network target outside the allow-list -> approval
+required but not granted.
+
+### Enforcement matrix (`core/sandbox-enforce`)
+
+The enforcing provider PROBES the host at apply time (binary presence AND a real
+exercise of the mechanism) and reports the measured outcome through
+`sandbox policy`; the plan is built from what is measurably THERE, never from
+what is assumed:
+
+| constraint | mechanism | enforced |
+| --- | --- | --- |
+| filesystem roots | `bwrap` mount namespace: read-only bind of `/` plus a writable bind of every granted write root | only where the probe finds a WORKING `bwrap`; otherwise NOT enforced and reported as a gap |
+| network egress | `bwrap --unshare-net`, else `unshare -n` | only where the probe can create a network namespace; otherwise a gap |
+| cpu / memory / open files | `prlimit --cpu --as --nofile`, else a `/bin/sh` ulimit prologue that `exec`s the real argv | the prologue is the fallback, so these hold on any Linux host |
+| wall time | the provider's own deadline: the child runs in its OWN process group and the GROUP is signalled (SIGTERM, then SIGKILL) | always (implemented in the provider) |
+| working directory | the child `cwd`, defaulting to the policy's first read root, else `/` | always (a `cwd` outside the roots is already refused by the decision) |
+| environment | the child environment is REBUILT from the policy names, nothing is inherited implicitly | always |
+| output bytes | stdout/stderr captured with an inline cap; the overflow is truncated and reported | always |
+| privilege drop | `setpriv --no-new-privs`; `--reuid` / `--regid` when the policy names a user/group | where the probe finds `setpriv` and the host permits it |
+| approval | policy flag: the decision answers `sandbox.approval-required` and the caller must pass `approvalGranted` | always (a decision-level constraint) |
+
+A constraint with no available mechanism is NOT silently dropped: it appears in
+the enforcement report as `enforced: false` with a note, and `sandbox run`
+returns the gaps next to the result. The matrix above is what the mechanism
+LAYERS can do; the MEASURED availability of one host is printed by
+`sandbox policy` (`available` + the probe evidence per mechanism). Tests:
+`test/sandbox.test.ts` (decision matrix, deny precedence, fail-closed default,
+the plan against a fake probe, and a REAL enforced run).
+
 
 ## Shell safety invariant (mandatory)
 

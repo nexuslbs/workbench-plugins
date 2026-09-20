@@ -1,0 +1,32 @@
+{
+  "name": "sandbox-policy",
+  "version": "0.1.0",
+  "description": "The sandbox@1 provider `declarative`: the DECISION layer of the confinement seam. Policy comes from this plugin's config (per-resource rules, fail-closed by default), the decision is pure (definitions/sandbox.ts) and no host resource is ever touched: consumers (fs@1, subprocess@1, jobs@1, computer-use, browser-use) ask for a decision and apply it themselves.",
+  "entry": "index.ts",
+  "capabilities": [{ "id": "sandbox", "version": 1, "provider": "declarative" }],
+  "policies": {
+    "sandbox": { "provide": "sandbox@1", "require": "sandbox@1" }
+  },
+  "config": {
+    "type": "object",
+    "description": "The policy itself: what an unconfigured resource gets, the defaults every resource starts from, and one rule per resource name.",
+    "properties": {
+      "source": { "type": "string", "description": "Label of this policy, reported by the `sandbox policy` tool (default sandbox@1)." },
+      "unconfigured": {
+        "type": "string",
+        "enum": ["deny", "allow"],
+        "default": "deny",
+        "description": "What a resource with NO rule and NO defaults gets: `deny` (fail-closed, the default) answers with reason sandbox.no-policy, `allow` grants the built-in defaults."
+      },
+      "approvalRequired": { "type": "boolean", "default": false, "description": "Every call of this policy needs an explicit approval (a call without approvalGranted is denied)." },
+      "defaults": {
+        "type": "object",
+        "description": "The rule every resource starts from: mode (read-only | workspace-write | danger-full-access), readRoots, writeRoots, env (NAME allow-list), network (none | allow-list | unrestricted, plus hosts), limits (cpuSeconds, memoryBytes, nofile, wallTimeMs, maxOutputBytes, maxProcesses), approvalRequired, dropPrivileges, allowCommands, denyCommands, deny."
+      },
+      "resources": {
+        "type": "object",
+        "description": "One rule per resource NAME (fs, subprocess, jobs, computer-use, browser-use, or any custom name); a rule narrows the defaults and can DENY the resource outright with `deny: true` (deny precedence)."
+      }
+    }
+  }
+}

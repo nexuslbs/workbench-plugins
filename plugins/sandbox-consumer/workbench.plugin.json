@@ -1,0 +1,15 @@
+{
+  "name": "sandbox-consumer",
+  "version": "0.1.0",
+  "description": "The minimal CONSUMER of the sandbox@1 seam kept as the interop proof: `sandbox guarded run` asks the loaded provider for a decision and runs the argv through the subprocess@1 seam ONLY when the decision allowed it - a deny runs nothing and is returned raw, an absent provider is refused fail-closed and reported as a gap.",
+  "entry": "index.ts",
+  "capabilities": [],
+  "surfaces": {
+    "tools": ["sandbox guarded run"]
+  },
+  "config": {
+    "type": "object",
+    "description": "This consumer has no configuration: the policy belongs to the provider, the decision is the provider's, and this plugin only applies it.",
+    "properties": {}
+  }
+}

@@ -446,6 +446,86 @@ plugins:
   spill-tools: {}
   jobs-tools: {}
 
+  # ---------------------------------------------------------------------------
+  # The SANDBOX capability (`sandbox@1`, definitions/sandbox.ts): the POLICY layer
+  # the other local capabilities consult before they touch the host - fs (path
+  # roots), subprocess/jobs (argv, cwd, env, limits) and the future
+  # computer-use / browser-use plugins (target, network). They reach it as
+  # `ctx.sandbox`; a deployment without a provider keeps booting and every
+  # consumer degrades to "no policy handle".
+  #
+  # TWO providers ship with this repository and EXACTLY ONE is mounted: they
+  # register the SAME service, so swapping them is a CONFIG edit and no consumer
+  # changes (see docs/SERVICES.md, "Sandbox capability").
+  #   * sandbox-policy  (provider `declarative`): DECIDES only. Per-resource
+  #     rules from THIS file, no host access, no `exec`: one decision = one
+  #     allow-with-constraints or one deny with a machine-readable reason.
+  #   * sandbox-enforce (provider `local-os`): DECIDES and ENFORCES. It probes
+  #     the host for the strongest available mechanism (`bwrap` mount/pid/net
+  #     namespaces, `unshare -n`, `prlimit`, the `/bin/sh` ulimit prologue,
+  #     `setpriv`), runs the command under it and reports every constraint it
+  #     could NOT enforce as a gap (see `sandbox policy`).
+  #
+  # The row below is the DECLARATIVE provider: the fail-closed reference the other
+  # capabilities and the tests use. To ENFORCE instead, replace the
+  # `sandbox-policy:` key with `sandbox-enforce:` carrying the same policy shape
+  # (source / unconfigured / defaults / resources) plus the runner knobs
+  # (`shell`, `timeoutMs`, `maxOutputBytes`); nothing else changes.
+  #
+  # The dev policy keeps the behaviour of the existing tools: `fs` keeps its own
+  # roots and adds no READ confinement, `subprocess`/`jobs` run the commands they
+  # always ran, and a resource WITHOUT a rule of its own (here `computer-use`,
+  # `browser-use`, ...) inherits `defaults` above, which is already a strict
+  # narrowing (no write outside the roots, no env beyond the allow-list, no
+  # network); add a `resources:` rule for a resource to narrow it further.
+  # `unconfigured: deny` REFUSES a resource only when the policy has no
+  # `defaults` to fall back on - that is the fail-closed case (`sandbox.no-policy`).
+  sandbox-policy:
+    source: config.yml (dev)
+    unconfigured: deny
+    defaults:
+      mode: workspace-write
+      env:
+        - PATH
+        - HOME
+        - LANG
+        - LC_ALL
+        - TZ
+        - TMPDIR
+        - TERM
+        - SHELL
+        - USER
+        - LOGNAME
+        - PWD
+      network: none
+      limits:
+        wallTimeMs: 30000
+        maxOutputBytes: 65536
+        cpuSeconds: 30
+        memoryBytes: 1073741824
+        nofile: 256
+    resources:
+      fs:
+        mode: workspace-write
+        # No READ confinement of its own: `fs-local` already owns the read
+        # policy and a sandbox policy can only make the seam STRICTER.
+        readRoots: []
+        writeRoots:
+          - ${env:OMNI_DIR}
+          - /tmp
+      subprocess:
+        # The dev host runs the commands its tools always ran; the limits and
+        # the environment allow-list above still shape the call.
+        mode: danger-full-access
+      jobs:
+        mode: danger-full-access
+  # The consumers: `sandbox check` answers a request with the raw decision plus
+  # the active policy, `sandbox policy` reports the policy and the enforcement
+  # matrix, `sandbox run` runs a command through an ENFORCING provider, and
+  # `sandbox guarded run` is the reference consumer that honours a deny.
+  sandbox-tools: {}
+  sandbox-consumer: {}
+
 web:
   enabled: true
   # Inside the compose service the listener must not bind the container's

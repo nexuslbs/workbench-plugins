@@ -1,0 +1,30 @@
+{
+  "name": "sandbox-enforce",
+  "version": "0.1.0",
+  "description": "The sandbox@1 provider `local-os`: the ENFORCING half of the confinement seam. It probes the host for the strongest mechanism it has (bwrap mount/pid/net namespaces, unshare -n, prlimit, the /bin/sh ulimit prologue, setpriv) and runs a command under the decision of the shared policy engine: confined filesystem roots, denied network egress, a filtered environment, a pinned cwd, kernel resource ceilings, a deadline that signals the whole process group and inline byte caps. Every constraint it cannot enforce is reported as a gap. Declares execution/policies because it starts host processes.",
+  "entry": "index.ts",
+  "execution": "host",
+  "capabilities": [{ "id": "sandbox", "version": 1, "provider": "local-os" }],
+  "policies": {
+    "sandbox": { "provide": "sandbox@1", "require": "sandbox@1" }
+  },
+  "config": {
+    "type": "object",
+    "description": "The SAME policy shape as core/sandbox-policy (source, unconfigured, defaults, resources, approvalRequired) plus the runner knobs below: this provider decides and enforces, so a deployment mounts exactly one of the two.",
+    "properties": {
+      "source": { "type": "string", "description": "Label of this policy, reported by `sandbox policy` (default sandbox@1)." },
+      "unconfigured": {
+        "type": "string",
+        "enum": ["deny", "allow"],
+        "default": "deny",
+        "description": "What a resource with NO rule and NO defaults gets: `deny` (fail-closed) or `allow`."
+      },
+      "approvalRequired": { "type": "boolean", "default": false, "description": "Every call needs an explicit approval (a call without approvalGranted is denied and runs nothing)." },
+      "defaults": { "type": "object", "description": "The rule every resource starts from (mode, readRoots, writeRoots, env NAME allow-list, network, limits, approvalRequired, dropPrivileges, allowCommands, denyCommands, deny)." },
+      "resources": { "type": "object", "description": "One rule per resource NAME (fs, subprocess, jobs, computer-use, browser-use, or a custom name); `deny: true` refuses the resource outright." },
+      "shell": { "type": "string", "default": "/bin/sh", "description": "Shell used by the `ulimit` rlimit fallback and by the mechanism probe." },
+      "timeoutMs": { "type": "number", "default": 30000, "description": "Deadline of a run when neither the call nor the policy names one (the policy cap always wins)." },
+      "maxOutputBytes": { "type": "number", "default": 65536, "description": "Inline byte cap of a run when neither the call nor the policy names one (the policy cap always wins)." }
+    }
+  }
+}
