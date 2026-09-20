@@ -232,11 +232,14 @@ function validateProperties(
       violations.push(`${joinPath(path, name)}: missing required parameter`)
     }
   }
+  const accepted = Object.keys(schema.properties)
   for (const [name, value] of Object.entries(args)) {
     const where = joinPath(path, name)
     const property = schema.properties[name]
     if (property === undefined) {
-      violations.push(`${where}: unknown parameter`)
+      // The accepted keys are IN the message: a caller that guessed a parameter
+      // name must not need a second roundtrip to learn the contract (task 2592).
+      violations.push(`${where}: unknown parameter (accepted here: ${accepted.join(', ')})`)
       continue
     }
     validateValue(property, value, where, violations)

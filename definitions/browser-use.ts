@@ -174,6 +174,12 @@ export type BrowserUseErrorReason =
   | 'browser-use.provider-unavailable'
   /** NO BROWSER IS INSTALLED / launchable: the exact prerequisite is named. */
   | 'browser-use.no-browser'
+  /**
+   * A `wsEndpoint`/`cdpEndpoint` is configured but nothing answers there. The
+   * provider NEVER falls back to a local launch and never to an HTTP fetch:
+   * the caller gets this reason with the endpoint that was tried.
+   */
+  | 'browser-use.endpoint-unreachable'
   /** No session is open (and none was named), so there is nothing to drive. */
   | 'browser-use.no-session'
   /** The named session id is not live (closed, evicted, or never opened). */
@@ -225,6 +231,7 @@ const REASON_CODES: Partial<Record<BrowserUseErrorReason, ServiceErrorCode>> = {
   'browser-use.duplicate-provider': 'invalid-config',
   'browser-use.provider-unavailable': 'unsupported-provider',
   'browser-use.no-browser': 'unreachable',
+  'browser-use.endpoint-unreachable': 'unreachable',
   'browser-use.no-session': 'not-configured',
   'browser-use.unknown-session': 'invalid-input',
   'browser-use.session-limit': 'not-configured',
@@ -413,6 +420,35 @@ export interface BrowserSessionInfo {
   openedAt: number
   /** When the session was last used (epoch ms). */
   lastUsedAt: number
+  /**
+   * Present when `open` had to START the configured browser service (its OWN
+   * image, reached through the `general-service@1` seam) before it could attach:
+   * what was run, through which transport, and what it answered. Absent when the
+   * endpoint was already answering: the path taken is provable from the result,
+   * never inferred from logs.
+   */
+  browserServiceStart?: {
+    /** True when a command really ran through the general-service seam. */
+    attempted: boolean
+    /** Why the start was not attempted (when `attempted` is false). */
+    reason?: string
+    /** The start command. */
+    command?: string
+    /** The transport type of the instance the command ran through. */
+    type?: string
+    /** The exit code the command answered. */
+    code?: number
+    /** The tail of the command output. */
+    output?: string
+    /** The tail of the command stderr (why a start FAILED is usually here). */
+    stderr?: string
+    /** The pre-start connect failure, for the report. */
+    cause?: string
+    /** How long the endpoint was awaited after a successful start. */
+    waitedMs?: number
+    /** True when the endpoint answered after the start. */
+    connected?: boolean
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -531,6 +567,30 @@ export interface BrowserActRequest {
   snapshot?: boolean
 }
 
+/**
+ * What the seam did about a ref that did not resolve any more. It is reported in
+ * the `act` answer (and in the typed `stale-ref` details) so the caller can
+ * PROVE which path was taken instead of trusting a claim: `recovered: true`
+ * means the call re-snapshotted once, re-resolved the target by role+name and
+ * the action succeeded on the FRESH ref (`to`); `recovered: false` means the
+ * one retry was made and the target was still gone, so the error carries the
+ * fresh refs.
+ */
+export interface BrowserRefRetry {
+  /** Always true in a report: a retry report only exists when one was made. */
+  attempted: boolean
+  /** True when the retry resolved the target and the action then succeeded. */
+  recovered: boolean
+  /** The ref the caller passed (the stale one). */
+  from: string
+  /** The ref the retry resolved, when it is not `from`. */
+  to?: string
+  /** The snapshot the retry worked from (the FRESH one). */
+  snapshotId?: string
+  /** Why the first attempt failed, in one line. */
+  reason: string
+}
+
 /** `act` answers what happened, on which page, and optionally a fresh snapshot. */
 export interface BrowserActAnswer {
   action: 'act'
@@ -544,6 +604,8 @@ export interface BrowserActAnswer {
   title: string
   /** True when the target was resolved through the CURRENT snapshot's ref table. */
   resolved: boolean
+  /** Present when a stale ref was retried (see {@link BrowserRefRetry}). */
+  refRetry?: BrowserRefRetry
   durationMs: number
   /** The fresh snapshot, when the caller asked for one. */
   snapshot?: BrowserSnapshot

@@ -25,6 +25,7 @@ import {
   DEFAULT_MAX_SNAPSHOT_NODES,
   type BrowserUseCallOptions,
 } from '../../definitions/browser-use.ts'
+import { ServiceError } from '../../definitions/support.ts'
 
 /** The `plugins: browser-use-playwright:` row, exactly as an operator writes it. */
 export interface BrowserUsePlaywrightConfig {
@@ -39,6 +40,41 @@ export interface BrowserUsePlaywrightConfig {
   proxy?: { server: string; username?: string; credential?: string }
   /** A chromium/chrome binary; absent: playwright resolves its own cache. */
   executablePath?: string
+  /**
+   * A REMOTE browser to ATTACH to instead of launching a local chromium: a
+   * CDP/websocket endpoint (`ws://browser:3000/`, `http://browser:9222`). When
+   * this is set the provider connects over CDP and NEVER launches a local
+   * process; when the endpoint does not answer, the call fails with the typed
+   * `browser-use.endpoint-unreachable` naming the endpoint - no silent local
+   * launch, no silent HTTP fetch. `cdpEndpoint` is accepted as an alias.
+   *
+   * This is the "thin browser service" deployment: ONE browser container shared
+   * by every workbench session (`mcr.microsoft.com/playwright` running a
+   * playwright server, or any chromium started with `--remote-debugging-port`).
+   */
+  wsEndpoint?: string
+  /** Alias of `wsEndpoint`, for a caller that thinks in CDP terms. */
+  cdpEndpoint?: string
+  /**
+   * The SEPARATE browser image/service this provider ATTACHES to.
+   *
+   * The browser is NEVER part of the workbench image (operator 2026-09-20: "the
+   * browser image is a separate image, not the workbench image"): a deployment
+   * runs ONE browser container/service (`mcr.microsoft.com/playwright:vX-noble`
+   * or any image shipping chromium) and points this provider at it. `endpoint`
+   * is where it answers (`http://127.0.0.1:9222`, or a `ws://` CDP URL);
+   * `generalService` is the `general-service@1` instance (`type` + `params`:
+   * container / ssh / shell / http) used to START that service when the endpoint
+   * does not answer yet - the SEAM decides the transport, this provider never
+   * hard-wires docker or ssh, and the browser image is named here, never built
+   * into the workbench image.
+   *
+   * When the endpoint never answers, the call fails with the typed
+   * `browser-use.no-browser` naming the endpoint, the image and the instance -
+   * this provider never launches a local browser and never falls back to an HTTP
+   * fetch while a browser service is configured.
+   */
+  browserService?: BrowserServiceConfig
   /** Extra chromium argv shared by every session. */
   browserArgs?: string[]
   /** Where storage-state files live (default `<tmp>/workbench-browser-use/state`). */
@@ -62,6 +98,76 @@ export interface BrowserUsePlaywrightConfig {
   sessionTtlSeconds?: number
 }
 
+/** The `browserService` block, exactly as an operator writes it. */
+export interface BrowserServiceConfig {
+  /** Where the browser service answers: `http://host:port` or a `ws(s)://` CDP URL. */
+  endpoint?: string
+  /** The image the service runs (named in the answers/errors), e.g. `mcr.microsoft.com/playwright:v1.63.0-noble`. */
+  image?: string
+  /** The `general-service@1` instance (`type` + `params`) that STARTS/reaches the service. */
+  generalService?: { type?: string; params?: Record<string, unknown> }
+  /** The command run THROUGH the instance when the endpoint does not answer (start it). */
+  start?: string
+  /** A command run through the instance as a liveness/diagnostic proof (reported when the start fails). */
+  probe?: string
+  /** How long to wait for the endpoint after `start` (default 20000 ms). */
+  startTimeoutMs?: number
+}
+
+/** The `browserService` block as this provider uses it (endpoint resolved). */
+export interface ResolvedBrowserService {
+  endpoint: string
+  image?: string
+  generalService?: { type: string; params: Record<string, unknown> }
+  start?: string
+  probe?: string
+  startTimeoutMs: number
+}
+
+/**
+ * Resolves the `browserService` block. A block that is PRESENT must be usable:
+ * silently ignoring a broken browser-service config would leave an operator with
+ * a provider that launches a local browser they never asked for, so a missing or
+ * non-URL `endpoint` is a LOUD `invalid-config` naming the field.
+ */
+export function resolveBrowserService(raw: BrowserServiceConfig | undefined): ResolvedBrowserService | undefined {
+  if (raw === undefined) return undefined
+  if (!plainRecord(raw)) {
+    throw new ServiceError('invalid-config', "browser-use-playwright: 'browserService' must be an object with an 'endpoint'", {
+      stage: 'config',
+      details: { field: 'browserService' },
+    })
+  }
+  const endpoint = textOf(raw.endpoint)
+  if (endpoint === undefined || !/^(https?|wss?):\/\//.test(endpoint)) {
+    throw new ServiceError(
+      'invalid-config',
+      "browser-use-playwright: 'browserService.endpoint' must be an http(s):// or ws(s):// URL, e.g. 'http://127.0.0.1:9222'",
+      { stage: 'config', details: { field: 'browserService.endpoint', got: endpoint ?? null } },
+    )
+  }
+  const general = raw.generalService
+  const type = plainRecord(general) ? textOf(general.type) : undefined
+  const image = textOf(raw.image)
+  const start = textOf(raw.start)
+  const probe = textOf(raw.probe)
+  return {
+    endpoint,
+    ...(image === undefined ? {} : { image }),
+    ...(type === undefined
+      ? {}
+      : { generalService: { type, params: (plainRecord(general) && plainRecord(general.params) ? general.params : {}) as Record<string, unknown> } }),
+    ...(start === undefined ? {} : { start }),
+    ...(probe === undefined ? {} : { probe }),
+    startTimeoutMs: boundInt(raw.startTimeoutMs, 20_000, 300_000),
+  }
+}
+
+/** A plain JSON object (never an array, never null). */
+function plainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
 /** The config as the provider uses it (every field resolved, nothing optional). */
 export interface ResolvedProviderConfig {
   headless: boolean
@@ -71,6 +177,10 @@ export interface ResolvedProviderConfig {
   timezoneId?: string
   proxy?: { server: string; username?: string; credential?: string }
   executablePath?: string
+  /** The remote CDP/websocket endpoint this provider ATTACHES to (no local launch). */
+  wsEndpoint?: string
+  /** The SEPARATE browser service (its own image) this provider attaches to. */
+  browserService?: ResolvedBrowserService
   browserArgs: string[]
   storageStateDir: string
   /** Absent when neither this config nor the seam bound named a directory. */
@@ -128,6 +238,13 @@ export function resolveProviderConfig(
   const proxyUser = textOf(config.proxy?.username)
   const proxyCredential = textOf(config.proxy?.credential)
   const executablePath = textOf(config.executablePath)
+  // `wsEndpoint` and its `cdpEndpoint` alias name the same thing: a remote
+  // browser this provider ATTACHES to. The `browserService.endpoint` (the
+  // SEPARATE browser image) is the same ATTACH mode, only the service is then
+  // named/started through the `general-service@1` seam. Resolved once here, so
+  // every downstream check sees ONE endpoint.
+  const browserService = resolveBrowserService(config.browserService)
+  const wsEndpoint = textOf(config.wsEndpoint) ?? textOf(config.cdpEndpoint) ?? browserService?.endpoint
   const userAgent = textOf(config.userAgent)
   const locale = textOf(config.locale)
   const timezoneId = textOf(config.timezoneId)
@@ -141,6 +258,8 @@ export function resolveProviderConfig(
       ? {}
       : { proxy: { server: proxyServer, ...(proxyUser === undefined ? {} : { username: proxyUser }), ...(proxyCredential === undefined ? {} : { credential: proxyCredential }) } }),
     ...(executablePath === undefined ? {} : { executablePath }),
+    ...(wsEndpoint === undefined ? {} : { wsEndpoint }),
+    ...(browserService === undefined ? {} : { browserService }),
     browserArgs: Array.isArray(config.browserArgs)
       ? config.browserArgs.map((arg) => textOf(arg)).filter((arg): arg is string => arg !== undefined)
       : [],
@@ -236,6 +355,11 @@ function chromiumIn(cacheDir: string): string | undefined {
  * early when nothing at all was found (and the requirement names both ways out).
  */
 export function browserBinary(config: ResolvedProviderConfig): BrowserBinary {
+  if (config.wsEndpoint !== undefined) {
+    // ATTACH mode: no local binary is used at all, and this is not a missing
+    // browser - the endpoint IS the browser. `path` stays absent on purpose.
+    return { source: `the CDP endpoint ${config.wsEndpoint}`, found: true, certain: false }
+  }
   if (config.executablePath !== undefined) {
     const exists = fs.existsSync(config.executablePath)
     return {
@@ -264,10 +388,42 @@ export function browserRequirement(config: ResolvedProviderConfig): string {
   if (!playwrightCoreAvailable()) {
     return "the 'playwright-core' module is not installed in this deployment: run 'npm ci' in the workbench-plugins source (it is a dependency of the plugin repository)"
   }
+  if (config.wsEndpoint !== undefined) return endpointRequirement(config)
   return (
-    'no chromium binary is visible: either set `plugins.browser-use-playwright.executablePath` to a chrome/chromium binary, ' +
-    'or install the playwright browser cache (`npx playwright-core install chromium`) and leave `PLAYWRIGHT_BROWSERS_PATH` ' +
-    'at its default (`~/.cache/ms-playwright`) or point it at the cache directory'
+    'no chromium binary is visible in the workbench process. The RECOMMENDED deployment runs the browser from its OWN image: ' +
+    'start a browser service (`mcr.microsoft.com/playwright:v1.63.0-noble`, or any chromium image), then set ' +
+    '`plugins.browser-use-playwright.browserService = { endpoint: "http://127.0.0.1:9222", image: "mcr.microsoft.com/playwright:v1.63.0-noble", ' +
+    'generalService: { type: "container", params: { container: "workbench-browser" } }, start: "<start chromium with --remote-debugging-port>" }` ' +
+    '- the browser image is NEVER part of the workbench image, and the service is started through the general-service@1 seam ' +
+    '(container / ssh / shell / http), so the transport is config. A bare `plugins.browser-use-playwright.wsEndpoint` works too. ' +
+    'LOCAL alternatives (not the default): set `executablePath` to a chrome/chromium binary, or install the playwright browser cache ' +
+    '(`npx playwright-core install chromium`). This provider NEVER falls back to an HTTP fetch that pretends to be a browser'
+  )
+}
+
+/** The exact requirement when this provider is configured to ATTACH to a remote browser. */
+export function endpointRequirement(config: ResolvedProviderConfig): string {
+  const service = config.browserService
+  if (service === undefined) {
+    return (
+      `no browser answers at the configured CDP endpoint '${config.wsEndpoint ?? ''}': start the browser service it names ` +
+      '(e.g. a `mcr.microsoft.com/playwright` container running chromium with `--remote-debugging-port`, reachable from this ' +
+      'process) or fix `plugins.browser-use-playwright.wsEndpoint`. This provider NEVER falls back to a local launch or to an ' +
+      'HTTP fetch when `wsEndpoint` is set'
+    )
+  }
+  return (
+    `no browser answers at '${service.endpoint}', the endpoint of the browser SERVICE configured in ` +
+    '`plugins.browser-use-playwright.browserService`' +
+    (service.image === undefined ? '' : ` (image '${service.image}')`) +
+    (service.generalService === undefined
+      ? ''
+      : `, reached through the general-service@1 instance ${JSON.stringify(service.generalService)}`) +
+    (service.start === undefined ? '' : `, start command '${service.start}'`) +
+    ': start that service (or fix the endpoint/instance) and make sure the endpoint is reachable FROM THIS PROCESS ' +
+    '(a container that publishes the debugging port on the loopback of the workbench process, e.g. `network_mode: host` ' +
+    'or a shared docker network). The browser runs from its OWN image and is NEVER part of the workbench image; this ' +
+    'provider NEVER falls back to a local launch or to an HTTP fetch'
   )
 }
 

@@ -9,8 +9,10 @@
 // `execFile` starts the docker CLI with an argv ARRAY: the workbench host shell
 // never sees the input, and `sh -c <input>` evaluates the pipes, redirections,
 // quotes and globs INSIDE the container. For the plain `docker` engine the argv
-// is `docker exec -T <container> sh -c <input>` or
-// `docker run --rm -T [-v ...] [--network ...] [<entrypoint>] <image> sh -c <input>`.
+// is `docker exec -i <container> sh -c <input>` or
+// `docker run --rm -i [-v ...] [--network ...] [<entrypoint>] <image> sh -c <input>`
+// (`-i`, never `-T`: `-T` belongs to `docker compose exec` and plain `docker
+// exec -T` exits 125 before running anything).
 //
 // An unreachable target (daemon down, service absent, image missing) fails with
 // `unreachable`: the command NEVER falls back to the host.

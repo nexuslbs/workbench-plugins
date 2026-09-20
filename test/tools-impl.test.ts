@@ -59,7 +59,7 @@ test('definitions/tools: validateArgs is path-qualified and structural', () => {
   assert.equal(violations.length, 2)
   assert.ok(violations.some((line) => line.startsWith('name: missing required parameter')))
   assert.ok(violations.some((line) => line.startsWith('times: expected an integer')))
-  assert.deepEqual(validateArgs(GREET_PARAMETERS, { name: 'ada', extra: 1 }), ['extra: unknown parameter'])
+  assert.deepEqual(validateArgs(GREET_PARAMETERS, { name: 'ada', extra: 1 }), ['extra: unknown parameter (accepted here: name, greeting, times)'])
   assert.deepEqual(validateArgs(GREET_PARAMETERS, ['ada']), ['params: expected an object, got array'])
 })
 

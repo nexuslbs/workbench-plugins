@@ -59,6 +59,7 @@ import { createBrowserUseService, validateBrowserUseConfig } from '../core/brows
 import { createPlaywrightProvider } from '../core/browser-use-playwright/index.ts'
 import { resolveProviderConfig } from '../core/browser-use-playwright/config.ts'
 import * as browserTools from '../plugins/browser-use-tools/index.ts'
+import { validateArgs } from '../definitions/tools.ts'
 
 // ---------------------------------------------------------------------------
 // Harness: a fake `tools` service plus a structural cordis context.
@@ -675,6 +676,482 @@ test('e2e: a REAL browser drives a LOCAL fixture page (open -> snapshot -> act -
     const closed = await service.close('e2e')
     assert.equal(closed.live, false)
     assert.deepEqual(provider.sessions(), [])
+  } finally {
+    unregister()
+    await provider.dispose()
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+    await fs.rm(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// SEAM ERGONOMICS (thread 2592): the contract is INTROSPECTABLE, the parameter
+// names an agent really guesses are ALIASES, a stale ref heals ONCE, and an
+// unreachable remote browser is a TYPED error naming the endpoint.
+// ---------------------------------------------------------------------------
+
+test('schema: the tool publishes the FULL per-action contract (names, types, required, aliases, units)', async () => {
+  const { service } = serviceWithFake()
+  const { ctx, tools, unload } = harness({ 'browser-use': service })
+  browserTools.apply(ctx)
+  const tool = tools.get(BROWSER_USE_TOOL_NAME)
+  const body = (await tool?.handler({ action: 'schema' })) as {
+    ok?: boolean
+    durationUnits?: string
+    aliasPolicy?: string
+    actions?: Array<{ action: string; parameters: Record<string, { type?: string; required?: boolean }>; required: string[]; aliases: Record<string, string> }>
+  }
+  assert.equal(body.ok, true)
+  assert.match(String(body.durationUnits), /MILLISECONDS/)
+  assert.match(String(body.aliasPolicy), /canonical name wins/)
+  const actions = body.actions ?? []
+  assert.ok(actions.length >= 10, `every action is published, got ${actions.length}`)
+  const byAction = new Map(actions.map((entry) => [entry.action, entry]))
+  const act = byAction.get('act')
+  assert.ok(act !== undefined)
+  assert.equal(act?.parameters.value?.type, 'string')
+  assert.deepEqual([...(act?.required ?? [])].sort(), ['kind', 'session'])
+  assert.equal(act?.aliases.text, 'value')
+  assert.equal(act?.aliases.timeout, 'timeoutMs')
+  assert.equal(byAction.get('wait')?.aliases.milliseconds, 'ms')
+  assert.equal(byAction.get('open')?.aliases.storageStateFile, 'stateFile')
+  assert.equal(byAction.get('open')?.aliases.storageState, 'stateFile')
+  // The schema cannot drift from the parameters the tools provider publishes.
+  assert.equal((tool?.parameters?.value as { type?: string } | undefined)?.type, 'string')
+  // ALIASES ARE PUBLISHED TOO, and that is LOAD-BEARING (measured live, task 2592):
+  // the tools surface REJECTS a key that is not in the parameter map
+  // (`invalid-params`, naming it) BEFORE the handler runs, so an alias missing
+  // from the map can never reach the rewrite. `action: schema` documents the
+  // rewrite under `aliases`; the map is what makes it reachable.
+  assert.equal((tool?.parameters?.storageStateFile as { type?: string } | undefined)?.type, 'string')
+  for (const entry of actions) {
+    for (const alias of Object.keys(entry.aliases)) {
+      assert.ok(
+        tool?.parameters?.[alias] !== undefined,
+        `alias '${alias}' of '${entry.action}' is declared in the published parameter map`,
+      )
+    }
+  }
+  const one = (await tool?.handler({ action: 'schema', schemaFor: 'wait' })) as { actions?: Array<{ action: string }> }
+  assert.deepEqual(one.actions?.map((entry) => entry.action), ['wait'])
+  assert.equal(toolReason(await tool?.handler({ action: 'schema', schemaFor: 'nope' })), 'browser-use.not-implemented')
+  unload()
+})
+
+test('aliases: the tools SURFACE accepts every alias (an undeclared key is rejected before the handler runs)', async () => {
+  const { ctx, tools, unload } = harness({})
+  browserTools.apply(ctx)
+  const tool = tools.get(BROWSER_USE_TOOL_NAME)
+  const spec = tool?.parameters as never
+  assert.deepEqual(validateArgs(spec, { action: 'wait', session: 's1', milliseconds: 150 }), [], '`milliseconds` passes the surface')
+  assert.deepEqual(validateArgs(spec, { action: 'act', session: 's1', kind: 'fill', text: 'x' }), [], '`text` passes the surface')
+  assert.deepEqual(validateArgs(spec, { action: 'open', session: 's1', storageStateFile: '/tmp/x.json' }), [], '`storageStateFile` passes the surface')
+  assert.deepEqual(validateArgs(spec, { action: 'open', session: 's1', storageState: '/tmp/x.json' }), [], '`storageState` passes the surface')
+  assert.deepEqual(validateArgs(spec, { action: 'navigate', session: 's1', url: 'https://x.test/', timeout: 1000 }), [], '`timeout` passes the surface')
+  const typos = validateArgs(spec, { action: 'act', session: 's1', kind: 'click', textt: 'typo' })
+    assert.equal(typos.length, 1, 'a genuine typo is still rejected BY THE SURFACE')
+    assert.ok(typos[0]?.startsWith('textt: unknown parameter'), typos[0])
+    // The accepted keys travel WITH the violation: no second roundtrip to learn them.
+    assert.ok(typos[0]?.includes('accepted here:') && typos[0]?.includes('value') && typos[0]?.includes('ref'), typos[0])
+  unload()
+})
+
+/** Records what the TOOL hands the SEAM, so an alias is provable end to end. */
+function spyService(): {
+  service: Record<string, unknown>
+  acts: BrowserActRequest[]
+  waits: BrowserWaitRequest[]
+  opens: BrowserSessionSpec[]
+} {
+  const acts: BrowserActRequest[] = []
+  const waits: BrowserWaitRequest[] = []
+  const opens: BrowserSessionSpec[] = []
+  const info = (id: string): BrowserSessionInfo => ({
+    id,
+    provider: 'spy',
+    url: 'about:blank',
+    title: '',
+    engine: { engine: 'chromium', available: true } as never as BrowserEngineInfo,
+    live: true,
+    stateReused: false,
+    tabs: 1,
+    requests: 0,
+    downloads: 0,
+    openedAt: 1,
+    lastUsedAt: 1,
+  })
+  const service: Record<string, unknown> = {
+    selection: () => ({ provider: 'spy', selected: 'spy' }),
+    providers: () => [],
+    async open(spec: BrowserSessionSpec): Promise<BrowserSessionInfo> {
+      opens.push(spec)
+      return info(spec.session ?? 'default')
+    },
+    async act(session: string, request: BrowserActRequest): Promise<BrowserActAnswer> {
+      acts.push(request)
+      return { action: 'act', kind: request.kind, session, url: 'about:blank', title: '', resolved: true, durationMs: 1 }
+    },
+    async wait(session: string, request: BrowserWaitRequest): Promise<BrowserWaitAnswer> {
+      waits.push(request)
+      return { action: 'wait', session, url: 'about:blank', waitedMs: request.ms ?? 0, satisfied: [] }
+    },
+  }
+  return { service, acts, waits, opens }
+}
+
+test('aliases: `text` on act reaches the seam as `value`, `milliseconds` on wait as `ms`, `storageStateFile` on open as `stateFile`', async () => {
+  const { service, acts, waits, opens } = spyService()
+  const { ctx, tools, unload } = harness({ 'browser-use': service })
+  browserTools.apply(ctx)
+  const tool = tools.get(BROWSER_USE_TOOL_NAME)
+  await tool?.handler({ action: 'open', session: 's1', storageStateFile: '/tmp/alias-state.json' })
+  assert.equal(opens[0]?.storageStateFile, '/tmp/alias-state.json', '`storageStateFile` is the `stateFile` of the open spec')
+  await tool?.handler({ action: 'act', session: 's1', kind: 'type', ref: 'e1', text: 'Ada' })
+  assert.equal(acts[0]?.value, 'Ada', '`text` is the `value` of act')
+  await tool?.handler({ action: 'act', session: 's1', kind: 'type', ref: 'e1', value: 'canonical', text: 'ignored' })
+  assert.equal(acts[1]?.value, 'canonical', 'the canonical name WINS when both are given')
+  await tool?.handler({ action: 'wait', session: 's1', milliseconds: 250 })
+  assert.equal(waits[0]?.ms, 250, '`milliseconds` is the wait duration')
+  await tool?.handler({ action: 'wait', session: 's1', ms: 99, milliseconds: 250 })
+  assert.equal(waits[1]?.ms, 99, 'the canonical name WINS when both are given')
+  await tool?.handler({ action: 'act', session: 's1', kind: 'click', ref: 'e1', timeout: 1500 })
+  assert.equal(acts[2]?.timeoutMs, 1500, '`timeout` is the ms budget of act')
+  unload()
+})
+
+test('aliases: a genuinely unknown parameter is a typed answer that LISTS the accepted keys and the aliases', async () => {
+  const { service } = spyService()
+  const { ctx, tools, unload } = harness({ 'browser-use': service })
+  browserTools.apply(ctx)
+  const tool = tools.get(BROWSER_USE_TOOL_NAME)
+  const body = await tool?.handler({ action: 'act', session: 's1', kind: 'click', textt: 'typo' })
+  assert.equal(toolReason(body), 'browser-use.not-implemented')
+  const message = String((body as { error?: { message?: string } }).error?.message)
+  assert.match(message, /unknown parameter\(s\) for 'action: act': textt/)
+  assert.match(message, /accepted: .*value/)
+  assert.match(message, /aliases: .*text/)
+  const details = (body as { error?: { details?: { accepted?: string[]; aliases?: Record<string, string> } } }).error?.details
+  assert.ok((details?.accepted ?? []).includes('value'), 'the accepted keys are in the details an agent reads')
+  assert.equal(details?.aliases?.text, 'value')
+  unload()
+})
+
+test('wsEndpoint: the provider ATTACHES to a remote CDP browser, and an unreachable endpoint is a TYPED error naming it (never a local launch)', async () => {
+  const endpoint = 'ws://127.0.0.1:9/devtools/browser/does-not-exist'
+  const resolved = resolveProviderConfig({ wsEndpoint: endpoint, launchTimeoutMs: 1500 })
+  assert.equal(resolved.wsEndpoint, endpoint)
+  assert.equal(
+    resolveProviderConfig({ cdpEndpoint: endpoint }).wsEndpoint,
+    endpoint,
+    '`cdpEndpoint` is the documented alias of `wsEndpoint`',
+  )
+  const provider = createPlaywrightProvider({ wsEndpoint: endpoint, launchTimeoutMs: 1500 })
+  const engine = provider.engine()
+  assert.equal(engine.available, true, 'a configured endpoint IS the browser: no local binary is required')
+  assert.match(String(engine.source), /127\.0\.0\.1:9/, 'the engine report names the endpoint it attaches to')
+  const service = createBrowserUseService({} as never, { provider: 'playwright' })
+  service.register(provider)
+  let caught: unknown
+  try {
+    await service.open({ session: 'remote' })
+  } catch (error) {
+    caught = error
+  }
+  await provider.dispose()
+  assert.ok(isBrowserUseError(caught), `expected a typed browser-use error, got ${String(caught)}`)
+  assert.equal((caught as BrowserUseError).reason, 'browser-use.endpoint-unreachable')
+  assert.match((caught as BrowserUseError).message, /127\.0\.0\.1:9/)
+})
+// ---------------------------------------------------------------------------
+// The SEPARATE browser image (operator correction, telegram thread 2593): the
+// workbench process holds NO browser, the browser service runs from its OWN
+// image and is reached - and, when needed, STARTED - through the
+// `general-service@1` seam. These tests pin that contract.
+// ---------------------------------------------------------------------------
+
+test('browserService: the block resolves ONE attach endpoint and a broken block is a LOUD invalid-config', () => {
+  const resolved = resolveProviderConfig({
+    browserService: {
+      endpoint: 'http://127.0.0.1:9222',
+      image: 'mcr.microsoft.com/playwright:v1.63.0-noble',
+      generalService: { type: 'container', params: { container: 'workbench-browser' } },
+      start: 'chromium --headless --remote-debugging-port=9222 about:blank',
+    },
+  })
+  assert.equal(
+    resolved.wsEndpoint,
+    'http://127.0.0.1:9222',
+    'the browserService endpoint IS the attach endpoint: one value downstream',
+  )
+  assert.equal(resolved.browserService?.image, 'mcr.microsoft.com/playwright:v1.63.0-noble')
+  assert.equal(resolved.browserService?.generalService?.params.container, 'workbench-browser')
+  assert.equal(resolved.browserService?.startTimeoutMs, 20_000, 'a start budget has a sane default')
+  // The workbench process is NOT given a local binary by this config.
+  assert.equal(resolved.executablePath, undefined)
+  let caught: unknown
+  try {
+    resolveProviderConfig({ browserService: { image: 'x' } })
+  } catch (error) {
+    caught = error
+  }
+  assert.ok(caught !== undefined, 'a browserService block without a usable endpoint must not be ignored silently')
+  assert.match(String((caught as Error).message), /browserService\.endpoint/)
+})
+
+test('browserService: an unreachable service is a TYPED error naming the endpoint, the image and the instance', async () => {
+  const provider = createPlaywrightProvider(
+    {
+      browserService: {
+        endpoint: 'http://127.0.0.1:9/',
+        image: 'mcr.microsoft.com/playwright:v1.63.0-noble',
+        generalService: { type: 'container', params: { container: 'workbench-browser' } },
+      },
+      launchTimeoutMs: 1_000,
+    },
+    undefined,
+    undefined,
+  )
+  const engine = provider.engine()
+  assert.equal(engine.available, true, 'a configured browser service IS the browser: no local binary is required')
+  assert.match(String(engine.source), /127\.0\.0\.1:9/, 'the engine report names the endpoint')
+  assert.match(String(engine.source), /mcr\.microsoft\.com\/playwright/, 'the engine report names the browser IMAGE')
+  const service = createBrowserUseService({} as never, { provider: 'playwright' })
+  service.register(provider)
+  let caught: unknown
+  try {
+    await service.open({ session: 'remote-service' })
+  } catch (error) {
+    caught = error
+  }
+  await provider.dispose()
+  assert.ok(isBrowserUseError(caught), `expected a typed browser-use error, got ${String(caught)}`)
+  assert.equal((caught as BrowserUseError).reason, 'browser-use.endpoint-unreachable')
+  const message = (caught as BrowserUseError).message
+  assert.match(message, /127\.0\.0\.1:9/, 'the error names the endpoint')
+  assert.match(message, /mcr\.microsoft\.com\/playwright/, 'the error names the browser image')
+  assert.match(message, /general-service@1/, 'the error names the seam that would start it')
+  assert.match(message, /NEVER part of the workbench image/, 'the error states the deployment model')
+  assert.equal((caught as BrowserUseError).details.fallback, 'none', 'no silent local launch, no silent fetch')
+})
+
+test('browserService: the provider STARTS the service through general-service@1 and reports what it ran', async () => {
+  const calls: Array<{ type: string; params: Record<string, unknown>; command: string }> = []
+  const generalService = {
+    create(config: { type: string; params: Record<string, unknown> }) {
+      return {
+        async call(command: string) {
+          calls.push({ type: config.type, params: config.params, command })
+          return { output: 'chrome: no such file or directory', code: 127 }
+        },
+      }
+    },
+  }
+  const provider = createPlaywrightProvider(
+    {
+      browserService: {
+        endpoint: 'http://127.0.0.1:19222',
+        image: 'mcr.microsoft.com/playwright:v1.63.0-noble',
+        generalService: { type: 'container', params: { container: 'workbench-browser' } },
+        start: 'chromium --headless --remote-debugging-port=19222 about:blank',
+      },
+      launchTimeoutMs: 1_000,
+    },
+    undefined,
+    generalService,
+  )
+  const service = createBrowserUseService({} as never, { provider: 'playwright' })
+  service.register(provider)
+  let caught: unknown
+  try {
+    await service.open({ session: 'start-me' })
+  } catch (error) {
+    caught = error
+  }
+  await provider.dispose()
+  assert.equal(calls.length, 1, 'the start command ran exactly once, through the seam')
+  assert.equal(calls[0]?.type, 'container', 'the transport is the CONFIG type, never hard-wired by the provider')
+  assert.equal(calls[0]?.params.container, 'workbench-browser')
+  assert.equal(calls[0]?.command, 'chromium --headless --remote-debugging-port=19222 about:blank')
+  const details = (caught as BrowserUseError).details as {
+    browserServiceStart?: { attempted?: boolean; code?: number; type?: string; output?: string }
+  }
+  assert.equal(details.browserServiceStart?.attempted, true, 'the call result PROVES the start path was taken')
+  assert.equal(details.browserServiceStart?.code, 127)
+  assert.equal(details.browserServiceStart?.type, 'container')
+  assert.match(String(details.browserServiceStart?.output), /no such file/)
+  assert.match((caught as BrowserUseError).message, /browser service start/)
+})
+
+test('browserService: a start that succeeds but never listens reports the wait, and still never falls back', async () => {
+  const provider = createPlaywrightProvider(
+    {
+      browserService: {
+        endpoint: 'http://127.0.0.1:9/',
+        generalService: { type: 'shell', params: {} },
+        start: 'true',
+        startTimeoutMs: 1,
+      },
+      launchTimeoutMs: 500,
+    },
+    undefined,
+    { create: () => ({ async call() { return { output: '', code: 0 } } }) },
+  )
+  const service = createBrowserUseService({} as never, { provider: 'playwright' })
+  service.register(provider)
+  let caught: unknown
+  try {
+    await service.open({ session: 'start-wait' })
+  } catch (error) {
+    caught = error
+  }
+  await provider.dispose()
+  assert.equal((caught as BrowserUseError).reason, 'browser-use.endpoint-unreachable')
+  const details = (caught as BrowserUseError).details as {
+    browserServiceStart?: { attempted?: boolean; code?: number; connected?: boolean; waitedMs?: number }
+  }
+  assert.equal(details.browserServiceStart?.attempted, true)
+  assert.equal(details.browserServiceStart?.code, 0, 'the start DID succeed')
+  assert.equal(details.browserServiceStart?.connected, false, 'yet the endpoint never answered: the attach failed')
+  assert.equal(details.browserServiceStart?.waitedMs, 1)
+  assert.match((caught as BrowserUseError).message, /waited 1 ms for the endpoint/)
+})
+
+
+// ---------------------------------------------------------------------------
+// The SEAM end-to-end (real browser): a stale ref HEALS itself once, and a
+// timeout on a control the call DID resolve NAMES the element and the reason.
+// ---------------------------------------------------------------------------
+
+const RETRY_PAGE = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Retry page</title></head>
+<body>
+  <h1>Retry page</h1>
+  <div id="host"><button id="send" type="button">Send</button></div>
+  <output id="out"></output>
+  <script>
+    function render() {
+      const host = document.getElementById('host')
+      host.innerHTML = '<button id="send" type="button">Send</button>'
+      document.getElementById('send').addEventListener('click', function () {
+        document.getElementById('out').textContent = 'clicked'
+      })
+    }
+    window.rerender = render
+    render()
+  </script>
+</body></html>`
+
+const DROP_PAGE = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Drop page</title></head>
+<body>
+  <h1>Drop page</h1>
+  <div id="host"><button id="send" type="button">Send</button></div>
+  <script>
+    window.drop = function () {
+      document.getElementById('host').innerHTML = '<p>The button is gone</p>'
+    }
+  </script>
+</body></html>`
+
+const COVERED_PAGE = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Covered page</title></head>
+<body>
+  <h1>Covered page</h1>
+  <div id="host"><button id="send" type="button">Send</button></div>
+  <div id="overlay" style="position:fixed;inset:0;background:rgba(0,0,0,0.01);z-index:5"></div>
+</body></html>`
+
+test('e2e seam: a stale ref is re-snapshotted and retried ONCE; an unrecoverable one fails WITH the fresh refs; a covered control times out NAMING itself', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'browser-use-recovery-'))
+  const executablePath = process.env.BROWSER_USE_CHROMIUM
+  const provider = createPlaywrightProvider({
+    headless: true,
+    storageStateDir: path.join(dir, 'state'),
+    screenshotDir: path.join(dir, 'shots'),
+    ...(executablePath === undefined || executablePath.length === 0 ? {} : { executablePath }),
+  })
+  const capabilities = provider.capabilities()
+  if (!capabilities.engine.available) {
+    await fs.rm(dir, { recursive: true, force: true })
+    t.skip(`no browser available (set BROWSER_USE_CHROMIUM=<chrome binary> to run this): ${capabilities.engine.requirement ?? 'unknown requirement'}`)
+    return
+  }
+  const server = http.createServer((request, response) => {
+    const url = request.url ?? '/'
+    response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+    response.end(url.startsWith('/drop') ? DROP_PAGE : url.startsWith('/covered') ? COVERED_PAGE : RETRY_PAGE)
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const port = (server.address() as AddressInfo).port
+  const base = `http://127.0.0.1:${port}`
+  const service = createBrowserUseService({} as never, {
+    provider: 'playwright',
+    storageStateDir: path.join(dir, 'state'),
+    screenshotDir: path.join(dir, 'shots'),
+  })
+  const unregister = service.register(provider)
+  try {
+    await service.open({ session: 'seam', viewport: { width: 900, height: 600 } })
+
+    // (1) RECOVERY: the page re-renders the button, the old ref is stale, and
+    // the seam re-snapshots + re-resolves it by role+name ONCE and clicks the
+    // RE-RENDERED node (proved by the effect of the click, not by the status).
+    await service.navigate('seam', { url: `${base}/` })
+    const first = await service.snapshot('seam', {})
+    const button = first.nodes.find((node) => node.tag === 'button')
+    assert.ok(button !== undefined, `the retry fixture exposes a button: ${JSON.stringify(first.nodes)}`)
+    await service.evaluate('seam', { expression: 'window.rerender()' })
+    const healed = await service.act('seam', { kind: 'click', ref: button.ref })
+    assert.equal(healed.resolved, true)
+    assert.equal(healed.refRetry?.attempted, true, `the recovery must be REPORTED: ${JSON.stringify(healed)}`)
+    assert.equal(healed.refRetry?.recovered, true, `the recovery must have SUCCEEDED: ${JSON.stringify(healed)}`)
+    assert.notEqual(healed.refRetry?.to, button.ref, 'the retry acted on a FRESH ref, not the stale one')
+    assert.match(String(healed.refRetry?.snapshotId), /^s[0-9]+$/)
+    const effect = await service.evaluate('seam', { expression: "document.getElementById('out').textContent" })
+    assert.equal(effect.value, 'clicked', 'the click really landed on the re-rendered node')
+
+    // (2) UNRECOVERABLE: the element truly left the page. The typed stale-ref
+    // carries the FRESH snapshot refs in details.nodes, so the caller can pick
+    // one without a second call.
+    await service.navigate('seam', { url: `${base}/drop` })
+    const doomed = await service.snapshot('seam', {})
+    const gone = doomed.nodes.find((node) => node.tag === 'button')
+    assert.ok(gone !== undefined, `the drop fixture exposes a button: ${JSON.stringify(doomed.nodes)}`)
+    await service.evaluate('seam', { expression: 'window.drop()' })
+    let caught: unknown
+    try {
+      await service.act('seam', { kind: 'click', ref: gone.ref })
+    } catch (error) {
+      caught = error
+    }
+    assert.ok(isBrowserUseError(caught), `expected a typed browser-use error, got ${String(caught)}`)
+    assert.equal((caught as BrowserUseError).reason, 'browser-use.stale-ref')
+    const details = (caught as BrowserUseError).details as { retried?: boolean; snapshotId?: string; nodes?: unknown[] } | undefined
+    assert.equal(details?.retried, true, 'the failure reports that the automatic retry ALREADY ran')
+    assert.ok(Array.isArray(details?.nodes) && (details?.nodes?.length ?? 0) > 0, `the FRESH refs ride along: ${JSON.stringify(details)}`)
+    assert.match((caught as BrowserUseError).message, /details\.nodes/)
+
+    // (3) TIMEOUT WITH EVIDENCE: the control is resolved but an overlay swallows
+    // the pointer. The caller gets the ELEMENT and the REASON, not a bare
+    // "Timeout exceeded".
+    await service.navigate('seam', { url: `${base}/covered` })
+    const covered = await service.snapshot('seam', {})
+    const blocked = covered.nodes.find((node) => node.tag === 'button')
+    assert.ok(blocked !== undefined, `the covered fixture exposes a button: ${JSON.stringify(covered.nodes)}`)
+    let timedOut: unknown
+    try {
+      await service.act('seam', { kind: 'click', ref: blocked.ref, timeoutMs: 900 })
+    } catch (error) {
+      timedOut = error
+    }
+    assert.ok(isBrowserUseError(timedOut), `expected a typed browser-use error, got ${String(timedOut)}`)
+    assert.equal((timedOut as BrowserUseError).reason, 'browser-use.timeout')
+    assert.match((timedOut as BrowserUseError).message, /COVERED/)
+    assert.match((timedOut as BrowserUseError).message, new RegExp(blocked.ref))
+    const diagnosis = ((timedOut as BrowserUseError).details as { diagnosis?: string[] } | undefined)?.diagnosis ?? []
+    assert.ok(diagnosis.some((entry) => /COVERED/.test(entry)), `the diagnosis names the reason: ${JSON.stringify(diagnosis)}`)
+
+    await service.close('seam')
   } finally {
     unregister()
     await provider.dispose()

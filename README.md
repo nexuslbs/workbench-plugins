@@ -306,9 +306,20 @@ session lifecycle; the screenshot answer as a path plus the byte cap; a missing
 `web-recipe` service; the unload disposer) and ONE live test that drives a REAL
 browser against a LOCAL fixture page served in-process (`open` -> `snapshot` ->
 `act` -> `extract` -> `screenshot` -> stale-ref -> `close`). That live test SKIPS
-- naming the exact prerequisite (a chromium binary via `executablePath` or
-`PLAYWRIGHT_BROWSERS_PATH`) - when the host has no browser; `BROWSER_USE_LIVE=0`
-disables it explicitly.
+- naming the exact prerequisite: a browser reachable through
+`browserService.endpoint` (the SEPARATE browser image) or the bare `wsEndpoint`,
+or a local chromium via `executablePath` / `PLAYWRIGHT_BROWSERS_PATH` - when the
+host has none; `BROWSER_USE_LIVE=0` disables it explicitly.
+The same file pins the seam ERGONOMICS an agent needs in order NOT to guess: the
+per-action SCHEMA the tool publishes (names, types, required, units, aliases),
+the documented ALIASES (`text` -> `value` on `act`, `milliseconds` / `ms` -> the
+wait duration, `storageStateFile` / `storageState` -> the `open` state file,
+`timeout` -> `timeoutMs`), the typed `not-implemented` answer that LISTS the
+accepted keys, the stale-ref one-shot re-snapshot + retry (and the typed
+`stale-ref` carrying the FRESH refs when it cannot heal), and the SEPARATE
+browser image model (`browserService` + the `general-service@1` start, the typed
+`endpoint-unreachable` naming endpoint / image / instance, never a local-launch
+fallback).
 
 ## Plugin events and effects (`events@1`)
 

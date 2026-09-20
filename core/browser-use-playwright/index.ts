@@ -66,6 +66,7 @@ import {
   type BrowserObserveAnswer,
   type BrowserObserveRequest,
   type BrowserProviderCapabilities,
+  type BrowserRefRetry,
   type BrowserScreenshotAnswer,
   type BrowserScreenshotRequest,
   type BrowserSessionInfo,
@@ -82,17 +83,20 @@ import {
   type BrowserWaitAnswer,
   type BrowserWaitRequest,
 } from '../../definitions/browser-use.ts'
-import { assertPolicyDeclared, credentialsOf, isRecord, messageOf, str, type ServiceContext } from '../../definitions/support.ts'
+import { assertPolicyDeclared, credentialsOf, isRecord, messageOf, serviceOf, str, type ServiceContext } from '../../definitions/support.ts'
+import { GENERAL_SERVICE } from '../../definitions/general-service.ts'
 import { acquireSharedBrowser, releaseSharedBrowser, sharedBrowserVersion } from '../../shared/browser.ts'
 import {
   boundInt,
   browserBinary,
   browserRequirement,
+  endpointRequirement,
   playwrightCoreAvailable,
   resolveProviderConfig,
   safeSessionId,
   sessionStateFile,
   type BrowserUsePlaywrightConfig,
+  type ResolvedBrowserService,
   type ResolvedProviderConfig,
 } from './config.ts'
 import { DEFAULT_ATTRIBUTES, extractInPage, snapshotInPage, type ExtractPayload } from './extract.ts'
@@ -138,6 +142,12 @@ interface LiveSession {
   refs: Map<string, string>
   /** page -> the snapshot id of its LAST snapshot (older refs are stale). */
   snapshots: Map<Page, string>
+  /**
+   * page -> the NODES of its last snapshot. The ref retry of `act` re-resolves a
+   * stale ref by the ROLE + NAME of the node it was minted for, so the provider
+   * keeps what a ref POINTED AT, not only that it existed.
+   */
+  nodes: Map<Page, BrowserSnapshotNode[]>
   /** The last title read (the `sessions()` report is synchronous). */
   lastTitle: string
   openedAt: number
@@ -186,21 +196,138 @@ function looksLikeMissingBrowser(message: string): boolean {
  * is why they are not in this list.
  */
 const TARGETED_ACT_KINDS: readonly string[] = ['click', 'type', 'fill', 'select', 'hover', 'upload', 'check', 'focus']
+/**
+ * The element an interaction targets, plus what the caller is told about it: the
+ * ref/selector it resolved through and whether it came from the CURRENT
+ * snapshot's ref table.
+ */
+interface ResolvedTarget {
+  locator: Locator
+  /** The snapshot ref the target was resolved through. */
+  ref?: string
+  /** The selector that resolved (a ref resolves to its attribute selector). */
+  selector?: string
+  /** True when the target came from the current snapshot's ref table. */
+  resolved: boolean
+}
+
+/** The role+name a ref was minted for: the identity a stale ref is re-found by. */
+interface RefShape {
+  tag: string
+  role?: string
+  name?: string
+  /** An input's TYPE is part of what the control IS (a text box is not a password box). */
+  inputType?: string
+}
+
+/** The in-page evidence a `timeout` on a resolved control is explained with. */
+interface TargetDiagnosis {
+  present: boolean
+  tag?: string
+  disabled?: boolean
+  covered?: boolean
+  covering?: string
+  width?: number
+  height?: number
+  visible?: boolean
+  pointerEvents?: string
+}
+
+/** True for the typed `stale-ref` (a ref of an older snapshot, or a gone element). */
+function isStaleRef(error: unknown): boolean {
+  return isBrowserUseError(error) && error.reason === 'browser-use.stale-ref'
+}
+
+/** True when a failure looks like the engine giving up on the interaction budget. */
+function isTimeoutLike(error: unknown): boolean {
+  if (isBrowserUseError(error)) return error.reason === 'browser-use.timeout'
+  const name = error instanceof Error ? error.name : ''
+  const message = error instanceof Error ? error.message : String(error)
+  return name === 'TimeoutError' || /Timeout \d+ms exceeded/.test(message)
+}
+
+/**
+ * The ref of the node that carries the SAME role+name as `shape`. That match is
+ * an IDENTITY (the accessible name of a control), never a position: a node whose
+ * name merely CONTAINS the old one is not taken.
+ */
+function matchRef(nodes: BrowserSnapshotNode[], shape: RefShape): string | undefined {
+  if (shape.name === undefined) return undefined
+  const exact = nodes.find((node) => node.role === shape.role && node.name === shape.name)
+  if (exact !== undefined) return exact.ref
+  return nodes.find((node) => node.tag === shape.tag && node.name === shape.name)?.ref
+}
+
+/**
+ * The ref of the ONLY node of the same SHAPE (tag + role) as the stale one. A
+ * control with no accessible NAME (an unnamed textbox) cannot be re-found by
+ * role+name, so a UNIQUE shape match is used as the identity - an ambiguous one
+ * is NOT taken, because that would be a silent click at a guessed position.
+ */
+function matchRefByShape(nodes: BrowserSnapshotNode[], shape: RefShape): string | undefined {
+  const matches = nodes.filter(
+    (node) =>
+      node.tag === shape.tag &&
+      (shape.role === undefined || node.role === shape.role) &&
+      (shape.inputType === undefined || node.inputType === shape.inputType),
+  )
+  return matches.length === 1 ? matches[0]?.ref : undefined
+}
+
+/** One line of an error message (what a retry report is written with). */
+function firstLineOf(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error)
+  return message.split('\n')[0] ?? message
+}
+
 export class PlaywrightProvider implements BrowserUseProvider {
   readonly id = providerId
   private readonly config: ResolvedProviderConfig
   private readonly credentials?: { resolve(ref: { name: string; scope?: string }): Promise<{ value?: string } | undefined> }
+  /**
+   * The `general-service@1` seam, used ONLY to start a configured browser
+   * service. Accepted as the SERVICE or as a RESOLVER: the service can load
+   * AFTER this provider (the loader order is the deployment's), so `apply`
+   * hands over a lazy lookup and the resolution happens on the CALL.
+   */
+  private readonly generalServiceSource?: GeneralServiceLike | (() => GeneralServiceLike | undefined)
+  private resolvedGeneralService?: GeneralServiceLike
+  /** The LAST browser-service start made through general-service@1, for the caller's result. */
+  private serviceStart?: BrowserServiceStartRecord
   private readonly sessionsById = new Map<string, LiveSession>()
   private browser?: Browser
   private launching?: Promise<Browser>
   private holdsBrowser = false
+  /** True when the browser is a REMOTE one this provider ATTACHED to (no local process). */
+  private attached = false
+  /** The version READ from the browser this provider really drove (never guessed). */
+  private observedVersion?: string
   private snapshotCounter = 0
   private disposed = false
 
-  constructor(config: BrowserUsePlaywrightConfig = {}, credentials?: { resolve(ref: { name: string; scope?: string }): Promise<{ value?: string } | undefined> }) {
+  constructor(
+    config: BrowserUsePlaywrightConfig = {},
+    credentials?: { resolve(ref: { name: string; scope?: string }): Promise<{ value?: string } | undefined> },
+    generalService?: GeneralServiceLike | (() => GeneralServiceLike | undefined),
+  ) {
     const bounds = { screenshotDir: undefined, storageStateDir: undefined }
     this.config = resolveProviderConfig(config, bounds)
     this.credentials = credentials
+    this.generalServiceSource = generalService
+  }
+
+  /**
+   * The `general-service@1` seam of THIS call, resolved lazily and memoized: a
+   * deployment that loads the seam AFTER this provider must still be able to
+   * start its browser service (the previous eager lookup silently disabled the
+   * start and reported 'no general-service@1 provider is loaded').
+   */
+  private generalService(): GeneralServiceLike | undefined {
+    if (this.resolvedGeneralService !== undefined) return this.resolvedGeneralService
+    const source = this.generalServiceSource
+    const resolved = typeof source === 'function' ? source() : source
+    if (resolved !== undefined) this.resolvedGeneralService = resolved
+    return resolved
   }
 
   // -------------------------------------------------------------------------
@@ -224,6 +351,10 @@ export class PlaywrightProvider implements BrowserUseProvider {
   unavailableReason(): string | undefined {
     if (this.disposed) return 'the plugin was unloaded (no provider is registered any more)'
     if (!playwrightCoreAvailable()) return browserRequirement(this.config)
+    // ATTACH mode: whether the endpoint answers is only knowable by connecting,
+    // so this provider does not refuse the SELECTION - the caller gets the
+    // typed `endpoint-unreachable` (naming the endpoint) at `open`.
+    if (this.config.wsEndpoint !== undefined) return undefined
     const binary = browserBinary(this.config)
     if (!binary.found) return browserRequirement(this.config)
     return undefined
@@ -233,15 +364,33 @@ export class PlaywrightProvider implements BrowserUseProvider {
     const binary = browserBinary(this.config)
     // The version is READ from the running browser when there is one: a browser
     // that was never launched must not carry a version nobody observed.
-    const version = sharedBrowserVersion()
+    const version = this.observedVersion ?? sharedBrowserVersion()
+    const ready = playwrightCoreAvailable()
+    const endpoint = this.config.wsEndpoint
+    if (endpoint !== undefined) {
+      // ATTACH mode: no local binary is involved at all, and the engine report
+      // says so (the `source` names the endpoint, never a chromium path).
+      return {
+        engine: ENGINE,
+        ...(version === undefined ? {} : { version }),
+        headless: this.config.headless,
+        source:
+          `playwright-core + the remote CDP endpoint ${endpoint}` +
+          (this.config.browserService?.image === undefined
+            ? ''
+            : ` (browser service image ${this.config.browserService.image})`),
+        available: ready,
+        ...(ready ? {} : { requirement: browserRequirement(this.config) }),
+      }
+    }
     return {
       engine: ENGINE,
       ...(version === undefined ? {} : { version }),
       ...(binary.path === undefined ? {} : { executablePath: binary.path }),
       headless: this.config.headless,
       source: `playwright-core + ${binary.source}`,
-      available: binary.found && playwrightCoreAvailable(),
-      ...(binary.found && playwrightCoreAvailable() ? {} : { requirement: browserRequirement(this.config) }),
+      available: binary.found && ready,
+      ...(binary.found && ready ? {} : { requirement: browserRequirement(this.config) }),
     }
   }
 
@@ -278,6 +427,11 @@ export class PlaywrightProvider implements BrowserUseProvider {
       this.holdsBrowser = false
       await releaseSharedBrowser().catch(() => undefined)
     }
+    // An ATTACHED browser is NOT ours to close: the connection is dropped (the
+    // contexts above are closed) and the browser container keeps running.
+    if (this.attached) await this.browser?.close().catch(() => undefined)
+    this.attached = false
+    this.observedVersion = undefined
     this.browser = undefined
     this.launching = undefined
   }
@@ -340,11 +494,16 @@ export class PlaywrightProvider implements BrowserUseProvider {
       active: 0,
       stateFile,
       stateReused,
+      // The browser-service start path, when it was taken: the caller can SEE that
+      // the browser came from the configured service (its own image) and not from
+      // a local launch, without reading this container's logs.
+      ...(this.serviceStart === undefined ? {} : { browserServiceStart: this.serviceStart }),
       downloadDir,
       requests: [],
       downloads: [],
       refs: new Map(),
       snapshots: new Map(),
+      nodes: new Map(),
       lastTitle: '',
       openedAt: Date.now(),
       lastUsedAt: Date.now(),
@@ -467,6 +626,10 @@ export class PlaywrightProvider implements BrowserUseProvider {
         details: { provider: providerId, missing: 'playwright-core' },
       })
     }
+    // ATTACH mode: the local binary is NOT the browser, so it is not checked
+    // here. Whether the endpoint answers is decided by the connect (which fails
+    // with the typed `endpoint-unreachable` and never falls back to a launch).
+    if (this.config.wsEndpoint !== undefined) return
     const binary = browserBinary(this.config)
     if (!binary.found) {
       throw new BrowserUseError('browser-use.no-browser', browserRequirement(this.config), {
@@ -482,9 +645,18 @@ export class PlaywrightProvider implements BrowserUseProvider {
    * (the launcher is refcounted; the last holder closes the process).
    */
   private async ensureBrowser(): Promise<Browser> {
-    if (this.browser !== undefined) return this.browser
+    if (this.browser !== undefined && this.browser.isConnected()) return this.browser
     if (this.launching !== undefined) return await this.launching
+    const endpoint = this.config.wsEndpoint
     this.launching = (async () => {
+      if (endpoint !== undefined) {
+        const browser = await this.connectToEndpoint(endpoint)
+        this.browser = browser
+        this.attached = true
+        this.holdsBrowser = false
+        this.observedVersion = browser.version()
+        return browser
+      }
       const proxy = await this.resolveProxy(undefined)
       const browser = await acquireSharedBrowser({
         ...(this.config.executablePath === undefined ? {} : { executablePath: this.config.executablePath }),
@@ -497,6 +669,7 @@ export class PlaywrightProvider implements BrowserUseProvider {
       })
       this.browser = browser
       this.holdsBrowser = true
+      this.observedVersion = browser.version()
       return browser
     })()
     try {
@@ -504,6 +677,152 @@ export class PlaywrightProvider implements BrowserUseProvider {
     } finally {
       this.launching = undefined
     }
+  }
+
+  /**
+   * ATTACHES to the remote browser named by `wsEndpoint` (`cdpEndpoint` is the
+   * same field). A failure here is the typed `browser-use.endpoint-unreachable`
+   * naming the endpoint - this provider NEVER falls back to a local launch and
+   * never to a non-browser fetch when an endpoint is configured (that is the
+   * whole point of the setting).
+   */
+  private async connectToEndpoint(endpoint: string): Promise<Browser> {
+    const playwright = await import('playwright-core').catch((error: unknown) => {
+      throw new BrowserUseError('browser-use.no-browser', browserRequirement(this.config), {
+        stage: 'open',
+        details: { provider: providerId, missing: 'playwright-core', reason: messageOf(error) },
+      })
+    })
+    try {
+      return await playwright.chromium.connectOverCDP(endpoint, { timeout: this.config.launchTimeoutMs })
+    } catch (error) {
+      // The endpoint did not answer. When the deployment NAMED a browser service
+      // (its OWN image, reached through the general-service@1 seam), START it
+      // once through that seam and retry the attach, bounded by `startTimeoutMs`.
+      // The path taken is REPORTED in the result: a silent local launch or an
+      // HTTP fetch would both be a lie about what drove the page.
+      const service = this.config.browserService
+      const started = service === undefined ? undefined : await this.startBrowserService(service, error)
+      if (started !== undefined) this.serviceStart = started
+      if (started?.attempted === true && started.code === 0) {
+        const budgetMs = service?.startTimeoutMs ?? 0
+        const connected = await this.retryAttach(playwright, endpoint, budgetMs)
+        if (connected !== undefined) {
+          started.waitedMs = budgetMs
+          started.connected = true
+          return connected
+        }
+        started.waitedMs = budgetMs
+        started.connected = false
+      }
+      throw this.endpointError(endpoint, error, started)
+    }
+  }
+
+  /**
+   * Attaches again after a browser-service start, bounded: a just-started
+   * chromium may take a few seconds before it listens on the debugging port.
+   */
+  private async retryAttach(
+    playwright: typeof import('playwright-core'),
+    endpoint: string,
+    budgetMs: number,
+  ): Promise<Browser | undefined> {
+    const deadline = Date.now() + Math.max(budgetMs, 0)
+    for (;;) {
+      await new Promise((resolve) => setTimeout(resolve, 1_000))
+      try {
+        return await playwright.chromium.connectOverCDP(endpoint, { timeout: this.config.launchTimeoutMs })
+      } catch {
+        if (Date.now() >= deadline) return undefined
+      }
+    }
+  }
+
+  /**
+   * Starts the configured browser service ONCE, through the `general-service@1`
+   * seam (container / ssh / shell / http chosen by CONFIG, never by this
+   * provider). The result is returned for the call result and the typed error:
+   * what was run, through which instance, and what it answered.
+   */
+  private async startBrowserService(service: ResolvedBrowserService, cause: unknown): Promise<BrowserServiceStartRecord> {
+    const command = service.start
+    if (command === undefined) {
+      return { attempted: false, reason: "no 'browserService.start' command is configured", cause: firstLine(messageOf(cause)) }
+    }
+    const instance = service.generalService
+    if (instance === undefined) {
+      return {
+        attempted: false,
+        command,
+        reason: "no 'browserService.generalService' instance is configured (the browser service is started through the general-service@1 seam)",
+        cause: firstLine(messageOf(cause)),
+      }
+    }
+    const generalService = this.generalService()
+    if (generalService === undefined) {
+      return {
+        attempted: false,
+        command,
+        type: instance.type,
+        reason: 'no general-service@1 provider is loaded in this deployment (the seam is resolved at CALL time, so it may be loaded after this provider)',
+        cause: firstLine(messageOf(cause)),
+      }
+    }
+    try {
+      // The start call is BOUNDED: a launcher that runs the browser in the
+      // FOREGROUND (a bare `docker exec start-browser`) would otherwise hold the
+      // transport open forever. The budget is the same `startTimeoutMs` the
+      // endpoint wait uses, so a stuck start fails LOUDLY instead of hanging.
+      const result = await generalService
+        .create({ type: instance.type, params: instance.params })
+        .call(command, { timeoutMs: service.startTimeoutMs })
+      const output = typeof result.output === 'string' ? result.output : ''
+      const stderr = typeof result.stderr === 'string' ? result.stderr : ''
+      return {
+        attempted: true,
+        command,
+        type: instance.type,
+        code: typeof result.code === 'number' ? result.code : -1,
+        ...(output.length === 0 ? {} : { output: output.length > 2_000 ? output.slice(-2_000) : output }),
+        ...(stderr.length === 0 ? {} : { stderr: stderr.length > 2_000 ? stderr.slice(-2_000) : stderr }),
+      }
+    } catch (error) {
+      return {
+        attempted: true,
+        command,
+        type: instance.type,
+        reason: firstLine(messageOf(error)),
+        cause: firstLine(messageOf(cause)),
+      }
+    }
+  }
+
+  /** The typed failure of an unreachable browser service (never a fallback). */
+  private endpointError(endpoint: string, cause: unknown, started: BrowserServiceStartRecord | undefined): BrowserUseError {
+    const service = this.config.browserService
+    const startNote =
+      started === undefined
+        ? ''
+        : started.attempted
+          ? ` - the browser service start '${started.command ?? ''}' answered code ${started.code ?? 'none'}${started.connected === true ? ' and the endpoint then answered' : ''}${started.waitedMs === undefined ? '' : ` (waited ${started.waitedMs} ms for the endpoint)`}${started.output === undefined ? '' : `; output: ${started.output}`}${started.stderr === undefined ? '' : `; stderr: ${started.stderr}`}`
+          : ` - the browser service start was NOT attempted: ${started.reason ?? 'unknown reason'}`
+    return new BrowserUseError(
+      'browser-use.endpoint-unreachable',
+      `no browser is reachable at the configured CDP endpoint '${endpoint}': ${firstLine(messageOf(cause))}${startNote} - ${endpointRequirement(this.config)}`,
+      {
+        stage: 'open',
+        details: {
+          provider: providerId,
+          endpoint,
+          ...(service?.image === undefined ? {} : { image: service.image }),
+          ...(service?.generalService === undefined ? {} : { generalService: service.generalService }),
+          ...(started === undefined ? {} : { browserServiceStart: started }),
+          fallback: 'none',
+          requirement: endpointRequirement(this.config),
+        },
+      },
+    )
   }
 
   /** A launch failure is `no-browser` when it reads like a missing binary. */
@@ -642,6 +961,10 @@ export class PlaywrightProvider implements BrowserUseProvider {
       live: live && !session.context.isClosed(),
       stateReused: session.stateReused,
       stateFile: session.stateFile,
+      // The browser-service start path, when `open` had to take it: the caller
+      // SEES that the browser came from the configured service (its OWN image)
+      // and not from a local launch, without reading container logs.
+      ...(this.serviceStart === undefined ? {} : { browserServiceStart: this.serviceStart }),
       tabs,
       requests: session.requests.length,
       downloads: session.downloads.length,
@@ -659,6 +982,7 @@ export class PlaywrightProvider implements BrowserUseProvider {
   private invalidateRefs(session: LiveSession, page: Page): void {
     const previous = session.snapshots.get(page)
     session.snapshots.delete(page)
+    session.nodes.delete(page)
     if (previous === undefined) return
     for (const [ref, snapshotId] of session.refs) {
       if (snapshotId === previous) session.refs.delete(ref)
@@ -679,6 +1003,9 @@ export class PlaywrightProvider implements BrowserUseProvider {
   private registerRefs(session: LiveSession, page: Page, snapshotId: string, nodes: BrowserSnapshotNode[]): void {
     this.invalidateRefs(session, page)
     session.snapshots.set(page, snapshotId)
+    // The node SHAPES are kept too: the stale-ref retry below re-resolves a ref
+    // by the role+name it was minted for instead of guessing a new position.
+    session.nodes.set(page, nodes)
     for (const node of nodes) session.refs.set(node.ref, snapshotId)
   }
 
@@ -693,7 +1020,7 @@ export class PlaywrightProvider implements BrowserUseProvider {
     page: Page,
     request: { ref?: string; selector?: string },
     what: string,
-  ): Promise<{ locator: Locator; ref?: string; selector?: string; resolved: boolean }> {
+  ): Promise<ResolvedTarget> {
     const ref = request.ref === undefined ? undefined : requireRef(request.ref)
     if (ref !== undefined) {
       const snapshotId = session.refs.get(ref)
@@ -733,6 +1060,137 @@ export class PlaywrightProvider implements BrowserUseProvider {
     return { locator: locator.first(), selector, resolved: false }
   }
 
+  /** The role+name a ref was minted for (undefined: the ref is not known here). */
+  private shapeOf(session: LiveSession, page: Page, ref: string): RefShape | undefined {
+    const node = session.nodes.get(page)?.find((candidate) => candidate.ref === ref)
+    if (node === undefined) return undefined
+    return {
+      tag: node.tag,
+      ...(node.role === undefined ? {} : { role: node.role }),
+      ...(node.name === undefined ? {} : { name: node.name }),
+      ...(node.inputType === undefined ? {} : { inputType: node.inputType }),
+    }
+  }
+
+  /**
+   * Resolves the target of an interaction, HEALING a stale ref ONCE.
+   *
+   * The failure this fixes is the one a caller hits constantly: it takes a
+   * `snapshot`, the page re-renders (a banner, a lazy panel, a nav bar) and the
+   * `act` that follows is `stale-ref` - the caller then concludes it cannot
+   * drive a browser. Instead: re-snapshot the page ONCE, re-resolve the SAME
+   * element by the role+name it was minted for, and run the action. Only when
+   * that fails does the caller get the typed `stale-ref`, and then WITH the
+   * fresh refs. The path taken is reported in `BrowserActAnswer.refRetry`, so a
+   * recovery is provable and never a silent interaction at a moved position.
+   */
+  private async resolveTargetWithRetry(
+    session: LiveSession,
+    page: Page,
+    request: { ref?: string; selector?: string },
+    what: string,
+    options: BrowserUseCallOptions,
+  ): Promise<{ target: ResolvedTarget; retry?: BrowserRefRetry }> {
+    try {
+      return { target: await this.resolveTarget(session, page, request, what) }
+    } catch (error) {
+      if (request.ref === undefined || !isStaleRef(error)) throw error
+      const ref = requireRef(request.ref)
+      // The identity is read BEFORE the fresh snapshot: a snapshot replaces the
+      // node table of the page.
+      const shape = this.shapeOf(session, page, ref)
+      const fresh = await this.snapshot(session.id, {}, options)
+      // Identity first (role+name), then a UNIQUE shape match: a control with no
+      // accessible name is still recoverable without guessing a position.
+      const byName = shape === undefined ? undefined : matchRef(fresh.nodes, shape)
+      const byShape = byName !== undefined || shape === undefined ? undefined : matchRefByShape(fresh.nodes, shape)
+      const strategy = byName !== undefined ? 'role+name' : byShape !== undefined ? 'unique-shape' : 'fresh-snapshot'
+      const retry: BrowserRefRetry = {
+        attempted: true,
+        recovered: false,
+        from: ref,
+        snapshotId: fresh.snapshotId,
+        reason: firstLineOf(error),
+      }
+      const candidate = byName ?? byShape
+      if (candidate !== undefined) {
+        try {
+          const target = await this.resolveTarget(session, page, { ref: candidate }, what)
+          return { target, retry: { ...retry, recovered: true, to: candidate } }
+        } catch (second) {
+          if (!isStaleRef(second)) throw second
+        }
+      }
+      throw new BrowserUseError(
+        'browser-use.stale-ref',
+        `the ref '${ref}' went stale between the snapshot and the call and the automatic retry could not re-resolve it ` +
+          `(re-snapshotted as '${fresh.snapshotId}', strategy '${strategy}'); the FRESH refs of this page are in 'details.nodes' - ` +
+          'pick the one whose role+name matches the element you meant and call again',
+        {
+          stage: what,
+          details: { ref, snapshotId: fresh.snapshotId, strategy, retried: true, nodes: fresh.nodes.slice(0, 60) },
+        },
+      )
+    }
+  }
+
+  /**
+   * The evidence behind a timeout on a control the call DID resolve: disabled /
+   * covered / zero-size / invisible / `pointer-events: none`. A `timeout` on a
+   * genuinely non-interactable element must NAME the element and the reason
+   * instead of a bare "Timeout exceeded".
+   */
+  private async diagnoseTarget(
+    error: unknown,
+    page: Page,
+    target: ResolvedTarget | undefined,
+    what: string,
+  ): Promise<BrowserUseError | undefined> {
+    if (target === undefined || target.selector === undefined || !isTimeoutLike(error)) return undefined
+    const selector = target.selector
+    const expression = `(() => {
+      const element = document.querySelector(${JSON.stringify(selector)});
+      if (element === null) return { present: false };
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+      const x = Math.min(Math.max(rect.x + rect.width / 2, 1), window.innerWidth - 2);
+      const y = Math.min(Math.max(rect.y + rect.height / 2, 1), window.innerHeight - 2);
+      const hit = document.elementFromPoint(x, y);
+      const covers = hit !== null && hit !== element && !element.contains(hit);
+      return {
+        present: true,
+        tag: element.tagName.toLowerCase(),
+        disabled: element.disabled === true || element.getAttribute('aria-disabled') === 'true',
+        covered: covers,
+        covering: covers && hit !== null ? hit.tagName.toLowerCase() + (hit.id === '' ? '' : '#' + hit.id) : undefined,
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+        visible: style.visibility !== 'hidden' && style.display !== 'none' && style.opacity !== '0',
+        pointerEvents: style.pointerEvents,
+      };
+    })()`
+    const evidence = (await page.evaluate(expression).catch(() => undefined)) as TargetDiagnosis | undefined
+    const label = target.ref === undefined ? `'${selector}'` : `ref '${target.ref}' (${selector})`
+    if (evidence === undefined || !evidence.present) {
+      return new BrowserUseError(
+        'browser-use.stale-ref',
+        `${what}: the element behind ${label} left the page before the action could complete`,
+        { stage: what, details: { ref: target.ref ?? null, selector } },
+      )
+    }
+    const reasons: string[] = []
+    if (evidence.disabled === true) reasons.push('the control is DISABLED (visible, but it refuses interaction)')
+    if (evidence.covered === true) reasons.push(`it is COVERED by <${evidence.covering ?? 'another element'}>`)
+    if (evidence.width === 0 || evidence.height === 0) reasons.push(`its box is ZERO-SIZE (${evidence.width}x${evidence.height})`)
+    if (evidence.visible !== true) reasons.push('it is INVISIBLE (display/visibility/opacity)')
+    if (evidence.pointerEvents === 'none') reasons.push("it is 'pointer-events: none'")
+    if (reasons.length === 0) reasons.push('it is visible and not covered, so the engine could not finish the interaction within the budget')
+    return new BrowserUseError('browser-use.timeout', `${what} timed out on ${label}: ${reasons.join('; ')}`, {
+      stage: what,
+      details: { ref: target.ref ?? null, selector, diagnosis: reasons, element: evidence },
+    })
+  }
+
   /**
    * Lets in-flight work settle after an interaction (a navigation started by a
    * click, a fetch that fills a panel). It is BOUNDED and never fails the call:
@@ -762,14 +1220,23 @@ export class PlaywrightProvider implements BrowserUseProvider {
     let resolved = false
     let appliedRef: string | undefined
     let appliedSelector: string | undefined
+    let retry: BrowserRefRetry | undefined
+    let target: ResolvedTarget | undefined
     try {
       const targeted = TARGETED_ACT_KINDS.includes(kind)
       if (targeted || (kind === 'press' && (request.ref !== undefined || request.selector !== undefined))) {
-        const target = await this.resolveTarget(live, page, request, `act: ${kind}`)
-        appliedRef = target.ref
-        appliedSelector = target.selector
-        resolved = target.resolved
-        const locator = target.locator
+        // A ref that no longer matches the DOM is NOT a dead end: the seam
+        // re-snapshots the page ONCE, re-resolves the ref by the role+name it
+        // was minted for and re-runs the very same action (see
+        // `resolveTargetWithRetry`); only when THAT fails does the caller get
+        // the typed `stale-ref`, together with the FRESH refs.
+        const attempt = await this.resolveTargetWithRetry(live, page, request, `act: ${kind}`, options)
+        retry = attempt.retry
+        target = attempt.target
+        appliedRef = attempt.target.ref
+        appliedSelector = attempt.target.selector
+        resolved = attempt.target.resolved
+        const locator = attempt.target.locator
         switch (kind) {
           case 'click':
             await locator.click({ timeout })
@@ -886,10 +1353,14 @@ export class PlaywrightProvider implements BrowserUseProvider {
       }
       if (appliedRef !== undefined) answer.ref = appliedRef
       if (appliedSelector !== undefined) answer.selector = appliedSelector
+      if (retry !== undefined) answer.refRetry = retry
       if (request.snapshot === true) answer.snapshot = await this.snapshot(live.id, {}, options)
       return answer
     } catch (error) {
-      throw mapError(error, `act: ${kind}`, 'browser-use.provider-failed', { kind, ref: appliedRef ?? null })
+      // A timeout on a control we DID resolve names the element and the reason
+      // (disabled / covered / zero-size / invisible) when the evidence is there.
+      const diagnosed = await this.diagnoseTarget(error, page, target, `act: ${kind}`)
+      throw diagnosed ?? mapError(error, `act: ${kind}`, 'browser-use.provider-failed', { kind, ref: appliedRef ?? null })
     }
   }
 
@@ -1361,12 +1832,56 @@ function parseState(raw: string): { cookies: number; origins: string[] } | undef
   }
 }
 
+/** The `general-service@1` surface this provider uses to START its browser service. */
+export interface GeneralServiceLike {
+  create(config: { type: string; params: Record<string, unknown> }): {
+    call(input: string, options?: { timeoutMs?: number }): Promise<{
+      output?: string
+      code?: number
+      stderr?: string
+      durationMs?: number
+    }>
+  }
+}
+
+/** What a browser-service start attempt did (reported in results and errors). */
+export interface BrowserServiceStartRecord {
+  /** True when a command was actually run through the general-service seam. */
+  attempted: boolean
+  /** Why the start was not attempted (when `attempted` is false). */
+  reason?: string
+  /** The start command. */
+  command?: string
+  /** The transport type of the instance the command ran through. */
+  type?: string
+  /** The exit code the command answered. */
+  code?: number
+  /** The tail of the command output. */
+  output?: string
+  /** The tail of the command stderr (why a start FAILED is usually here). */
+  stderr?: string
+  /** The pre-start connect failure, for the report. */
+  cause?: string
+  /** How long the endpoint was awaited after a successful start. */
+  waitedMs?: number
+  /** True when the endpoint answered after the start. */
+  connected?: boolean
+}
+
+/** The `general-service@1` service of a context, when the deployment loaded one. */
+function generalServiceOf(target: ServiceContext): GeneralServiceLike | undefined {
+  const candidate = serviceOf(target, GENERAL_SERVICE)
+  if (typeof candidate !== 'object' || candidate === null) return undefined
+  return typeof (candidate as GeneralServiceLike).create === 'function' ? (candidate as GeneralServiceLike) : undefined
+}
+
 /** Builds the provider from a config row (the tests and `apply` use this). */
 export function createPlaywrightProvider(
   config: BrowserUsePlaywrightConfig = {},
   credentials?: CredentialsLike,
+  generalService?: GeneralServiceLike | (() => GeneralServiceLike | undefined),
 ): PlaywrightProvider {
-  return new PlaywrightProvider(config, credentials)
+  return new PlaywrightProvider(config, credentials, generalService)
 }
 
 /**
@@ -1383,7 +1898,11 @@ export function apply(ctx: PluginContext, config: BrowserUsePlaywrightConfig = {
     const service = browserUseOf(target)
     if (service === undefined) return
     const credentials = credentialsOf(target) as unknown as CredentialsLike | undefined
-    const provider = createPlaywrightProvider(config, credentials)
+    // LAZY on purpose: `general-service-impl` may be loaded AFTER this plugin,
+    // and a service resolved here (at registration) would be undefined forever.
+    const generalService = (): GeneralServiceLike | undefined =>
+      generalServiceOf(ctx as unknown as ServiceContext) ?? generalServiceOf(target)
+    const provider = createPlaywrightProvider(config, credentials, generalService)
     const unregister = service.register(provider)
     ctx.effect?.(() => () => {
       unregister()

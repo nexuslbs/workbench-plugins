@@ -384,22 +384,70 @@ was started in is useless (and can even be ENOENT). Precedence: an explicit
 `<tmpdir>/workbench-browser-use`. An oversized image is deleted and reported as
 the typed `browser-use.oversized`, never handed over.
 
-Prerequisites for a REAL browser: `playwright-core` (already a dependency) plus
-a chromium build reachable through `executablePath`, the `PLAYWRIGHT_BROWSERS_PATH`
-cache, or a system chromium; without one every browser action answers the typed
-`browser-use.no-browser` and the plugin still loads (no boot failure).
+DEPLOYMENT MODEL: the browser is a SEPARATE IMAGE (operator decision,
+telegram thread 2593: "the browser image is a separate image, not the workbench
+image"). The published `ghcr.io/nexuslbs/workbench` image stays BROWSER-FREE: it
+ships no chromium and no browser cache. A deployment runs ONE browser service
+from its own image (`mcr.microsoft.com/playwright:vX-noble`, or any image
+shipping chromium) and the provider ATTACHES to it over CDP. The service is
+declared - and, when it does not answer yet, STARTED - through the
+`general-service@1` seam, so the transport (container / ssh / shell / http) is
+CONFIG, never a hard-wired docker or ssh call inside the provider.
 
 ```yaml
 browser-use-impl:                 # the service host
   provider: playwright            # -> plugins.browser-use-playwright row
   fallback: []
-browser-use-playwright:           # the provider
+browser-use-playwright:           # the provider: it OWNS NO BROWSER
   headless: true
   viewport: { width: 1280, height: 720 }
-  executablePath: $env:WB_BROWSER # a chromium/chrome binary (absent: playwright's own cache)
+  browserService:
+    endpoint: http://127.0.0.1:9222   # where the browser image answers (or a ws:// CDP URL)
+    image: mcr.microsoft.com/playwright:v1.63.0-noble
+    generalService: { type: container, params: { container: workbench-browser } }
+    start: '<start chromium with --remote-debugging-port=9222>'
+    startTimeoutMs: 20000
   storageStateDir: <tmp>/workbench-browser-use/state
   screenshotDir: <tmp>/workbench-browser-use
 ```
+
+`browserService.endpoint` is the SAME attach endpoint as the bare `wsEndpoint`
+(`cdpEndpoint` is a documented alias of it): the block only adds the IMAGE, the
+`general-service@1` instance and the START command, so ONE shared browser is
+brought up and named in every answer. When the endpoint does not answer, the
+provider runs the `start` command THROUGH the instance ONCE, waits up to
+`startTimeoutMs` and retries the attach; the path taken is reported in the call
+(`browserServiceStart`: attempted / type / command / code / output / waitedMs /
+connected). If it still does not answer, the call fails with the typed
+`browser-use.endpoint-unreachable` naming the endpoint, the image, the instance
+and the requirement - **never** a silent local launch and **never** an HTTP
+fetch pretending to be a browser. `browser-use.no-browser` is the typed answer
+when the deployment names no browser at all (no `browserService`, no
+`wsEndpoint`, no binary); the plugin still loads (no boot failure).
+
+LOCAL ALTERNATIVES (not the default): a chromium binary reachable through
+`executablePath`, the `PLAYWRIGHT_BROWSERS_PATH` cache, or a system chromium.
+
+INTROSPECTION INSTEAD OF GUESSING: the `browser` tool publishes its FULL
+per-action contract - every action with its parameter NAMES, types, units,
+required/optional and one-line descriptions - through the seam an agent already
+reads (`GET /api/tools/browser`, the tool catalog, and the `schema` action of
+the tool itself; `{ action: schema, schemaFor: act }` narrows it to one action).
+Every duration field is in MILLISECONDS and the schema says so; DOCUMENTED
+ALIASES are accepted for the names callers really write (`text` -> `value` on
+`act`, `milliseconds` / `ms` -> the wait duration, `storageStateFile` /
+`storageState` -> the `open` storage-state field, `timeout` -> `timeoutMs`),
+the canonical name WINS when both are given, and a genuinely unknown parameter
+is the typed `not-implemented` error listing every accepted key and alias.
+
+STALE REFS SELF-HEAL: an `act` whose ref no longer matches the DOM re-snapshots
+ONCE, re-resolves the target (by ref, else by role+name / selector / label) and
+retries the action; the answer carries `retried: true` and the path taken. Only
+when that fails is it the typed `browser-use.stale-ref`, and that error carries
+the FRESH refs of the re-snapshot, so a caller can retry against the current DOM
+instead of guessing. A `timeout` on a control the call DID resolve names the
+element and the REASON (visible but disabled / covered / zero-size) when the
+evidence is available, instead of a bare timeout.
 
 ## Sandbox capability (`sandbox@1`)
 

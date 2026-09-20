@@ -249,9 +249,12 @@ export function planDockerCommand(
     }
     argv.push('exec', '-T', compose.service, ...command)
   } else if (config.container !== undefined) {
-    argv.push('exec', '-T', config.container, ...command)
+    // `-i` and NOT `-T`: plain `docker exec` has no `-T` flag (that is a
+    // `docker compose exec` flag), so `docker exec -T` made the CLI fail with
+    // exit 125 before the command ever ran.
+    argv.push('exec', '-i', config.container, ...command)
   } else {
-    argv.push('run', '--rm', '-T')
+    argv.push('run', '--rm', '-i')
     for (const mount of config.mounts ?? []) argv.push('-v', mount)
     if (config.network !== undefined) argv.push('--network', config.network)
     argv.push(...(config.entrypoint ?? []))

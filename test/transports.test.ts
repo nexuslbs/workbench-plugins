@@ -63,12 +63,17 @@ test('container (docker-compose): `docker compose ... exec -T <service> sh -c <i
   assert.ok(display.includes('toolbox'))
 })
 
-test('container (plain docker engine): `docker exec -T <container> sh -c <input>`', () => {
+test('container (plain docker engine): `docker exec -i <container> sh -c <input>`', () => {
   const config = validateDockerConfig({ engine: 'docker', container: 'omnidev-toolbox-1' })
   const { argv } = planContainer(config, HOSTILE)
-  assert.deepEqual(argv, ['docker', 'exec', '-T', 'omnidev-toolbox-1', ...CONTAINER_ARGV])
+  // `-i` and NOT `-T`: `-T` is a `docker compose exec` flag and plain
+  // `docker exec -T` makes the CLI exit 125 before the command runs (regression
+  // observed on 2026-09-20 while starting the browser service).
+  assert.deepEqual(argv, ['docker', 'exec', '-i', 'omnidev-toolbox-1', ...CONTAINER_ARGV])
+  assert.equal(argv.includes('-T'), false)
   const run = planDockerCommand(validateDockerConfig({ engine: 'docker', image: 'alpine' }), CONTAINER_ARGV)
-  assert.deepEqual(run.argv, ['docker', 'run', '--rm', '-T', 'alpine', ...CONTAINER_ARGV])
+  assert.deepEqual(run.argv, ['docker', 'run', '--rm', '-i', 'alpine', ...CONTAINER_ARGV])
+  assert.equal(run.argv.includes('-T'), false)
 })
 
 test('ssh: ONE remote command argument, `sh -c <quoted input>`, executed remotely only', () => {

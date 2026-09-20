@@ -58,6 +58,7 @@ import {
   WAIT_STATES,
   WAIT_UNTIL,
   browserUseOf,
+  BrowserUseError,
   isBrowserUseError,
   notImplemented,
 } from '../../definitions/browser-use.ts'
@@ -106,6 +107,7 @@ interface PluginContext {
 /** The actions of the one tool (an agent reads them in the description). */
 const ACTIONS = [
   'providers',
+  'schema',
   'capabilities',
   'open',
   'navigate',
@@ -126,6 +128,7 @@ type Action = (typeof ACTIONS)[number]
 /** The parameters each action accepts (a wrong name is a typed answer, not silence). */
 const KNOWN_PARAMS: Record<Action, readonly string[]> = {
   providers: ['action'],
+  schema: ['action', 'provider', 'schemaFor'],
   capabilities: ['action', 'provider'],
   sessions: ['action', 'provider'],
   open: ['action', 'provider', 'session', 'url', 'headless', 'viewportWidth', 'viewportHeight', 'locale', 'timezoneId', 'userAgent', 'stateMode', 'stateFile', 'downloadDir'],
@@ -140,6 +143,103 @@ const KNOWN_PARAMS: Record<Action, readonly string[]> = {
   wait: ['action', 'provider', 'session', 'ms', 'ref', 'selector', 'state', 'urlContains', 'text', 'networkIdle', 'timeoutMs'],
   observe: ['action', 'provider', 'session', 'limit', 'filter'],
   state: ['action', 'provider', 'session', 'stateAction', 'path'],
+}
+
+/**
+ * The ALIASES this tool accepts, per action, for the parameter names a caller
+ * really writes. They exist because the failure mode was MEASURED (thread 2590):
+ * an agent that knows only the tool NAME guesses `text` for `value`,
+ * `milliseconds` for the wait duration and `storageStateFile` for the storage
+ * state - each guess cost a call. An alias is accepted ONLY where it is
+ * unambiguous for that action; the canonical name always wins when both are
+ * present.
+ */
+const PARAM_ALIASES: Partial<Record<Action, Record<string, string>>> = {
+  act: { text: 'value', timeout: 'timeoutMs', timeoutMilliseconds: 'timeoutMs' },
+  navigate: { timeout: 'timeoutMs', timeoutMilliseconds: 'timeoutMs' },
+  wait: { milliseconds: 'ms', timeout: 'timeoutMs', timeoutMilliseconds: 'timeoutMs' },
+  open: { storageStateFile: 'stateFile', storageState: 'stateFile' },
+  screenshot: { timeout: 'timeoutMs' },
+  tabs: { timeout: 'timeoutMs' },
+}
+
+/**
+ * The parameters each action REQUIRES (everything else is optional). It mirrors
+ * the runtime checks of the request builders - published so a caller can see the
+ * contract instead of discovering it through a typed error.
+ */
+const REQUIRED_PARAMS: Record<Action, readonly string[]> = {
+  providers: [],
+  schema: [],
+  capabilities: [],
+  sessions: [],
+  open: [],
+  close: ['session'],
+  navigate: ['session', 'url'],
+  snapshot: ['session'],
+  act: ['session', 'kind'],
+  evaluate: ['session', 'expression'],
+  extract: ['session'],
+  screenshot: ['session'],
+  tabs: ['session'],
+  wait: ['session'],
+  observe: ['session'],
+  state: ['session'],
+}
+
+/** One action's published contract (what `action: schema` answers). */
+interface ActionSchema {
+  action: Action
+  parameters: Record<string, ParameterSchemaSpec[string] & { required?: boolean }>
+  required: string[]
+  /** The aliases accepted for this action, alias -> canonical name. */
+  aliases: Record<string, string>
+}
+
+/**
+ * Normalizes the documented aliases of an action to their canonical names. The
+ * canonical name WINS when both are present, and an alias is dropped from the
+ * parameter map so the (strict) known-parameter check still sees only canonical
+ * keys.
+ */
+function applyAliases(
+  params: Record<string, unknown>,
+  action: Action,
+): { params: Record<string, unknown>; aliases: Record<string, string> } {
+  const table = PARAM_ALIASES[action]
+  if (table === undefined) return { params, aliases: {} }
+  const normalized: Record<string, unknown> = { ...params }
+  const aliases: Record<string, string> = {}
+  for (const [alias, canonical] of Object.entries(table)) {
+    if (normalized[alias] === undefined) continue
+    if (normalized[canonical] === undefined) normalized[canonical] = normalized[alias]
+    delete normalized[alias]
+    aliases[alias] = canonical
+  }
+  return { params: normalized, aliases }
+}
+
+/**
+ * The FULL per-action contract of this tool: the parameters each action accepts,
+ * their types, their units, whether they are required and the aliases accepted
+ * for them. It is built from the ONE source of truth (the published parameter
+ * map + {@link KNOWN_PARAMS}), so the schema a caller INTROSPECTS cannot drift
+ * from the parameters the tool validates.
+ */
+function actionSchemas(parameters: ParameterSchemaSpec): ActionSchema[] {
+  return ACTIONS.map((action) => {
+    const required = new Set(REQUIRED_PARAMS[action])
+    const picked: ActionSchema['parameters'] = {}
+    for (const name of KNOWN_PARAMS[action]) {
+      const spec = parameters[name]
+      picked[name] = {
+        ...(spec === undefined ? { type: 'string' } : { type: spec.type }),
+        ...(required.has(name) ? { required: true } : {}),
+        ...(spec?.description === undefined ? {} : { description: spec.description }),
+      }
+    }
+    return { action, parameters: picked, required: [...required], aliases: PARAM_ALIASES[action] ?? {} }
+  })
 }
 
 function actionOf(params: Record<string, unknown>): Action {
@@ -158,10 +258,21 @@ function assertKnownParams(params: Record<string, unknown>, action: Action): voi
   const known = new Set(KNOWN_PARAMS[action])
   const unknown = Object.keys(params).filter((key) => params[key] !== undefined && !known.has(key))
   if (unknown.length > 0) {
-    throw notImplemented(`unknown parameter(s) for 'action: ${action}': ${unknown.join(', ')}`, {
-      stage: 'request',
-      details: { action, accepted: [...known] },
-    })
+    // The message carries the ACCEPTED keys (and the aliases for this action):
+    // a caller reading the failure can correct its call without a second guess.
+    const aliases = Object.keys(PARAM_ALIASES[action] ?? {})
+    // Built DIRECTLY, not through `notImplemented`: that helper nests the passed
+    // object one level down under `details.action`, and a caller must be able to
+    // read `details.accepted` / `details.aliases` FLAT.
+    throw new BrowserUseError(
+      'browser-use.not-implemented',
+      `unknown parameter(s) for 'action: ${action}': ${unknown.join(', ')} - accepted: ${[...known].join(', ')}` +
+        (aliases.length === 0 ? '' : ` (aliases: ${aliases.join(', ')})`),
+      {
+        stage: 'request',
+        details: { action, accepted: [...known], ...(aliases.length === 0 ? {} : { aliases: PARAM_ALIASES[action] }) },
+      },
+    )
   }
 }
 
@@ -488,6 +599,92 @@ function stateRequest(params: Record<string, unknown>) {
 // The plugin.
 // ---------------------------------------------------------------------------
 
+/**
+ * The published parameter map of the `browser` tool: the ONE source of truth for
+ * what a caller may pass. It is both the schema the tools provider serves
+ * (`GET /api/tools/browser`, `POST /api/tool/call`) and the table the `schema`
+ * action answers from, so the contract a caller can INTROSPECT can never drift
+ * from the parameters this tool validates.
+ *
+ * UNITS: every duration field is in MILLISECONDS (`ms`, `timeoutMs`).
+ * ALIASES: a documented alias is accepted too (see `PARAM_ALIASES`); an alias is
+ * only accepted where it is unambiguous for the action it is listed under.
+ */
+const BROWSER_TOOL_PARAMETERS: ParameterSchemaSpec = {
+  action: { type: 'string', required: true, description: `the operation: ${ACTIONS.join(' | ')}` },
+  provider: { type: 'string', description: 'force ONE provider id (default: the configured provider of the host)' },
+  session: { type: 'string', description: 'the session id this call addresses (default: the provider default session)' },
+  schemaFor: { type: 'string', description: "'action: schema': publish the contract of ONE action only (default: all of them)" },
+  // open
+  url: { type: 'string', description: "the URL: 'navigate', or the first page of 'open'/'tabs: new'" },
+  headless: { type: 'boolean', description: "'open': run without a window (a LAUNCH-time setting of the shared browser)" },
+  viewportWidth: { type: 'integer', description: "'open': the viewport width in CSS pixels" },
+  viewportHeight: { type: 'integer', description: "'open': the viewport height in CSS pixels" },
+  locale: { type: 'string', description: "'open': the Accept-Language locale, e.g. en-US" },
+  timezoneId: { type: 'string', description: "'open': the IANA timezone, e.g. Europe/Berlin" },
+  userAgent: { type: 'string', description: "'open': the user agent of the session" },
+  stateMode: { type: 'string', description: "'open': reuse (default) | fresh | inline - how the stored storage state is used" },
+  stateFile: { type: 'string', description: "'open': the storage-state file of this session (default: the provider convention). Aliases: `storageStateFile`, `storageState`" },
+  downloadDir: { type: 'string', description: "'open': where downloads of this session are saved" },
+  // navigate
+  waitUntil: { type: 'string', description: `'navigate': when it is done: ${WAIT_UNTIL.join(' | ')}` },
+  allowHttpError: { type: 'boolean', description: "'navigate': accept an HTTP >= 400 answer instead of failing" },
+  // snapshot / extract / act targeting
+  selector: { type: 'string', description: 'a CSS selector to scope or target (snapshot/extract/screenshot/act/wait)' },
+  ref: { type: 'string', description: "the SHORT ref from a `snapshot` (e.g. 'e12'); a ref from an older snapshot is retried ONCE automatically (see `refRetry` in the answer) and only then a typed stale-ref" },
+  includeText: { type: 'boolean', description: "'snapshot': include non-actionable text nodes too (default true)" },
+  maxNodes: { type: 'integer', description: "'snapshot': cap the nodes of this answer" },
+  // act
+  kind: { type: 'string', description: `'action: act' only: ${ACT_KINDS.join(' | ')}` },
+  value: { type: 'string', description: "'type'/'fill'/'select': the text or option value to write. On `act`, `text` is accepted as an alias" },
+  byLabel: { type: 'boolean', description: "'select': treat 'value' as the option LABEL, not its value" },
+  key: { type: 'string', description: "'press': the key or chord, e.g. Enter, Control+A" },
+  files: { type: 'array', description: "'upload': the file paths handed to the file input" },
+  direction: { type: 'string', description: "'scroll': up | down | left | right (default down)" },
+  amount: { type: 'integer', description: "'scroll': how many pixels (default one viewport)" },
+  state: { type: 'string', description: `'act: waitFor'/'wait': the state to wait for: ${WAIT_STATES.join(' | ')}` },
+  checked: { type: 'boolean', description: "'check': true to check, false to uncheck (default true)" },
+  timeoutMs: { type: 'integer', description: 'the budget of this call in MILLISECONDS (navigation/action/wait); aliases: `timeout`, `timeoutMilliseconds`' },
+  // COMPAT ALIASES: declared HERE as well as in `PARAM_ALIASES`, because the
+  // tools surface REJECTS an undeclared key (`invalid-params`, naming it) before
+  // the handler ever runs - an alias that is not in this map can never reach the
+  // normalization step. The handler then rewrites each of these to its canonical
+  // name, so `action: schema` keeps publishing the CANONICAL contract.
+  milliseconds: { type: 'integer', description: "COMPAT alias of `ms` (`wait`): sleep this long, in MILLISECONDS" },
+  timeout: { type: 'integer', description: 'COMPAT alias of `timeoutMs` (MILLISECONDS)' },
+  timeoutMilliseconds: { type: 'integer', description: 'COMPAT alias of `timeoutMs` (MILLISECONDS)' },
+  storageStateFile: { type: 'string', description: 'COMPAT alias of `stateFile` (`open`): the storage-state file of this session' },
+  storageState: { type: 'string', description: 'COMPAT alias of `stateFile` (`open`): the storage-state file of this session' },
+  settle: { type: 'boolean', description: "'act': let in-flight work settle afterwards (default true)" },
+  snapshot: { type: 'boolean', description: "'act': answer a FRESH snapshot with the result (default false: the refs of the previous one go stale)" },
+  // evaluate / extract
+  expression: { type: 'string', description: "'evaluate'/'extract mode: json': the JS expression evaluated in the page" },
+  args: { type: 'array', description: "'evaluate': arguments handed to the expression" },
+  awaitPromise: { type: 'boolean', description: "'evaluate': await a promise result (default true)" },
+  mode: { type: 'string', description: `'extract' only: ${EXTRACT_MODES.join(' | ')} (default text)` },
+  attributes: { type: 'array', description: "'extract mode: attributes': the attribute names to read" },
+  index: { type: 'integer', description: "'extract mode: table': which table of the page (0-based, default 0) / 'tabs: switch|close': the tab index" },
+  useRecipe: { type: 'boolean', description: "'extract': consult a stored web-recipe for this domain (default true; a missing recipe never fails)" },
+  maxChars: { type: 'integer', description: "'extract'/'evaluate': cap the answered characters" },
+  // screenshot
+  fullPage: { type: 'boolean', description: "'screenshot': capture the whole scrollable page (default false: the viewport)" },
+  format: { type: 'string', description: `'screenshot': ${SCREENSHOT_FORMATS.join(' | ')} (default png)` },
+  quality: { type: 'integer', description: "'screenshot': JPEG quality 1..100 (ignored for png)" },
+  path: { type: 'string', description: "'screenshot': write the file HERE; 'state': use this state file" },
+  label: { type: 'string', description: "'screenshot': a short label used in the file name" },
+  maxBytes: { type: 'integer', description: "'screenshot': the byte cap of the written file (default from the config)" },
+  // tabs / wait / observe / state
+  tabAction: { type: 'string', description: `'action: tabs' only: ${TAB_ACTIONS.join(' | ')} (default list)` },
+  navigate: { type: 'boolean', description: "'tabs: new': wait for the URL before answering (default true)" },
+  ms: { type: 'integer', description: "'wait': sleep this long, in MILLISECONDS (alias: `milliseconds`)" },
+  urlContains: { type: 'string', description: "'wait': wait until the URL contains this fragment" },
+  text: { type: 'string', description: "'wait': wait until the page contains this text; on 'act' it is the COMPAT alias of `value` (what `type`/`fill`/`select` write)" },
+  networkIdle: { type: 'boolean', description: "'wait': wait until no network request is in flight" },
+  limit: { type: 'integer', description: "'observe': how many of the newest requests to report" },
+  filter: { type: 'string', description: "'observe': only requests whose URL contains this fragment" },
+  stateAction: { type: 'string', description: "'action: state' only: save (default) | read | clear" },
+}
+
 export function apply(ctx: PluginContext): void {
   ctx.effect?.(() =>
     ctx.tools.registerTool({
@@ -503,71 +700,14 @@ export function apply(ctx: PluginContext): void {
         '`tabs` lists/opens/switches/closes tabs, `wait` sleeps and/or waits for a ref/selector/text/URL/network idle, ' +
         '`observe` reports the requests and downloads the session saw, `state` saves/reads/clears the storage state, ' +
         '`sessions` lists the live sessions and `close` closes one. ' +
+        '`schema` publishes the FULL per-action contract (parameter names, types, units - every duration is MILLISECONDS -, ' +
+        'which are required, and the accepted aliases such as `text` for `value` on `act`, `milliseconds` for `ms` on `wait`, ' +
+        '`storageStateFile` for `stateFile` on `open`): INTROSPECT it instead of guessing. ' +
+        'A ref that went stale between `snapshot` and `act` is re-snapshotted and retried ONCE automatically (the answer says so ' +
+        'under `refRetry`), so a re-rendering page does not cost the caller a call. ' +
         'Every failure is a TYPED answer (`browser-use.no-browser`, `.stale-ref`, `.timeout`, `.navigation-failed`, ...) with the exact ' +
         'prerequisite - never a fabricated result and never a silent fallback. Pass `provider` to force one provider.',
-      parameters: {
-        action: { type: 'string', required: true, description: `the operation: ${ACTIONS.join(' | ')}` },
-        provider: { type: 'string', description: 'force ONE provider id (default: the configured provider of the host)' },
-        session: { type: 'string', description: 'the session id this call addresses (default: the provider default session)' },
-        // open
-        url: { type: 'string', description: "the URL: 'navigate', or the first page of 'open'/'tabs: new'" },
-        headless: { type: 'boolean', description: "'open': run without a window (a LAUNCH-time setting of the shared browser)" },
-        viewportWidth: { type: 'integer', description: "'open': the viewport width in CSS pixels" },
-        viewportHeight: { type: 'integer', description: "'open': the viewport height in CSS pixels" },
-        locale: { type: 'string', description: "'open': the Accept-Language locale, e.g. en-US" },
-        timezoneId: { type: 'string', description: "'open': the IANA timezone, e.g. Europe/Berlin" },
-        userAgent: { type: 'string', description: "'open': the user agent of the session" },
-        stateMode: { type: 'string', description: "'open': reuse (default) | fresh | inline - how the stored storage state is used" },
-        stateFile: { type: 'string', description: "'open': the storage-state file of this session (default: the provider convention)" },
-        downloadDir: { type: 'string', description: "'open': where downloads of this session are saved" },
-        // navigate
-        waitUntil: { type: 'string', description: `'navigate': when it is done: ${WAIT_UNTIL.join(' | ')}` },
-        allowHttpError: { type: 'boolean', description: "'navigate': accept an HTTP >= 400 answer instead of failing" },
-        // snapshot / extract / act targeting
-        selector: { type: 'string', description: 'a CSS selector to scope or target (snapshot/extract/screenshot/act/wait)' },
-        ref: { type: 'string', description: "the SHORT ref from a `snapshot` (e.g. 'e12'); a ref from an older snapshot is a typed stale-ref" },
-        includeText: { type: 'boolean', description: "'snapshot': include non-actionable text nodes too (default true)" },
-        maxNodes: { type: 'integer', description: "'snapshot': cap the nodes of this answer" },
-        // act
-        kind: { type: 'string', description: `'action: act' only: ${ACT_KINDS.join(' | ')}` },
-        value: { type: 'string', description: "'type'/'fill'/'select': the text or option value to write" },
-        byLabel: { type: 'boolean', description: "'select': treat 'value' as the option LABEL, not its value" },
-        key: { type: 'string', description: "'press': the key or chord, e.g. Enter, Control+A" },
-        files: { type: 'array', description: "'upload': the file paths handed to the file input" },
-        direction: { type: 'string', description: "'scroll': up | down | left | right (default down)" },
-        amount: { type: 'integer', description: "'scroll': how many pixels (default one viewport)" },
-        state: { type: 'string', description: `'act: waitFor'/'wait': the state to wait for: ${WAIT_STATES.join(' | ')}` },
-        checked: { type: 'boolean', description: "'check': true to check, false to uncheck (default true)" },
-        timeoutMs: { type: 'integer', description: 'the budget of this call in ms (navigation/action/wait)' },
-        settle: { type: 'boolean', description: "'act': let in-flight work settle afterwards (default true)" },
-        snapshot: { type: 'boolean', description: "'act': answer a FRESH snapshot with the result (default false: the refs of the previous one go stale)" },
-        // evaluate / extract
-        expression: { type: 'string', description: "'evaluate'/'extract mode: json': the JS expression evaluated in the page" },
-        args: { type: 'array', description: "'evaluate': arguments handed to the expression" },
-        awaitPromise: { type: 'boolean', description: "'evaluate': await a promise result (default true)" },
-        mode: { type: 'string', description: `'extract' only: ${EXTRACT_MODES.join(' | ')} (default text)` },
-        attributes: { type: 'array', description: "'extract mode: attributes': the attribute names to read" },
-        index: { type: 'integer', description: "'extract mode: table': which table of the page (0-based, default 0) / 'tabs: switch|close': the tab index" },
-        useRecipe: { type: 'boolean', description: "'extract': consult a stored web-recipe for this domain (default true; a missing recipe never fails)" },
-        maxChars: { type: 'integer', description: "'extract'/'evaluate': cap the answered characters" },
-        // screenshot
-        fullPage: { type: 'boolean', description: "'screenshot': capture the whole scrollable page (default false: the viewport)" },
-        format: { type: 'string', description: `'screenshot': ${SCREENSHOT_FORMATS.join(' | ')} (default png)` },
-        quality: { type: 'integer', description: "'screenshot': JPEG quality 1..100 (ignored for png)" },
-        path: { type: 'string', description: "'screenshot': write the file HERE; 'state': use this state file" },
-        label: { type: 'string', description: "'screenshot': a short label used in the file name" },
-        maxBytes: { type: 'integer', description: "'screenshot': the byte cap of the written file (default from the config)" },
-        // tabs / wait / observe / state
-        tabAction: { type: 'string', description: `'action: tabs' only: ${TAB_ACTIONS.join(' | ')} (default list)` },
-        navigate: { type: 'boolean', description: "'tabs: new': wait for the URL before answering (default true)" },
-        ms: { type: 'integer', description: "'wait': sleep this long (bounded by the call deadline)" },
-        urlContains: { type: 'string', description: "'wait': wait until the URL contains this fragment" },
-        text: { type: 'string', description: "'wait': wait until the page contains this text" },
-        networkIdle: { type: 'boolean', description: "'wait': wait until no network request is in flight" },
-        limit: { type: 'integer', description: "'observe': how many of the newest requests to report" },
-        filter: { type: 'string', description: "'observe': only requests whose URL contains this fragment" },
-        stateAction: { type: 'string', description: "'action: state' only: save (default) | read | clear" },
-      },
+      parameters: BROWSER_TOOL_PARAMETERS,
       handler: async (params) => {
         const service = serviceOf(ctx)
         if (!isService(service)) return service
@@ -576,10 +716,35 @@ export function apply(ctx: PluginContext): void {
         // `tool-failed` body and the reason would be lost).
         try {
           const action = actionOf(params)
+          // Documented aliases FIRST, resolved against the CANONICAL action's
+          // table: `text` on `act` becomes `value`, `milliseconds` on `wait`
+          // becomes `ms`, `storageStateFile` on `open` becomes `stateFile`. The
+          // strict known-parameter check below then sees canonical keys only.
+          const normalized = applyAliases(params, action)
+          params = normalized.params
           assertKnownParams(params, action)
           const provider = providerOf(params)
           const session = sessionOf(params)
           switch (action) {
+            case 'schema': {
+              const only = optionalString(params, 'schemaFor')
+              const all = actionSchemas(BROWSER_TOOL_PARAMETERS)
+              const selected = only === undefined ? all : all.filter((entry) => entry.action === only)
+              if (selected.length === 0) {
+                throw notImplemented(`'action: schema': unknown action '${only}'`, {
+                  stage: 'request',
+                  details: { actions: [...ACTIONS] },
+                })
+              }
+              return {
+                ok: true,
+                tool: BROWSER_USE_TOOL_NAME,
+                durationUnits: 'MILLISECONDS (every duration field: `ms`, `timeoutMs`)',
+                aliasPolicy: 'an alias is accepted only where it is unambiguous for the action; the canonical name wins when both are given',
+                actions: selected,
+                hint: BROWSER_USE_CONFIG_ROW,
+              }
+            }
             case 'providers':
               return {
                 ok: true,
