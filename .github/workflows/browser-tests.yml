@@ -12,8 +12,9 @@ name: browser tests
 
 on:
   push:
-    branches: [main, stable]
+    branches: [stable]
   pull_request:
+    branches: [stable]
   workflow_dispatch:
 
 jobs:
