@@ -160,6 +160,17 @@ if [ -z "$HEADLESS" ]; then
   XNUM="${DISPLAY_NAME#:}"
   XNUM="${XNUM%%.*}"
   XSOCK="/tmp/.X11-unix/X${XNUM}"
+  XLOCK="/tmp/.X${XNUM}-lock"
+  # A RESTARTED container keeps its /tmp: the previous Xvfb is gone but its lock
+  # file survives, and Xvfb then REFUSES to start ("Server is already active for
+  # display :99", exit 1) so the browser never comes up - a container that looks
+  # alive and answers nothing. This script starts the ONLY Xvfb in the container
+  # and runs once per container start, so a lock file with no live Xvfb behind it
+  # is always stale: clear it. `pgrep` may be absent; then the socket check below
+  # still decides, only the stale lock is left alone.
+  if [ -e "$XLOCK" ] && ! pgrep -x Xvfb >/dev/null 2>&1; then
+    rm -f "$XLOCK"
+  fi
   rm -f "$XSOCK" 2>/dev/null || true
   Xvfb "$DISPLAY_NAME" -screen 0 "$SCREEN" -nolisten tcp >>"$LOG" 2>&1 &
   XVFB_PID=$!
