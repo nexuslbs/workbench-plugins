@@ -457,6 +457,19 @@ plugins:
           success:
             selector: '#app'
 
+      # meta.discourse.org (Discourse Meta) - the REAL site the `session` tool is
+      # driven against. There is deliberately NO declared `login` flow: Discourse
+      # sends an emailed login link and the account has TOTP 2FA enabled, so the
+      # flow is driven step by step with `act` (see the `website-access` skill,
+      # `discourse-meta-access.md`). The storage state defaults to
+      # `<stateDir>/state/<label>.json`, so a session is REUSED across tool calls
+      # and survives a process restart; it holds cookies only, never a credential.
+      discourse-meta:
+        baseUrl: https://meta.discourse.org/
+      # forum.mattermost.com (the OFFICIAL Mattermost forum, a Discourse site).
+      mattermost-forum:
+        baseUrl: https://forum.mattermost.com/
+
   # The plugin of the EXTERNAL GIT source (`workbench-plugins-git`, subdir
   # `examples`): cloned from GitHub at boot, so naming it here is what keeps the
   # real clone path exercised in dev.
