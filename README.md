@@ -132,6 +132,10 @@ implements is `definitions/<id>.ts`, and its consumer side stays under
 | `logger-ring` | `logger` (`ring`) | one logger SINK: a bounded in-memory ring published as the `logs` service |
 | `tools-impl` | `tools` (`registry`) | the named-tool registry, the `/api/tools*` seams and the CLI |
 | `web-impl` | `web` (`http`) | the HTTP server, the shell and `/health` |
+| `web-search-impl` | `web-search` (`registry`) | SERVICE HOST of the web-SEARCH seam: the engine registry (duplicate ids rejected), the selection (named engine -> configured default -> ordered fallback chain -> the single usable engine), the cap and the spill of an oversized result set |
+| `web-search-stub` | `web-search` (`stub`) | the OFFLINE engine: deterministic fixtures, NO network, urls under `.invalid`; used by the tests and as the default when no real engine is configured (every answer is marked `stub: true`) |
+| `web-search-tavily` | `web-search` (`tavily`) | a REAL HTTP engine (`POST https://api.tavily.com/search`): credential resolved BY NAME (`credential: TAVILY_API_KEY`, `${cred:...}`) at call time, availability is a LOCAL credential check, HTTP 401/403 -> `auth-failed`, 429 -> `rate-limited` |
+| `web-search-searxng` | `web-search` (`searxng`) | the REAL engine that needs NO credential: a SearXNG instance's JSON API (`GET <baseUrl>/search?format=json`); `credential` is OPTIONAL (a NAME, sent as a bearer token for a protected instance) |
 | `shell-impl` | `shell` (`local-bash`) | the LOCAL transport (the only host-running one) |
 | `fs-local` | `fs` (`local-fs`) | the LOCAL filesystem: reads unrestricted, WRITES confined to the configured roots; line-numbered paged read, atomic edits, glob/grep with caps + spill (no shell at all) |
 | `docker-impl` | `docker` (`docker-compose-cli`) | the container transport |
@@ -241,6 +245,8 @@ NOT a model/agent feature: the callers are plugins and operators. The contract i
 | `email-tools` | `email code` | `account` (string), `id` (string), `query` (string), `pattern` (string), `maxAgeSeconds` (integer) | same seam |
 | `web-page` | `page read` | `url` (string, required), `query` (string), `selectors` (array of string), `max_chars` (integer), `freshness` (string, enum `cache` / `revalidate` / `force`) | same seam (plugin README, "The two tools") |
 | `web-page` | `page map` | `url` (string, required), `max_chars` (integer) | same seam |
+| `web-search-tools` | `web search` | `query` (string, required), `count` (integer), `language` (string), `freshness` (string or integer), `safe` (boolean), `site` (string), `engine` (string) | same seam (normalized results: `title`/`url`/`snippet`/`rank`/`published`/`engine`, plus `engine`/`provider`/`took_ms`/`truncated`/`spill_path`; caps + spill when `spill@1` is loaded) |
+| `web-search-tools` | `web search providers` | none | same seam (introspection: every registered engine with its configured/available state and the reason it cannot run, plus the selection in effect and the config row to add) |
 | `sandbox-tools` | `sandbox check` | `resource` (string, required), `operation` (string), `path` (string), `argv` (array of string), `shell` (boolean), `cwd` (string), `envNames` (array of string), `network` (json), `bytes` (integer), `wallTimeMs` (integer), `approvalGranted` (boolean) | same seam (raw decision + active policy) |
 | `sandbox-tools` | `sandbox policy` | none | same seam (active policy + enforcement matrix) |
 | `sandbox-tools` | `sandbox run` | `argv` (array of string, required), `cwd` (string), `resource` (string), `env` (object), `envNames` (array of string), `stdin` (string), `timeoutMs` (integer), `maxOutputBytes` (integer), `approvalGranted` (boolean) | same seam (enforced run, needs an enforcing provider) |
@@ -261,6 +267,14 @@ fixture HTML, the cache/hash decision, the cap/spill path, the error envelope an
 the two registered tool schemas driven through a fake renderer (no browser and no
 network in the tests). Its chromium is a DEPLOYMENT input (`playwright-core` plus
 an installed browser), never a test dependency.
+
+The web-SEARCH seam is covered by `test/web-search.test.ts`: result
+normalization and ranking (rejected hits counted, never silently dropped), the
+cap and the spill payload, engine selection incl. the ordered fallback chain and
+an explicit `engine`, the typed NOT-CONFIGURED error (which names the roster row
+to add) versus a legitimately empty result set, the provider introspection, the
+Tavily engine driven against a fake `fetch` (401/403, 429, non-JSON body, an
+unreachable host) and the stub's determinism. No network in the tests.
 
 ## Plugin events and effects (`events@1`)
 

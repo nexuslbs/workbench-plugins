@@ -204,6 +204,83 @@ consults it too: when a `sandbox@1` provider (see "Sandbox capability" below) is
 in the context, its `checkCommand` runs BEFORE a process is started and a refusal
 is a structured error. Nothing here imports or requires that seam: a deployment
 without it behaves exactly as documented above.
+## Web search capability (`web-search@1`)
+
+`definitions/web-search.ts` is the SEARCH seam: a provider plugin registers an
+ENGINE (`ctx['web-search'].register(provider)`) and a caller asks the service for
+a NORMALIZED result list. The caller never imports an engine and never sees
+provider-shaped JSON.
+
+| role | plugin | provider | what it does |
+| --- | --- | --- | --- |
+| Definition | `definitions/web-search.ts` | - | the contract, the PURE helpers (`normalizeResults`, `applyCountCap`, `searchSpillPayload`, `freshnessToDays`, `resolveCount`) and the typed `WebSearchError` |
+| Service host | `core/web-search-impl` | `registry` | the ENGINE REGISTRY (duplicate ids rejected), the SELECTION, the cap and the spill |
+| Provider (offline) | `core/web-search-stub` | `stub` | deterministic fixtures, NO network, urls under `.invalid`, `stub: true` in the answer |
+| Provider (real) | `core/web-search-tavily` | `tavily` | `POST https://api.tavily.com/search`; the credential is resolved BY NAME from `credentials@1` at call time |
+| Provider (real, KEY-FREE) | `core/web-search-searxng` | `searxng` | `GET <baseUrl>/search?format=json` on a SearXNG instance; no credential needed (an OPTIONAL `credential` NAME is sent as a bearer token for a protected instance) |
+| Tools / consumer | `plugins/web-search-tools` | - | `web search` and `web search providers` |
+
+SELECTION (the FIRST usable engine wins): an explicit `engine` in the request ->
+the configured `provider` -> the ordered `fallback` chain -> with NOTHING
+configured, the single USABLE engine (several usable and none configured is
+`web-search.ambiguous`). A NAMED engine that cannot run is an error, never a
+silent fallback. Availability is a cheap LOCAL check (does the credential
+resolve), never a network call, so `web search providers` is fast and safe.
+
+A CONFIGURATION GAP is a TYPED error, never an empty result list:
+`web-search.not-configured` (nothing usable) and `web-search.provider-unavailable`
+(the engine exists but cannot run) both name the credential NAME and the roster
+row to add, and `web search providers` distinguishes that gap from a query that
+legitimately found nothing.
+
+```yaml
+web-search-impl:
+  provider: stub           # the offline default; `searxng`/`tavily` for a real engine
+  fallback: []             # tried in order when the configured engine is not USABLE
+  count: 5                # default results per call
+  maxCount: 20            # hard ceiling of `count`
+  maxChars: 12000         # inline budget of the result list; the overflow is SPILLED
+  spill: true             # hand the overflow to `spill@1` when it is loaded
+  timeoutMs: 15000
+web-search-stub: { results: 3 }
+web-search-searxng: { baseUrl: http://searxng:8080 }   # a JSON-ENABLED instance (self-hosted)
+web-search-tavily: { credential: TAVILY_API_KEY }   # a NAME through `credentials@1`
+web-search-tools: {}
+```
+
+Caps and spill: the answer carries the ranked results inline, and when the set
+does not fit `maxChars` the FULL set is written through `spill@1` and the answer
+carries `spill_path` (read it back with `spill read`). Without `spill@1` the
+answer SAYS the rest was dropped - it never invents a path.
+
+Adding an engine: a new plugin whose manifest declares
+`{id: web-search, version: 1, provider: <id>}`, an `apply(ctx)` calling
+`ctx['web-search'].register(...)` (`id`, optional `engine`, `stub`, `filters`,
+`available()`, `unavailableReason?()`, `search(request, options)`), and a roster
+row. No change to the Definition, the host or the tools.
+
+Credentials: the repo carries NAMES only (`${cred:TAVILY_API_KEY}` /
+`credential: TAVILY_API_KEY`). A deployment without that credential still boots,
+keeps the stub as its engine and reports the missing NAME.
+
+Which engine the dev roster selects, and why: the deployment holds NO search-engine
+key (the credential store has `GITHUB_APP_KEY`, `HOSTINGER_EMAIL_PASSWORD` and the
+`WBSESSION_*` pair, and the process environment has none), so the keyed engines
+(including `tavily`) are UNUSABLE until an operator adds a NAME. Consequently the
+shipped roster keeps `provider: stub` - deterministic fixtures, `stub: true`, no
+socket - as the DEFAULT a keyless deployment answers with, and
+`web search providers` names the row to flip for a real engine.
+
+SearXNG is the one engine of the task's list that needs no key, and it is the
+key-free real-engine path: `provider: searxng` plus a JSON-ENABLED instance as
+`baseUrl`. MEASURED on 2026-09-20: every PUBLIC instance probed refuses the JSON
+API - searx.be answers HTML (-> `web-search.bad-response`) and the others answer
+429/403 (-> `web-search.rate-limited` / `web-search.auth-failed`) - which is why
+the shipped roster stays on `stub` and a working deployment points `baseUrl` at
+its OWN instance (or adds `credential: <NAME>` for an instance that wants a
+bearer token). The engine's HTTP path (normalization, a filter -> query string,
+a status -> typed error) is covered by the mocked-fetch unit tests.
+
 ## Sandbox capability (`sandbox@1`)
 
 `definitions/sandbox.ts` is the POLICY seam every local capability consults

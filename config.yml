@@ -195,6 +195,95 @@ plugins:
     recipes:
       enabled: true
       record: false
+  # The WEB-SEARCH seam (definitions/web-search.ts, contract `web-search@1`):
+  # workbench could FETCH a page but had no SEARCH. FIVE plugins make the seam,
+  # all in THIS repository (the core is untouched):
+  #   * web-search-impl   the SERVICE HOST: engine registry, the execution-time
+  #                       selection + fallback chain, the result COUNT cap and
+  #                       the overflow SPILL (it consumes `spill@1` when a
+  #                       provider is loaded, and says so explicitly when not).
+  #   * web-search-stub   provider `stub`: DETERMINISTIC fixtures, NO network.
+  #                       The offline default, marked `stub: true` in every
+  #                       answer. Used by the tests and by a deployment that
+  #                       has no engine credential yet.
+  #   * web-search-tavily provider `tavily`: the REAL HTTP engine
+  #                       (POST https://api.tavily.com/search). Its key is the
+  #                       CREDENTIAL NAME `credential` below, resolved at call
+  #                       time through ctx.credentials - never a literal value
+  #                       here. Availability is a LOCAL check (is the credential
+  #                       resolvable?), never a network call.
+  #   * web-search-searxng provider `searxng`: the REAL engine that needs NO
+  #                       credential by itself - a SearXNG instance's JSON API
+  #                       (GET <baseUrl>/search?format=json). It is the key-free
+  #                       real path: point `baseUrl` at a JSON-enabled instance
+  #                       (self-hosted). Every PUBLIC instance probed on
+  #                       2026-09-20 refuses that API, which is WHY the dev
+  #                       roster keeps `provider: stub`. `credential` is
+  #                       OPTIONAL (a NAME) for a protected instance.
+  #   * web-search-tools  the CONSUMER: the tools 'web search' and
+  #                       'web search providers'.
+  #
+  # SELECTION (see core/web-search-impl): the engine named in `engine:` is
+  # FORCED; otherwise `provider` runs and, when it is not USABLE, the
+  # `fallback` chain is tried in order. A provider that is usable but FAILS
+  # (auth, rate limit, network) does NOT fall through: the typed error is
+  # returned. Every answer carries `engine` and `provider`, so a caller always
+  # knows WHICH engine answered (a stub answer also carries `stub: true`).
+  web-search-impl:
+    # The engine a call that does not force one gets: `stub` is the OFFLINE
+    # default (deterministic fixtures, marked `stub: true`, no socket opened) and
+    # is what a deployment with no engine credential can answer with today.
+    # A REAL engine is ONE config line away, no code change:
+    #   * `provider: searxng` + `plugins.web-search-searxng.baseUrl` pointing at a
+    #     JSON-ENABLED instance - a self-hosted one: every PUBLIC instance probed
+    #     on 2026-09-20 refuses the JSON API (searx.be answers HTML, the others
+    #     429/403), so the shipped default url is not a working search backend;
+    #   * `provider: tavily` once a TAVILY_API_KEY credential exists.
+    # `fallback` is tried IN ORDER when the configured engine is not USABLE; a
+    # usable engine that FAILS returns its typed error instead of falling
+    # through, so an empty chain is the honest setting here.
+    provider: stub
+    fallback: []
+    # Results per call: the default a call that names no `count` gets, and the
+    # HARD ceiling a call can never exceed (a larger `count` is capped AND the
+    # answer says `truncated: true` with the spill path).
+    count: 5
+    maxCount: 20
+    # Hand the results beyond the inline cap to `spill@1` instead of losing
+    # them (false: report `truncated` and no spill path).
+    spill: true
+  # The STUB engine: `results` fixtures per query, deterministic, urls under
+  # `.stub.invalid` (RFC 6761 reserved), NO socket opened. `unavailable: true`
+  # simulates a deployment where the engine cannot run and `failWith` a typed
+  # failure - both are how the negative controls are exercised.
+  web-search-stub:
+    results: 3
+  # The REAL engine. It stays mounted and is UNUSABLE until a credential named
+  # `TAVILY_API_KEY` (see `credential` below) exists in the deployment's credential
+  # store (the workbench-secrets/credentials.yml file provider, or the
+  # environment) - `web search providers` reports exactly that, and the selection
+  # falls through to `stub`. No key is ever written here.
+  web-search-tavily:
+    credential: TAVILY_API_KEY
+    # includeAnswer: false keeps the answer to the normalized result list; the
+    # raw vendor response is never returned to a caller.
+    includeAnswer: false
+    maxResults: 20
+    timeoutMs: 15000
+  # The REAL engine that needs NO credential: a SearXNG instance's JSON API
+  # (GET <baseUrl>/search?format=json). MEASURED 2026-09-20: every PUBLIC
+  # instance probed refuses that API (searx.be answers HTML, the others 429/403),
+  # so point `baseUrl` at your OWN instance for a working real search. The
+  # engine's HTTP path is covered by the mocked-fetch tests in this repo; a live
+  # call against a refusing public instance fails by design and says so.
+  # `credential` is OPTIONAL: a NAME resolved through credentials@1 and sent as a
+  # bearer token for a protected instance. No key is ever written here.
+  web-search-searxng:
+    baseUrl: https://searx.be
+    timeoutMs: 15000
+    maxResults: 20
+  # The CONSUMER: the tools 'web search' and 'web search providers'.
+  web-search-tools: {}
 
   # The per-domain RECIPE STORE (see plugins/web-recipe/README.md): durable,
   # agent-agnostic knowledge about a site (read path, named selectors,

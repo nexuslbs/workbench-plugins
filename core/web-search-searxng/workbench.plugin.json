@@ -1,0 +1,21 @@
+{
+  "name": "web-search-searxng",
+  "version": "0.1.0",
+  "description": "The REAL web-search engine that needs NO credential (provider id `searxng`): one HTTP GET to a SearXNG instance's JSON API (`<baseUrl>/search?format=json`), the raw `results` array handed to the web-search@1 seam for normalization, and every HTTP failure mapped onto the typed web-search.* reasons (401/403 auth-failed, 429 rate-limited, unreachable network, a non-JSON body bad-response, a set of dead upstream engines provider-error). Availability is a LOCAL check (no credential configured -> usable, or a credential-store read), never a network call. The OPTIONAL bearer token is a credential NAME resolved at call time through credentials@1, so the plugin loads in a deployment that has no credential and simply reports itself unusable when the row asks for one.",
+  "entry": "index.ts",
+  "execution": "none",
+  "capabilities": [{ "id": "web-search", "version": 1 }],
+  "config": {
+    "type": "object",
+    "description": "Which instance to query, the OPTIONAL credential NAME and how the call is shaped. Never a credential VALUE.",
+    "properties": {
+      "baseUrl": { "type": "string", "default": "https://searx.be", "description": "SearXNG instance base url; the engine GETs <baseUrl>/search?format=json. Point it at your OWN instance to avoid sharing a public one." },
+      "credential": { "type": "string", "default": "", "description": "OPTIONAL credential NAME resolved through credentials@1 and sent as `Authorization: Bearer` (most instances are key-free; only set this for a protected instance - the value is never in this file, a log or an answer)." },
+      "timeoutMs": { "type": "number", "default": 15000, "description": "Per-request deadline in ms (the seam's own deadline still applies)." },
+      "maxResults": { "type": "number", "default": 20, "description": "Hard ceiling of the `count` this engine is asked for." },
+      "safesearch": { "type": "number", "default": 0, "description": "The instance's safesearch level the request's `safe` hint maps to (0 off, 1 moderate, 2 strict); unset maps safe:true -> 1 and safe:false -> 0." },
+      "categories": { "type": "string", "default": "", "description": "Optional SearXNG category filter, e.g. `general`, passed through verbatim." },
+      "engines": { "type": "string", "default": "", "description": "Optional comma-separated engine allow-list of the instance, e.g. `duckduckgo,brave`." }
+    }
+  }
+}

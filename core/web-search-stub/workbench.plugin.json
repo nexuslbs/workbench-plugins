@@ -1,0 +1,19 @@
+{
+  "name": "web-search-stub",
+  "version": "0.1.0",
+  "description": "The OFFLINE web-search engine (provider id `stub`): deterministic fixtures, no network, urls on the RFC 6761 `.invalid` TLD so a fixture can never be mistaken for a fetched page; every answer is marked stub:true. It registers itself with the web-search@1 service host, so the seam is provable with no credential and no connectivity.",
+  "entry": "index.ts",
+  "execution": "none",
+  "capabilities": [{ "id": "web-search", "version": 1 }],
+  "config": {
+    "type": "object",
+    "description": "How many fixtures the engine returns and how it can be taken offline / made to fail (a negative-control switch for operators).",
+    "properties": {
+      "results": { "type": "number", "default": 3, "description": "Fixtures returned when the caller names no count (max 50)." },
+      "latencyMs": { "type": "number", "default": 0, "description": "Artificial delay of a call in ms (max 5000), for exercising a slow engine." },
+      "unavailable": { "type": "boolean", "default": false, "description": "Take the engine offline: available() reports false and a call fails with web-search.provider-unavailable." },
+      "unavailableReason": { "type": "string", "description": "Why it is offline (shown by `web search providers`)." },
+      "failWith": { "type": "string", "description": "Make a call fail with this web-search.* reason (negative control, e.g. web-search.rate-limited)." }
+    }
+  }
+}

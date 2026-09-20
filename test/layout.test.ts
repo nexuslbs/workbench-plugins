@@ -57,6 +57,10 @@ const CORE = [
   'tools-impl',
   'totp-rfc6238',
   'web-impl',
+  'web-search-impl',
+  'web-search-searxng',
+  'web-search-stub',
+  'web-search-tavily',
 ].sort()
 
 /** The consumers, operator tools, UI plugins and shared libs. */
@@ -84,6 +88,7 @@ const PLUGINS = [
   'totp-tools',
   'web-page',
   'web-recipe',
+  'web-search-tools',
   'web-session',
   'web-shared',
 ].sort()
@@ -205,7 +210,7 @@ test('every plugin lives in exactly ONE tree (no duplicate, no rename)', () => {
       seen.set(manifest.name, tree)
     }
   }
-  // the whole plugin set is accounted for: 18 core services, 18 plugins (web-shared is
+  // the whole plugin set is accounted for: 27 core services, 24 plugins (web-shared is
   // not a plugin) and the manifest-bearing examples
   assert.equal(
     seen.size,

@@ -1,0 +1,24 @@
+{
+  "name": "web-search-impl",
+  "version": "0.1.0",
+  "description": "The web-search@1 SERVICE HOST (provider `registry`): it owns the engine registry, the execution-time selection policy (explicit engine, else configured default + ordered fallback, else the single usable engine), the result bound (count cap, inline character cap, ranking) and the hand-over of a capped result set to spill@1. Engines are SEPARATE plugins that register themselves here; this plugin imports no engine. It performs no host execution (an engine owns its HTTP call), so the manifest declares execution none.",
+  "entry": "index.ts",
+  "execution": "none",
+  "capabilities": [{ "id": "web-search", "version": 1, "provider": "registry" }],
+  "policies": {
+    "web-search": { "provide": "web-search@1", "require": "web-search@1" }
+  },
+  "config": {
+    "type": "object",
+    "description": "Which engine answers by default, the fallback chain, and the bounds of one answer.",
+    "properties": {
+      "provider": { "type": "string", "description": "Default engine id (e.g. stub, tavily). Absent: take the single usable registered engine, or fail with web-search.ambiguous." },
+      "fallback": { "type": "array", "items": { "type": "string" }, "description": "Ordered engine ids tried when the default cannot run (a dead chain is a typed error, never a silent switch)." },
+      "count": { "type": "number", "default": 5, "description": "Default result count of a call that names none." },
+      "maxCount": { "type": "number", "default": 20, "description": "Hard ceiling of a caller-supplied count." },
+      "maxChars": { "type": "number", "default": 12000, "description": "Inline character cap of one answer; the overflow goes to spill@1 (and the answer says truncated)." },
+      "spill": { "type": "boolean", "default": true, "description": "Hand the overflow of the character cap to spill@1. When no spill provider is loaded the answer still returns, with an explicit note that the rest was dropped." },
+      "timeoutMs": { "type": "number", "default": 15000, "description": "Deadline of one engine call (a timeout is a typed web-search.timeout error)." }
+    }
+  }
+}

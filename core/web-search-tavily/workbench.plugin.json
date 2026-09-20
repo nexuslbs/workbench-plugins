@@ -1,0 +1,19 @@
+{
+  "name": "web-search-tavily",
+  "version": "0.1.0",
+  "description": "The REAL web-search engine (provider id `tavily`): one HTTP POST to the Tavily /search API, the raw payload handed to the web-search@1 seam for normalization, and every HTTP failure mapped onto the typed web-search.* reasons (401/403 auth-failed, 429 rate-limited, unreachable network, bad body bad-response). It holds NO secret: the config carries the credential NAME (TAVILY_API_KEY by default) which is resolved at call time through credentials@1, so the plugin loads in a deployment that has no key and simply reports itself unavailable with the row to fix.",
+  "entry": "index.ts",
+  "execution": "none",
+  "capabilities": [{ "id": "web-search", "version": 1 }],
+  "config": {
+    "type": "object",
+    "description": "Which credential NAME to resolve, where the API lives and how the vendor call is shaped. Never a credential VALUE.",
+    "properties": {
+      "credential": { "type": "string", "default": "TAVILY_API_KEY", "description": "NAME of the credential resolved through credentials@1 at call time (the value is never in this file, a log, an answer or a commit)." },
+      "baseUrl": { "type": "string", "default": "https://api.tavily.com", "description": "API base url; the engine POSTs to <baseUrl>/search (a test points this at a local mock)." },
+      "timeoutMs": { "type": "number", "default": 15000, "description": "Per-request deadline in ms (the seam's own deadline still applies)." },
+      "searchDepth": { "type": "string", "default": "basic", "description": "Vendor search depth (basic is the cheap one; advanced costs more)." },
+      "maxResults": { "type": "number", "default": 5, "description": "Results requested from the engine for a call that names none (max 20)." }
+    }
+  }
+}
