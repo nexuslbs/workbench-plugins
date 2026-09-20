@@ -1,0 +1,55 @@
+{
+  "name": "computer-use-x11",
+  "version": "0.1.0",
+  "description": "The X11 DRIVER of the computer-use@1 seam (provider id `x11`): screenshot (full screen or region), pointer (move/click/drag/scroll), keyboard (type/chords), clipboard read/write, window list/focus/close/launch/wait and screen geometry, over a headless display the driver can OWN (`target: xvfb`) or one that already exists (`target: existing`), driven either on the host (`runner: local`) or inside a container (`runner: docker`). Every capability is probed (xdpyinfo/xdotool/import/xclip/wmctrl) and every unavailable action fails with a typed error naming the missing half - never a fake success. It runs binaries, so it declares execution host.",
+  "entry": "index.ts",
+  "execution": "host",
+  "capabilities": [{ "id": "computer-use", "version": 1, "provider": "x11" }],
+  "policies": {
+    "computer-use": { "provide": "computer-use@1", "require": "computer-use@1" }
+  },
+  "config": {
+    "type": "object",
+    "description": "Which display the driver drives (an existing one or an owned Xvfb), where the toolchain runs (host or a container), and the toolchain itself.",
+    "properties": {
+      "target": {
+        "type": "string",
+        "enum": ["existing", "xvfb"],
+        "default": "existing",
+        "description": "`existing`: attach to the display in `display` / $DISPLAY (nothing is started, nothing is owned). `xvfb`: the driver STARTS an Xvfb (default :99) and kills it in its disposer - the headless shape."
+      },
+      "runner": {
+        "type": "string",
+        "enum": ["local", "docker"],
+        "default": "local",
+        "description": "`local`: the toolchain runs where the workbench process runs. `docker`: every binary runs inside `container` through `docker exec`, so the desktop is a disposable target."
+      },
+      "display": { "type": "string", "description": "The X display name, e.g. `:0` or `:99` (default: $DISPLAY; `:99` when the target is owned)." },
+      "container": { "type": "string", "description": "The container the `docker` runner drives (required by that runner)." },
+      "xvfb": {
+        "type": "object",
+        "description": "The geometry and extra arguments of an OWNED display.",
+        "properties": {
+          "display": { "type": "string", "description": "The display name of the owned Xvfb (default :99)." },
+          "width": { "type": "number", "default": 1280 },
+          "height": { "type": "number", "default": 800 },
+          "depth": { "type": "number", "default": 24 },
+          "args": { "type": "array", "items": { "type": "string" }, "description": "Extra Xvfb arguments, handed over verbatim (argv, never a shell string)." }
+        }
+      },
+      "windowManager": {
+        "type": "string",
+        "default": "openbox",
+        "description": "The WM started on an OWNED display, or `none`. Without a WM, window listing falls back to xdotool and focus/close are less precise (reported, never silent)."
+      },
+      "screenshotDir": { "type": "string", "description": "Where screenshots are written (default: <tmpdir>/workbench-computer-use). They are captured on stdout and written by the driver, so local and docker behave identically." },
+      "typeDelayMs": { "type": "number", "default": 12, "description": "Keystroke delay of `xdotool type` when the caller names none." },
+      "toolTimeoutMs": { "type": "number", "default": 15000, "description": "The bound of ONE tool invocation (e.g. `import -window root`). Exceeding it is a typed computer-use.timeout." },
+      "extraTools": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Extra binaries `capabilities()` must also probe (a custom target's own tools)."
+      }
+    }
+  }
+}

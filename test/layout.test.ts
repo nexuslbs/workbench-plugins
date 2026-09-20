@@ -34,6 +34,8 @@ type Tree = (typeof TREES)[number]
 /** The core service implementations: the capability providers / service hosts. */
 const CORE = [
   'capabilities-impl',
+  'computer-use-impl',
+  'computer-use-x11',
   'credentials-basic',
   'credentials-github-app',
   'credentials-stub',
@@ -65,6 +67,7 @@ const CORE = [
 
 /** The consumers, operator tools, UI plugins and shared libs. */
 const PLUGINS = [
+  'computer-use-tools',
   'config-watch',
   'cordis-ui',
   'email-tools',

@@ -1,0 +1,37 @@
+{
+  "name": "computer-use-impl",
+  "version": "0.1.0",
+  "description": "The computer-use@1 SERVICE HOST (provider `registry`): it owns the driver registry, the execution-time selection policy (explicit provider, else configured default + ordered fallback, else the single usable driver), the seam bounds (screenshot byte cap, call deadline, clipboard inline cap), the typed delegation of an unimplemented half and the optional sandbox@1 gate. Drivers are SEPARATE plugins that register themselves here; this plugin imports no driver and touches no desktop, so the manifest declares execution none.",
+  "entry": "index.ts",
+  "execution": "none",
+  "capabilities": [{ "id": "computer-use", "version": 1, "provider": "registry" }],
+  "policies": {
+    "computer-use": { "provide": "computer-use@1", "require": "computer-use@1" }
+  },
+  "config": {
+    "type": "object",
+    "description": "Which driver answers by default, the fallback chain, and the bounds of one call.",
+    "properties": {
+      "provider": {
+        "type": "string",
+        "description": "Default driver id (e.g. x11). Absent: take the single usable registered driver, or fail with computer-use.ambiguous."
+      },
+      "fallback": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Ordered driver ids tried when the default cannot run (a dead chain is a typed error, never a silent switch)."
+      },
+      "screenshotDir": {
+        "type": "string",
+        "description": "Directory a screenshot FILE is written to (default: <tmpdir>/workbench-computer-use). The answer is always a path, never inline base64."
+      },
+      "maxImageBytes": {
+        "type": "number",
+        "default": 8388608,
+        "description": "Byte cap of ONE screenshot file: an image above it is a typed computer-use.oversized error naming the real size, never a silent drop."
+      },
+      "timeoutMs": { "type": "number", "default": 15000, "description": "Wall-clock bound of one call to the desktop." },
+      "maxTextChars": { "type": "number", "default": 20000, "description": "Inline character cap of a clipboard read." }
+    }
+  }
+}

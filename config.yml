@@ -285,6 +285,60 @@ plugins:
   # The CONSUMER: the tools 'web search' and 'web search providers'.
   web-search-tools: {}
 
+  # The COMPUTER-USE seam (definitions/computer-use.ts, contract
+  # `computer-use@1`), modelled on the DeepSeek harness `computer-use` group
+  # (MIT, see THIRD_PARTY.md): a desktop an agent can DRIVE - screenshot,
+  # pointer, keyboard, windows, clipboard - with NO host change, because the
+  # driver can OWN a headless display.
+  #   * computer-use-impl  the SERVICE HOST (`registry`): the driver registry,
+  #                        the selection (named provider -> configured default
+  #                        -> ordered fallback -> the single usable driver),
+  #                        the bounds of one call (screenshot byte cap,
+  #                        deadline, clipboard inline cap) and the optional
+  #                        sandbox@1 gate. It imports NO driver and touches no
+  #                        desktop, so it runs with `execution: none`.
+  #   * computer-use-x11   the X11 DRIVER (`x11`): screenshot (full screen or
+  #                        region), pointer (move/click/drag/scroll), keyboard
+  #                        (type/chords), clipboard read/write and window
+  #                        list/focus/close/launch/wait. `target: xvfb` STARTS
+  #                        an owned display (killed by the disposer, optionally
+  #                        with `openbox`); `target: existing` attaches to
+  #                        `display`/$DISPLAY and owns nothing. `runner: docker`
+  #                        runs every binary inside `container` through
+  #                        `docker exec`, so the desktop is disposable.
+  #                        Every binary (xdpyinfo, xdotool, import, xclip,
+  #                        wmctrl) is PROBED: an action the target cannot serve
+  #                        is a typed `computer-use.not-implemented` /
+  #                        `computer-use.no-display` naming the missing half,
+  #                        never a fake success.
+  #   * computer-use-tools the CONSUMER: the ONE action-enum tool `computer`
+  #                        (providers | open | screen | screenshot | act |
+  #                        window | wait | close). A screenshot answers a PATH
+  #                        plus mime/size (byte-capped), never base64.
+  computer-use-impl:
+    provider: x11
+    maxImageBytes: 8388608
+    timeoutMs: 15000
+  # The dev roster OWNS a display: the host of this stack has no X server, so
+  # `target: xvfb` is what makes the seam usable here. Flip to
+  # `target: existing` (and drop `xvfb`) to drive a real desktop, or keep
+  # `target: xvfb` and set `runner: docker` + `container: <name>` to run the
+  # whole toolchain inside a disposable container instead of on the host.
+  # The binaries the driver needs (install with
+  # `apt-get install -y xvfb x11-utils xdotool imagemagick xclip wmctrl openbox`):
+  # xdpyinfo, xdotool, import (ImageMagick), xclip, wmctrl, plus Xvfb and a WM.
+  computer-use-x11:
+    target: xvfb
+    runner: local
+    xvfb:
+      display: ':99'
+      width: 1280
+      height: 800
+      depth: 24
+    windowManager: openbox
+    screenshotDir: /opt/workspace/workbench-plugins/.workbench/computer-use
+  computer-use-tools: {}
+
   # The per-domain RECIPE STORE (see plugins/web-recipe/README.md): durable,
   # agent-agnostic knowledge about a site (read path, named selectors,
   # discovered JSON endpoints, login flow by credential NAME, quirks) in ONE

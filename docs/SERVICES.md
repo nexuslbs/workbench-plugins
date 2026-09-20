@@ -281,6 +281,55 @@ its OWN instance (or adds `credential: <NAME>` for an instance that wants a
 bearer token). The engine's HTTP path (normalization, a filter -> query string,
 a status -> typed error) is covered by the mocked-fetch unit tests.
 
+## Computer-use capability (`computer-use@1`)
+
+`definitions/computer-use.ts` is the seam for CONTROLLING a desktop: an agent
+takes a screenshot, moves/clicks/drags/scrolls the pointer, types text and key
+chords, reads and writes the clipboard, lists/focuses/launches/closes windows
+and waits for readiness - all through ONE typed contract. The shape follows the
+DeepSeek harness `computer-use` group (MIT, see `THIRD_PARTY.md`): ONE
+capability, a PROVIDER that talks to a real display, a SERVICE HOST that selects
+among providers, and a CONSUMER that exposes it as a tool. The core repo stays
+untouched.
+
+| role | plugin | provider | what it does |
+| --- | --- | --- | --- |
+| Definition | `definitions/computer-use.ts` | - | the typed model (screen info, region/pointer, mouse, keyboard, clipboard, window requests and answers), the typed errors (`computer-use.no-display`, `not-permitted`, `timeout`, `not-implemented`, `invalid-input`, `oversized`, `ambiguous`), the pure normalizers (`normalizeRegion`, `normalizePointer`, `normalizeChord`) and the shared caps |
+| Service host | `core/computer-use-impl` | `registry` | owns the driver registry, the selection (`provider` -> configured default -> ordered `fallback` -> the single usable driver), the bounds of one call (screenshot byte cap, deadline, clipboard inline cap), the delegation of an unimplemented half as a typed `not-implemented` and the OPTIONAL `sandbox@1` gate. It imports no driver and touches no desktop (`execution: none`) |
+| Provider | `core/computer-use-x11` | `x11` | the real driver on X11: `target: xvfb` STARTS a headless display it owns (killed by its disposer, optionally with `openbox`), `target: existing` attaches to `display`/`$DISPLAY` and owns nothing; `runner: local` runs the toolchain where workbench runs, `runner: docker` runs every binary inside `container` through `docker exec`, so the desktop is disposable |
+| Tools / consumer | `plugins/computer-use-tools` | - | the action-enum tool `computer` (`providers` / `open` / `screen` / `screenshot` / `act` / `window` / `wait` / `close`) |
+
+Exactly ONE host is mounted (`computer-use-impl`); drivers are separate plugins
+that register themselves on `ctx['computer-use']`, so a deployment adds a driver
+by adding a row. `computer-use-tools` names NO backend: swapping the driver is a
+config edit and the tool schema does not change.
+
+The driver requires these binaries on the runner: `xdpyinfo` (display probe),
+`xdotool` (pointer, keyboard, window fallback), ImageMagick `import`
+(screenshot), `xclip` (clipboard) and `wmctrl` (precise window list/activate/
+close), plus `Xvfb` and a WM (`openbox`) for `target: xvfb`. It PROBES every one
+of them at startup and in `providers`: a missing binary turns its actions into a
+typed `computer-use.not-implemented` / `computer-use.no-display` naming what is
+missing - never a silent no-op and never a fabricated result.
+
+Screenshots are captured on the tool's stdout and written by the DRIVER to
+`screenshotDir` (default `<tmpdir>/workbench-computer-use`), so the `local` and
+`docker` runners behave identically: the answer is a PATH with mime and size
+(bounded by `maxImageBytes`), never unbounded base64.
+
+Config (see `config.yml` and the two plugin READMEs): the host takes `provider`,
+`fallback`, `screenshotDir`, `maxImageBytes`, `timeoutMs`, `maxTextChars`; the
+driver takes `target`, `runner`, `display`, `container`, `xvfb` (display,
+geometry, extra argv), `windowManager`, `screenshotDir`, `typeDelayMs`,
+`toolTimeoutMs` and `extraTools`. On a host with no X server the working shape
+is `target: xvfb` (optionally with `runner: docker` and a container that has the
+toolchain), which is what the dev roster in this repo uses.
+
+The `sandbox@1` gate is an EXTENSION POINT, not a dependency: the host consults
+a `sandbox` provider when one is loaded (the request names the target) and
+degrades to "no policy handle" when none is - the same optional shape `fs@1` and
+`subprocess@1` use.
+
 ## Sandbox capability (`sandbox@1`)
 
 `definitions/sandbox.ts` is the POLICY seam every local capability consults

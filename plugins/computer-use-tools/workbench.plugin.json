@@ -1,0 +1,14 @@
+{
+  "name": "computer-use-tools",
+  "version": "0.1.0",
+  "description": "External computer-USE consumer: exposes the `computer-use@1` capability as the action-enum tool `computer` (providers | open | screen | screenshot | act | window | wait | close), so an agent can screenshot, drive the pointer and the keyboard, read/write the clipboard and manage windows by name - driver agnostic, no display backend named",
+  "entry": "index.ts",
+  "capabilities": [
+    "tool:computer"
+  ],
+  "config": {
+    "type": "object",
+    "description": "The consumer registers one tool and shapes its parameters; the DISPLAY, the runner and the tool binaries belong to the drivers' rows (computer-use-impl = the service host + the selection; computer-use-x11 = the X11 driver: target existing|xvfb, runner local|docker).",
+    "properties": {}
+  }
+}

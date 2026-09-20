@@ -136,6 +136,9 @@ implements is `definitions/<id>.ts`, and its consumer side stays under
 | `web-search-stub` | `web-search` (`stub`) | the OFFLINE engine: deterministic fixtures, NO network, urls under `.invalid`; used by the tests and as the default when no real engine is configured (every answer is marked `stub: true`) |
 | `web-search-tavily` | `web-search` (`tavily`) | a REAL HTTP engine (`POST https://api.tavily.com/search`): credential resolved BY NAME (`credential: TAVILY_API_KEY`, `${cred:...}`) at call time, availability is a LOCAL credential check, HTTP 401/403 -> `auth-failed`, 429 -> `rate-limited` |
 | `web-search-searxng` | `web-search` (`searxng`) | the REAL engine that needs NO credential: a SearXNG instance's JSON API (`GET <baseUrl>/search?format=json`); `credential` is OPTIONAL (a NAME, sent as a bearer token for a protected instance) |
+| `computer-use-impl` | `computer-use` (`registry`) | SERVICE HOST of the computer-USE seam: the driver registry, the selection (named provider -> configured default -> ordered fallback -> the single usable driver), the bounds of one call (screenshot byte cap, deadline, clipboard inline cap) and the optional `sandbox@1` gate; imports no driver and touches no desktop (`execution: none`) |
+| `computer-use-x11` | `computer-use` (`x11`) | the X11 DRIVER: screenshot (full/region), pointer (move/click/drag/scroll), keyboard (type/chords), clipboard read/write, window list/focus/close/launch/wait; `target: xvfb` OWNS a headless display and `target: existing` attaches to one, `runner: local`/`docker` decides where the toolchain runs, and every missing binary or unserved action is a typed `not-implemented`/`no-display` error |
+| `computer-use-tools` | - | the CONSUMER: the action-enum tool `computer` (`providers` / `open` / `screen` / `screenshot` / `act` / `window` / `wait` / `close`) |
 | `shell-impl` | `shell` (`local-bash`) | the LOCAL transport (the only host-running one) |
 | `fs-local` | `fs` (`local-fs`) | the LOCAL filesystem: reads unrestricted, WRITES confined to the configured roots; line-numbered paged read, atomic edits, glob/grep with caps + spill (no shell at all) |
 | `docker-impl` | `docker` (`docker-compose-cli`) | the container transport |
@@ -247,6 +250,7 @@ NOT a model/agent feature: the callers are plugins and operators. The contract i
 | `web-page` | `page map` | `url` (string, required), `max_chars` (integer) | same seam |
 | `web-search-tools` | `web search` | `query` (string, required), `count` (integer), `language` (string), `freshness` (string or integer), `safe` (boolean), `site` (string), `engine` (string) | same seam (normalized results: `title`/`url`/`snippet`/`rank`/`published`/`engine`, plus `engine`/`provider`/`took_ms`/`truncated`/`spill_path`; caps + spill when `spill@1` is loaded) |
 | `web-search-tools` | `web search providers` | none | same seam (introspection: every registered engine with its configured/available state and the reason it cannot run, plus the selection in effect and the config row to add) |
+| `computer-use-tools` | `computer` | `action` (string, enum `providers` / `open` / `screen` / `screenshot` / `act` / `window` / `wait` / `close`), `provider` (string), `kind` (string, enum `move` / `click` / `drag` / `scroll` / `type` / `key` / `copy` / `paste`), `x`/`y`/`fromX`/`fromY`/`toX`/`toY` (integer), `button` (string, enum `left`/`middle`/`right`), `clicks` (integer), `direction` (string, enum `up`/`down`/`left`/`right`), `amount` (integer), `durationMs`/`delayMs` (integer), `text` (string), `chord` (string), `keyAction` (string, enum `press`/`down`/`up`), `selection` (string, enum `clipboard`/`primary`), `format` (string, enum `png`/`jpeg`), `quality` (integer), `label` (string), `path` (string), `regionX`/`regionY`/`regionWidth`/`regionHeight` (integer), `windowAction` (string, enum `list`/`focus`/`close`/`launch`/`wait`), `title`/`id`/`command`/`waitTitle` (string), `args` (array of string), `ms`/`timeoutMs`/`maxImageBytes` (integer) | same seam (a `screenshot` answers a FILE PATH plus mime/size, byte-capped, never inline base64) |
 | `sandbox-tools` | `sandbox check` | `resource` (string, required), `operation` (string), `path` (string), `argv` (array of string), `shell` (boolean), `cwd` (string), `envNames` (array of string), `network` (json), `bytes` (integer), `wallTimeMs` (integer), `approvalGranted` (boolean) | same seam (raw decision + active policy) |
 | `sandbox-tools` | `sandbox policy` | none | same seam (active policy + enforcement matrix) |
 | `sandbox-tools` | `sandbox run` | `argv` (array of string, required), `cwd` (string), `resource` (string), `env` (object), `envNames` (array of string), `stdin` (string), `timeoutMs` (integer), `maxOutputBytes` (integer), `approvalGranted` (boolean) | same seam (enforced run, needs an enforcing provider) |
@@ -275,6 +279,18 @@ an explicit `engine`, the typed NOT-CONFIGURED error (which names the roster row
 to add) versus a legitimately empty result set, the provider introspection, the
 Tavily engine driven against a fake `fetch` (401/403, 429, non-JSON body, an
 unreachable host) and the stub's determinism. No network in the tests.
+
+The computer-USE seam is covered by `test/computer-use.test.ts`: the pure
+contract helpers (input normalization, the error codes and the typed
+`not-implemented` mapping), the service host (registry, selection, caps, the
+typed failure when no driver is usable and the hint naming the roster row to
+add), the consumer tool driven against a fake capability (action routing, the
+screenshot answer as a path + byte cap, an unavailable action as a typed error)
+and ONE live test that runs the real X11 driver against a display it owns
+(`Xvfb` + `openbox`): screenshot bytes, a pointer move/click, keyboard input
+proven by the window's own output and the window list. That live test SKIPS -
+naming the missing binaries - when the host has no X11 toolchain, and
+`COMPUTER_USE_LIVE=0` disables it explicitly.
 
 ## Plugin events and effects (`events@1`)
 
