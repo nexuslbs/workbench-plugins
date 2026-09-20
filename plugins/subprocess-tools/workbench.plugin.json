@@ -1,0 +1,21 @@
+{
+  "name": "subprocess-tools",
+  "version": "0.1.0",
+  "description": "External subprocess consumer: exposes the subprocess@1 capability as the tools 'subprocess run' and 'subprocess policy' - provider agnostic, no backend named",
+  "entry": "index.ts",
+  "capabilities": ["tool:subprocess run", "tool:subprocess policy"],
+  "config": {
+    "type": "object",
+    "description": "The consumer only shapes the tools it registers; cwd, deadlines, caps, the shell policy and the spill handoff belong to the provider's row.",
+    "properties": {
+      "timeoutMs": {
+        "type": "number",
+        "description": "Deadline the 'subprocess run' tool uses when the call names none (the provider's own default and hard cap still apply)."
+      },
+      "maxOutputBytes": {
+        "type": "number",
+        "description": "Inline byte cap the 'subprocess run' tool uses when the call names none (the provider's own default and hard cap still apply)."
+      }
+    }
+  }
+}

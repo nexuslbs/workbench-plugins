@@ -1,0 +1,24 @@
+{
+  "name": "spill-tools",
+  "version": "0.1.0",
+  "description": "External spill consumer: exposes the spill@1 capability as the tools 'spill write', 'spill read', 'spill info', 'spill list', 'spill purge' and 'spill policy' - provider agnostic, no backend named",
+  "entry": "index.ts",
+  "capabilities": [
+    "tool:spill write",
+    "tool:spill read",
+    "tool:spill info",
+    "tool:spill list",
+    "tool:spill purge",
+    "tool:spill policy"
+  ],
+  "config": {
+    "type": "object",
+    "description": "The consumer only shapes the tools it registers; the spill directory, the payload ceiling and the retention policy belong to the provider's row.",
+    "properties": {
+      "pageBytes": {
+        "type": "number",
+        "description": "Byte window the 'spill read' tool uses when the call names none (the provider's own default and cap still apply)."
+      }
+    }
+  }
+}

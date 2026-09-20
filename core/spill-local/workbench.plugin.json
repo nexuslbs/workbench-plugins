@@ -1,0 +1,26 @@
+{
+  "name": "spill-local",
+  "version": "0.1.0",
+  "description": "The spill@1 provider `local-disk`: oversized payloads written ONCE to a content-addressed file on the workbench host, read back by byte RANGE, with the retention policy (max age / max total bytes / purge) owned here. Declares execution/policies because it writes to host paths directly.",
+  "entry": "index.ts",
+  "execution": "host",
+  "capabilities": [{ "id": "spill", "version": 1, "provider": "local-disk" }],
+  "policies": {
+    "spill": { "provide": "spill@1", "require": "spill@1" }
+  },
+  "config": {
+    "type": "object",
+    "description": "Where spill files live, how large one payload may be, and how long they are kept.",
+    "properties": {
+      "dir": {
+        "type": "string",
+        "description": "Directory spill files live in (default: <tmpdir>/workbench-spill). Every path a call names is confined to it."
+      },
+      "maxBytes": { "type": "number", "default": 67108864, "description": "Byte ceiling of ONE payload; a larger one fails with reason spill.too-large." },
+      "maxTotalBytes": { "type": "number", "default": 536870912, "description": "Byte ceiling of the whole directory; a purge trims to it, oldest file first." },
+      "maxAgeSeconds": { "type": "number", "default": 604800, "description": "Retention age in seconds (0 disables the age purge)." },
+      "previewBytes": { "type": "number", "default": 2048, "description": "Bytes of the payload copied into the write answer as a preview." },
+      "purgeOnWrite": { "type": "boolean", "default": true, "description": "Run the retention policy on every write (best effort)." }
+    }
+  }
+}

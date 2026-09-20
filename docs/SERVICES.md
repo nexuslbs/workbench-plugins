@@ -140,6 +140,53 @@ own `sandbox:` config block or from a `sandbox@1` service when one is loaded
 sandbox capability is a separate task; with none loaded the behaviour is exactly
 the config-only confinement above.
 
+## Local execution capabilities (`subprocess@1`, `jobs@1`, `spill@1`)
+
+Three seams cover LOCAL execution on the workbench host. They are the only
+places of this repository that start an arbitrary process, so every one of them
+is bounded by construction (deadline, byte cap, retention).
+
+| role | plugin | what it does |
+| --- | --- | --- |
+| Definition | `definitions/subprocess.ts` | the typed contract + the pure algorithms (command planning: argv preferred / `shell: true` escape hatch, the `${cred:NAME}` / `${env:VAR}` reference resolution, the deadline and cap normalisation, the display/redaction form) and the error taxonomy (`SubprocessError`, reasons `subprocess.spawn-failed`, `subprocess.timeout`, `subprocess.missing-service`, ...) |
+| Provider | `core/subprocess-local` (`local-process`) | ONE bounded run through `node:child_process` (no host shell unless asked): streamed stdout/stderr, a deadline that kills the process GROUP (`SIGTERM`, then `SIGKILL`), an inline output cap whose overflow goes to `spill@1`, and a structured result `{exit_code, stdout, stderr, duration, truncated, spill}` |
+| Consumer | `plugins/subprocess-tools` | the tools `subprocess run`, `subprocess policy` |
+| Definition | `definitions/jobs.ts` | the typed contract + the pure algorithms (the job-id shape, the `stateOfExit` state machine, `readLogWindow`: the cursor paging math) |
+| Provider | `core/jobs-local` (`local-registry`) | background jobs with a stable id and a durable log file under a configured directory: `start`, `list`, `status`, `logs` (byte CURSOR), `stop` (process GROUP), `cleanup`; the log has a ceiling, the child is `unref()`ed so a job never holds a request handler, and unloading the plugin STOPS every running job and removes its logs through `effect()` |
+| Consumer | `plugins/jobs-tools` | the tools `jobs start`, `jobs list`, `jobs status`, `jobs logs`, `jobs stop`, `jobs cleanup`, `jobs policy` |
+| Definition | `definitions/spill.ts` | the typed contract + the pure algorithms (`clampRange`, the line-aligned window, `spillFileName`, `sanitizeLabel`, `sha256Of`, `previewOf`, `selectForPurge`) |
+| Provider | `core/spill-local` (`local-disk`) | oversized payloads written ONCE (atomic temp + rename) to a content-addressed file under a configured directory, read back by byte RANGE, with the retention policy (max age / max total bytes / explicit `purge`); every path is confined to the spill directory |
+| Consumer | `plugins/spill-tools` | the tools `spill write`, `spill read`, `spill list`, `spill purge`, `spill policy` |
+
+### Configuration and directories
+
+| knob | plugin | default |
+| --- | --- | --- |
+| `dir` | `spill-local` | `<tmpdir>/workbench-spill` (the dev config sets `/tmp/workbench-spill`) |
+| `maxBytes` / `maxTotalBytes` / `maxAgeSeconds` / `previewBytes` | `spill-local` | 64 MiB per payload / 256 MiB total / 24 h / 2048 bytes of preview |
+| `dir` | `jobs-local` | `<tmpdir>/workbench-jobs` (the dev config sets `/tmp/workbench-jobs`) |
+| `maxJobs` / `maxLogBytes` / `stopOnUnload` | `jobs-local` | 32 jobs / 8 MiB per log / true |
+| `timeoutMs` / `maxOutputBytes` / `overflowBytes` / `allowShell` / `spill` | `subprocess-local` | 30 s / 64 KiB inline / 4 MiB kept for the spill / true / true |
+
+Both directories are plain host paths: point them at a durable volume for a
+long-lived deployment. A `jobs` log and a `spill` file are ordinary files under
+them, so an operator can inspect or delete them with the `fs` tools.
+
+### The cap never loses data
+
+A capped answer is never silently truncated: `subprocess` and `jobs` hand the
+overflow to `spill@1` and the answer carries the spill path plus the preview
+length, so the caller reads the rest with a RANGE read (`spill read`). This is
+the same cap-then-spill rule the `fs` `grep` overflow follows.
+
+### Optional sandbox extension point (no hard dependency)
+
+`definitions/subprocess.ts` exposes `sandboxOf(ctx)` and `definitions/jobs.ts`
+consults it too: when a `sandbox@1` provider (see the `sandbox` task) is present
+in the context, its `checkCommand` runs BEFORE a process is started and a refusal
+is a structured error. Nothing here imports or requires that seam: a deployment
+without it behaves exactly as documented above.
+
 ## Shell safety invariant (mandatory)
 
 For every REMOTE type the caller's input string is evaluated **exactly once, in

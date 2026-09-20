@@ -44,7 +44,12 @@ and the workbench error/service conventions (`definitions/support.ts`).
 | `fs/tool-fs-search` (`search-core`, `grep`, `glob`) | `definitions/fs.ts` (`globToRegExp`, `globMatches`, `buildRipgrepArgv`, `parseRipgrepJson`, `formatGrepMatches`) | the `path:line: text` result shape, the `--json` record parsing, the per-line preview byte cap, the inline match cap, the name-glob search, the glob-then-regex two-step |
 | `tools/output-retention`, `output-spill` | `core/fs-local/index.ts` (the `grep` overflow) | the cap-then-SPILL behaviour: the full list is written to a file and its path returned, so a capped answer never loses matches |
 | `fs/fs-sandbox`, `fs/fs-observation-policy` | `definitions/fs.ts` (`FsSandboxPolicy`, `sandboxPolicyFrom`) | the extension point: an optional policy handle that NARROWS what a provider may touch (no hard dependency here) |
+| `subprocess/*` (`types.ts`, `index.ts`), `subprocess-local` | `definitions/subprocess.ts`, `core/subprocess-local/index.ts` | the command shape (an argv ARRAY run WITHOUT a host shell, plus the explicit `shell: true` escape hatch), the deadline that kills the whole process GROUP (SIGTERM, then SIGKILL after a grace), the inline output cap whose overflow is handed to `spill`, the streaming chunk callback for live output, the "a non-zero exit is a normal result" rule |
+| `jobs/*` (`types.ts`, `index.ts`) | `definitions/jobs.ts`, `core/jobs-local/index.ts` | the background-job registry (stable id, the `running`/`exited`/`failed`/`killed` state machine), the durable log file, the CURSOR-based log paging (`cursor` in, `nextCursor` out), the log ceiling, the `stop` (process group) / `cleanup` lifecycle and the unload disposer |
+| `spill/*` (`types.ts`, `index.ts`), `tools/output-spill` | `definitions/spill.ts`, `core/spill-local/index.ts` | the oversized-payload file (`path`, `bytes`, `sha256`, `preview`), the RANGE read (`offset`/`limit` -> `nextOffset`/`eof`), the line-aligned default window, the retention policy (max age, max total bytes, explicit purge) |
 
 No file of the harness was copied verbatim; the modules above are re-expressed
 in this repository's own plugin/definition layout, and every one of them has a
-workbench-side test (`test/fs.test.ts`, `test/fs-local.test.ts`).
+workbench-side test (`test/fs.test.ts`, `test/fs-local.test.ts`,
+`test/subprocess.test.ts`, `test/jobs.test.ts`, `test/spill.test.ts`,
+`test/process-tools.test.ts`).

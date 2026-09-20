@@ -1,0 +1,28 @@
+{
+  "name": "subprocess-local",
+  "version": "0.1.0",
+  "description": "The subprocess@1 provider `local-process`: bounded LOCAL command execution on the workbench host - argv based (no shell unless asked), streamed output with an inline cap, a deadline that kills the whole process GROUP, and the overflow handed to spill@1. Declares execution/policies because it starts host processes.",
+  "entry": "index.ts",
+  "execution": "host",
+  "capabilities": [{ "id": "subprocess", "version": 1, "provider": "local-process" }],
+  "policies": {
+    "subprocess": { "provide": "subprocess@1", "require": "subprocess@1" }
+  },
+  "config": {
+    "type": "object",
+    "description": "The default working directory, the deadline and output caps, the shell policy and the spill handoff of every call.",
+    "properties": {
+      "cwd": { "type": "string", "description": "Working directory used when a call names none (default: the process cwd)." },
+      "timeoutMs": { "type": "number", "default": 30000, "description": "Default deadline in ms (hard max 600000). On expiry the whole process group is signalled." },
+      "maxOutputBytes": { "type": "number", "default": 262144, "description": "Default inline byte cap of stdout/stderr (hard max 1048576)." },
+      "overflowBytes": { "type": "number", "default": 4194304, "description": "Bytes kept BEYOND the cap so the overflow can be spilled instead of lost." },
+      "graceMs": { "type": "number", "default": 500, "description": "Grace between SIGTERM and SIGKILL when a deadline expires." },
+      "allowShell": { "type": "boolean", "default": true, "description": "Whether `shell: true` (the explicit shell escape hatch) is allowed at all. false makes every string command a structured error." },
+      "shellBinary": { "type": "string", "default": "/bin/sh", "description": "Shell binary used when `shell: true`." },
+      "spillLabel": { "type": "string", "default": "subprocess-stdout", "description": "Default label of the spill file name for capped output." },
+      "spill": { "type": "boolean", "default": true, "description": "Hand output beyond the cap to spill@1 (false keeps the truncated inline answer)." },
+      "env": { "type": "object", "description": "Environment entries every call inherits (values are never logged)." },
+      "sandbox": { "type": "object", "description": "EXTENSION POINT: an optional sandbox policy handle; when a sandbox@1 provider is loaded its `checkCommand` runs before any process is started. Never a dependency." }
+    }
+  }
+}

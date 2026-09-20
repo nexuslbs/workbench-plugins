@@ -1,0 +1,25 @@
+{
+  "name": "jobs-tools",
+  "version": "0.1.0",
+  "description": "External jobs consumer: exposes the jobs@1 capability as the tools 'jobs start', 'jobs list', 'jobs status', 'jobs logs', 'jobs stop', 'jobs cleanup' and 'jobs policy' - provider agnostic, no backend named",
+  "entry": "index.ts",
+  "capabilities": [
+    "tool:jobs start",
+    "tool:jobs list",
+    "tool:jobs status",
+    "tool:jobs logs",
+    "tool:jobs stop",
+    "tool:jobs cleanup",
+    "tool:jobs policy"
+  ],
+  "config": {
+    "type": "object",
+    "description": "The consumer only shapes the tools it registers; the log directory, the job ceiling, the log cap and the kill grace belong to the provider's row.",
+    "properties": {
+      "pageBytes": {
+        "type": "number",
+        "description": "Byte window the 'jobs logs' tool uses when the call names none (the provider's own default and cap still apply)."
+      }
+    }
+  }
+}

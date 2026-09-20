@@ -398,6 +398,53 @@ plugins:
       engine: node
       maxResults: 250
   fs-tools: {}
+  # ---------------------------------------------------------------------------
+  # The LOCAL execution seams: `subprocess@1`, `jobs@1` and `spill@1`.
+  #
+  # Every command of these seams is an ARGV ARRAY handed to the OS on the
+  # workbench host - no shell unless a call asks for `shell: true` - bounded by a
+  # deadline that kills the whole process GROUP and by an output cap whose
+  # overflow is handed to `spill@1` instead of being dropped.
+  #
+  # subprocess-local: provider `local-process` of `subprocess@1` - ONE bounded
+  # run with streamed output. Drop the row and `subprocess run` fails with
+  # subprocess.missing-service while the rest of the stack keeps running
+  # (core/subprocess-local/README.md).
+  subprocess-local:
+    # Deadline and inline byte cap of a call that names none.
+    timeoutMs: 30000
+    maxOutputBytes: 65536
+    # Bytes kept BEYOND the cap so the overflow can be spilled instead of lost.
+    overflowBytes: 4194304
+    # The single-shell escape hatch; `allowShell: false` refuses `shell: true`.
+    allowShell: true
+    # Hand output beyond the inline cap to `spill@1` (false truncates in place).
+    spill: true
+  # spill-local: provider `local-disk` of `spill@1` - oversized payloads written
+  # ONCE under `dir` and read back by byte RANGE, with the retention policy
+  # (max age / max total bytes). Default dir: <tmpdir>/workbench-spill inside the
+  # service container; point it at a durable volume for a long-lived deployment.
+  spill-local:
+    dir: /tmp/workbench-spill
+    maxBytes: 67108864
+    maxTotalBytes: 268435456
+    maxAgeSeconds: 86400
+    previewBytes: 2048
+    purgeOnWrite: true
+  # jobs-local: provider `local-registry` of `jobs@1` - background jobs with a
+  # stable id and a durable log under `dir` (default <tmpdir>/workbench-jobs),
+  # read with a byte CURSOR. Unloading the plugin stops its jobs and removes
+  # their logs.
+  jobs-local:
+    dir: /tmp/workbench-jobs
+    maxJobs: 32
+    maxLogBytes: 8388608
+    stopOnUnload: true
+  # The consumers: they expose the three seams as tools and hold no state of
+  # their own.
+  subprocess-tools: {}
+  spill-tools: {}
+  jobs-tools: {}
 
 web:
   enabled: true

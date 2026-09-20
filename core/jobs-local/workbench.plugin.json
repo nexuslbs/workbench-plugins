@@ -1,0 +1,25 @@
+{
+  "name": "jobs-local",
+  "version": "0.1.0",
+  "description": "The jobs@1 provider `local-registry`: START a background command on the workbench host, keep a stable job id and a durable log on disk, read the log with a CURSOR (never a re-read), stop the whole process GROUP, clean up finished jobs - and stop every job it owns when the plugin unloads. Declares execution/policies because it starts host processes.",
+  "entry": "index.ts",
+  "execution": "host",
+  "capabilities": [{ "id": "jobs", "version": 1, "provider": "local-registry" }],
+  "policies": {
+    "jobs": { "provide": "jobs@1", "require": "jobs@1" }
+  },
+  "config": {
+    "type": "object",
+    "description": "Where job logs live, how many jobs are kept, the log ceiling and the default stop behaviour.",
+    "properties": {
+      "dir": { "type": "string", "description": "Directory holding the job logs (default: <tmpdir>/workbench-jobs)." },
+      "maxJobs": { "type": "number", "default": 32, "description": "Maximum number of jobs kept at once; a start beyond it fails with reason jobs.limit." },
+      "maxLogBytes": { "type": "number", "default": 8388608, "description": "Byte ceiling of ONE job log; reaching it STOPS the job." },
+      "timeoutMs": { "type": "number", "default": 0, "description": "Default job deadline in ms (0 = none; a job is stopped explicitly)." },
+      "graceMs": { "type": "number", "default": 500, "description": "Grace between SIGTERM and SIGKILL when stopping a job." },
+      "allowShell": { "type": "boolean", "default": true, "description": "Whether `shell: true` is allowed for a job command." },
+      "pageBytes": { "type": "number", "default": 65536, "description": "Default byte window of one `logs` page (hard max 1048576)." },
+      "stopOnUnload": { "type": "boolean", "default": true, "description": "Stop every running job (and remove its log file) when the plugin unloads." }
+    }
+  }
+}
