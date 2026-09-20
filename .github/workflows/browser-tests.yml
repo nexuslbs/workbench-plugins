@@ -31,10 +31,20 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      # `shell: bash` is REQUIRED: a `run:` step of a container job is executed with
+      # `sh -e {0}`, and in this image /bin/sh is dash, which has NO `pipefail` and
+      # aborts on `set -o pipefail` before npm is ever reached (the gate would then
+      # "fail" in zero seconds without running the suite).
       - name: Suite WITH a real browser (a skip is a failure)
+        shell: bash
         run: |
           set -euo pipefail
-          BROWSER_USE_CHROMIUM="$(ls -d /ms-playwright/chromium-*/chrome-linux64/chrome | head -1)"
+          BROWSER_USE_CHROMIUM="$(find /ms-playwright -maxdepth 3 -name chrome -path '*chrome-linux64*' -print -quit)"
+          if [ -z "${BROWSER_USE_CHROMIUM}" ]; then
+            echo "no chromium binary found under /ms-playwright" >&2
+            ls -la /ms-playwright >&2 || true
+            exit 1
+          fi
           export BROWSER_USE_CHROMIUM
           echo "chromium: ${BROWSER_USE_CHROMIUM}"
           npm run test:browser

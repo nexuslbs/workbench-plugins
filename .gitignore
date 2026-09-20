@@ -9,4 +9,7 @@ workbench-browser-use/
 .env
 .env.local
 *.log
+# Node's test reporter drops report.<date>.<pid>.<n>.json in the repo root when
+# the suites run; ignored so a local/test run never dirties the work tree.
+report.*.json
 .DS_Store
