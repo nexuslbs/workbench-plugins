@@ -1,13 +1,26 @@
 #!/bin/sh
 # Entrypoint of the browser service image: run the chromium that ships WITH the
-# image (the playwright browser cache) with a CDP endpoint other containers can
-# attach to. Nothing here knows about workbench.
+# image (the playwright browser cache) behind a tiny TCP forwarder, so that the
+# CDP endpoint is reachable from OUTSIDE this container.
 #
-#   start-browser                 foreground (the container entrypoint)
+# WHY A FORWARDER: chromium binds its DevTools server to LOOPBACK only -
+# `--remote-debugging-address=0.0.0.0` is ignored by current builds (verified on
+# Chromium 153, with and without `--user-data-dir`: `/proc/net/tcp` shows
+# `127.0.0.1:<port>`, connections to the container IP are refused). A browser
+# SERVICE must be reachable by IP / published port from the container that drives
+# it, so the image runs two processes:
+#
+#   chromium       -> 127.0.0.1:${BROWSER_CDP_INTERNAL_PORT} (default: CDP port + 1)
+#   cdp-forward.js -> 0.0.0.0:${BROWSER_CDP_PORT}            (default: 9222) -> chromium
+#
+# Nothing here knows about workbench.
+#
+#   start-browser                 foreground (the container entrypoint): start both,
+#                                 require the CDP endpoint to answer, then supervise
 #   start-browser --background    start it DETACHED, wait until the CDP endpoint
-#                                 answers, then exit 0 (bounded, for a launcher
-#                                 run through `docker exec` / ssh, which would
-#                                 otherwise block forever on a foreground child)
+#                                 answers, then exit 0 (bounded, for a launcher run
+#                                 through `docker exec` / ssh, which would otherwise
+#                                 block forever on a foreground child)
 set -eu
 
 MODE="foreground"
@@ -21,8 +34,50 @@ case "${1:-}" in
 esac
 
 PORT="${BROWSER_CDP_PORT:-9222}"
+INTERNAL_PORT="${BROWSER_CDP_INTERNAL_PORT:-$((PORT + 1))}"
 WAIT_SECONDS="${BROWSER_START_WAIT_SECONDS:-60}"
 LOG="${BROWSER_LOG:-/tmp/start-browser.log}"
+FORWARDER="${BROWSER_FORWARDER:-/usr/local/bin/cdp-forward.js}"
+
+# Does the CDP HTTP endpoint answer on a given port?
+cdp_answers() {
+  node -e '
+    const http = require("http");
+    const req = http.get({ host: "127.0.0.1", port: Number(process.argv[1]), path: "/json/version", timeout: 2000 }, (res) => {
+      res.resume();
+      process.exit(res.statusCode === 200 ? 0 : 1);
+    });
+    req.on("error", () => process.exit(1));
+    req.on("timeout", () => { req.destroy(); process.exit(1); });
+  ' "$1" 2>/dev/null
+}
+
+# Background mode: detach the FOREGROUND supervisor (this same script) and wait for
+# the CDP endpoint it must bring up. One startup path, two behaviours - the exit
+# code is the proof that the service is up, no sleep-and-hope.
+if [ "$MODE" = "background" ]; then
+  echo "start-browser: starting detached, waiting for CDP on 127.0.0.1:$PORT"
+  nohup "$0" --foreground >>"$LOG" 2>&1 &
+  SUPERVISOR_PID=$!
+  waited=0
+  while [ "$waited" -lt "$WAIT_SECONDS" ]; do
+    if cdp_answers "$PORT"; then
+      echo "start-browser: CDP endpoint answering on 0.0.0.0:$PORT (after ${waited}s)"
+      exit 0
+    fi
+    if ! kill -0 "$SUPERVISOR_PID" 2>/dev/null; then
+      echo "start-browser: the supervisor exited before the CDP endpoint answered - log tail:" >&2
+      tail -n 20 "$LOG" >&2 2>/dev/null || true
+      exit 1
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  echo "start-browser: no answer on 127.0.0.1:$PORT within ${WAIT_SECONDS}s - log tail:" >&2
+  tail -n 20 "$LOG" >&2 2>/dev/null || true
+  kill -TERM "$SUPERVISOR_PID" 2>/dev/null || true
+  exit 1
+fi
 
 # The playwright image keeps its builds under /ms-playwright/<name>-<rev>/.
 # Prefer the full chromium (CDP + real rendering), fall back to the headless
@@ -44,43 +99,63 @@ if [ -z "$BIN" ]; then
   exit 1
 fi
 
-echo "start-browser: $BIN --remote-debugging-port=$PORT ($($BIN --version 2>/dev/null || echo version-unknown))"
+CHROME_PID=""
+FWD_PID=""
+stop_children() {
+  if [ -n "$CHROME_PID" ]; then kill -TERM "$CHROME_PID" 2>/dev/null || true; fi
+  if [ -n "$FWD_PID" ]; then kill -TERM "$FWD_PID" 2>/dev/null || true; fi
+}
+trap 'stop_children; exit 143' TERM INT
 
-if [ "$MODE" = "foreground" ]; then
-  exec "$BIN" \
-    --headless=new \
-    --no-sandbox \
-    --disable-dev-shm-usage \
-    --disable-gpu \
-    --remote-debugging-address=0.0.0.0 \
-    --remote-debugging-port="$PORT" \
-    ${BROWSER_EXTRA_ARGS:-} \
-    about:blank
-fi
+fail_loudly() {
+  echo "start-browser: $1" >&2
+  echo "start-browser: log tail ($LOG):" >&2
+  tail -n 20 "$LOG" >&2 2>/dev/null || true
+  stop_children
+  exit 1
+}
 
-# Background mode: detach chromium, then wait for /json/version to answer so the
-# caller can attach IMMEDIATELY when this command exits 0. A CI-safe bounded
-# wait: the exit code is the proof, no sleep-and-hope.
-nohup "$BIN" \
+echo "start-browser: $BIN ($($BIN --version 2>/dev/null || echo version-unknown)) on 127.0.0.1:$INTERNAL_PORT, CDP forwarded on 0.0.0.0:$PORT"
+
+"$BIN" \
   --headless=new \
   --no-sandbox \
   --disable-dev-shm-usage \
   --disable-gpu \
-  --remote-debugging-address=0.0.0.0 \
-  --remote-debugging-port="$PORT" \
+  --remote-debugging-address=127.0.0.1 \
+  --remote-debugging-port="$INTERNAL_PORT" \
   ${BROWSER_EXTRA_ARGS:-} \
   about:blank >>"$LOG" 2>&1 &
+CHROME_PID=$!
+
+CDP_LISTEN_HOST=0.0.0.0 CDP_LISTEN_PORT="$PORT" \
+CDP_UPSTREAM_HOST=127.0.0.1 CDP_UPSTREAM_PORT="$INTERNAL_PORT" \
+  node "$FORWARDER" >>"$LOG" 2>&1 &
+FWD_PID=$!
 
 waited=0
 while [ "$waited" -lt "$WAIT_SECONDS" ]; do
-  if node -e "require('http').get('http://127.0.0.1:' + process.argv[1] + '/json/version', (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))" "$PORT" 2>/dev/null; then
-    echo "start-browser: CDP endpoint answering on 127.0.0.1:$PORT (after ${waited}s)"
-    exit 0
+  if ! kill -0 "$CHROME_PID" 2>/dev/null; then
+    fail_loudly "chromium exited during startup"
+  fi
+  if ! kill -0 "$FWD_PID" 2>/dev/null; then
+    fail_loudly "the CDP forwarder exited during startup"
+  fi
+  if cdp_answers "$PORT"; then
+    echo "start-browser: CDP endpoint answering on 0.0.0.0:$PORT (after ${waited}s)"
+    break
   fi
   sleep 1
   waited=$((waited + 1))
 done
 
-echo "start-browser: chromium did not answer on 127.0.0.1:$PORT within ${WAIT_SECONDS}s - log tail:" >&2
-tail -n 20 "$LOG" >&2 2>/dev/null || true
-exit 1
+if ! cdp_answers "$PORT"; then
+  fail_loudly "no answer on 127.0.0.1:$PORT within ${WAIT_SECONDS}s"
+fi
+
+# Foreground (the container entrypoint): supervise both children and leave as soon
+# as one of them dies - a half-dead browser service must not look healthy.
+while kill -0 "$CHROME_PID" 2>/dev/null && kill -0 "$FWD_PID" 2>/dev/null; do
+  sleep 5
+done
+fail_loudly "a child process exited"
