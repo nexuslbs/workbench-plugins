@@ -383,17 +383,29 @@ plugins:
     maxImageBytes: 8388608
     timeoutMs: 60000
     maxSessions: 4
-  # The dev roster reuses a chromium that is already on this workspace. Any
-  # chrome/chromium works: point `executablePath` at it, or drop it and install
-  # playwright's cache instead (`PLAYWRIGHT_BROWSERS_PATH=<dir> npx playwright-core
-  # install chromium`). A deployment WITHOUT a browser still loads every plugin
-  # and answers the typed `browser-use.no-browser` error naming the requirement.
+  # THE DEPLOYMENT SHAPE (thread 2632): the browser is a SEPARATE SERVICE of the
+  # stack, never part of the workbench image. `docker compose --profile browser
+  # up -d browser` starts the compose service `browser` (published image
+  # ghcr.io/nexuslbs/workbench-plugins/browser:<tag>; the DEV overlay builds the
+  # SAME Dockerfile from this repository's `browser/` directory and tags it
+  # local/workbench-browser:latest, which is why `image` below names that local
+  # tag). The provider ATTACHES to the service's CDP endpoint, reachable as
+  # `browser:9222` on the stack network.
+  #
+  # With `browserService` set the provider NEVER launches a local browser and
+  # NEVER falls back to an HTTP fetch: when nothing answers at the endpoint a call
+  # fails with the typed `browser-use.no-browser` naming the endpoint and the
+  # image, which is exactly what an operator needs to start the service.
+  # `executablePath` is therefore DELIBERATELY ABSENT: in attach mode it is dead
+  # config, and keeping it would let a local chromium hide a stopped service.
   browser-use-playwright:
     headless: true
     viewport:
       width: 1280
       height: 800
-    executablePath: /opt/workspace/workbench-plugins/.workbench/browsers/chromium-1243/chrome-linux64/chrome
+    browserService:
+      endpoint: http://browser:9222
+      image: local/workbench-browser:latest
     storageStateDir: /opt/workspace/workbench-plugins/.workbench/browser-use/state
     screenshotDir: /opt/workspace/workbench-plugins/.workbench/browser-use/shots
   browser-use-tools: {}

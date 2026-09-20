@@ -78,6 +78,17 @@ when the consumer shares the network namespace, or `http://<container-ip>:9222` 
 shared docker network) - never by its DNS name. This is a chromium policy, not a
 property of this image.
 
+A chromium policy is not a user-interface rule though: the workbench PLAYWRIGHT
+provider resolves a NAME for you. `browser-use-playwright` turns
+`browserService.endpoint` into its IP address (`dns.lookup`) right before it
+attaches, so `endpoint: http://browser:9222` - the readable compose service-name
+form - attaches exactly like the IP form and needs no operator trick. The
+resolution happens once per attach, the RESOLVED IP is what playwright receives,
+and the CONFIGURED endpoint (the name) stays the one named in the typed
+`browser-use.endpoint-unreachable` error. A name that does not resolve is passed
+through unchanged, so the failure stays the typed one instead of degrading into a
+resolution error.
+
 ## Wiring a deployment to it
 
 ```yaml

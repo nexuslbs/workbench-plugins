@@ -426,7 +426,11 @@ connected). If it still does not answer, the call fails with the typed
 and the requirement - **never** a silent local launch and **never** an HTTP
 fetch pretending to be a browser. `browser-use.no-browser` is the typed answer
 when the deployment names no browser at all (no `browserService`, no
-`wsEndpoint`, no binary); the plugin still loads (no boot failure).
+`wsEndpoint`, no binary); the plugin still loads (no boot failure). A
+`browserService.endpoint` written as a NAME (`http://browser:9222`) is resolved to
+its IP before the attach - chromium rejects DevTools requests whose `Host` header
+is not an IP or `localhost` - so the compose service-name form is a valid
+deployment value; the CONFIGURED endpoint stays the one named in the typed error.
 
 LOCAL ALTERNATIVES (not the default): a chromium binary reachable through
 `executablePath`, the `PLAYWRIGHT_BROWSERS_PATH` cache, or a system chromium.

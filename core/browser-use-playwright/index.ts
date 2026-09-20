@@ -33,7 +33,9 @@
 // TEARDOWN (requirement 7 of the task): every browser context, listener and
 // timer is released through the cordis `effect()` disposer at unload, so a
 // reconcile/unload leaves no chromium process and no profile directory behind.
+import dns from 'node:dns'
 import fs from 'node:fs'
+import net from 'node:net'
 import path from 'node:path'
 import type { Browser, BrowserContext, CDPSession, Download, Frame, Page, Locator, Response } from 'playwright-core'
 import {
@@ -733,8 +735,14 @@ export class PlaywrightProvider implements BrowserUseProvider {
         details: { provider: providerId, missing: 'playwright-core', reason: messageOf(error) },
       })
     })
+    // A service NAME in the endpoint (`http://browser:9222`, the shape a
+    // deployment writes) is resolved to its ADDRESS first: chromium refuses a
+    // DevTools request whose Host header is neither an IP nor `localhost`, and
+    // the browser-service image forwards the Host header untouched. The
+    // CONFIGURED string stays the one the result and the typed error name.
+    const target = await connectTarget(endpoint)
     try {
-      return await playwright.chromium.connectOverCDP(endpoint, { timeout: this.config.launchTimeoutMs })
+      return await playwright.chromium.connectOverCDP(target, { timeout: this.config.launchTimeoutMs })
     } catch (error) {
       // The endpoint did not answer. When the deployment NAMED a browser service
       // (its OWN image, reached through the general-service@1 seam), START it
@@ -746,7 +754,7 @@ export class PlaywrightProvider implements BrowserUseProvider {
       if (started !== undefined) this.serviceStart = started
       if (started?.attempted === true && started.code === 0) {
         const budgetMs = service?.startTimeoutMs ?? 0
-        const connected = await this.retryAttach(playwright, endpoint, budgetMs)
+        const connected = await this.retryAttach(playwright, target, budgetMs)
         if (connected !== undefined) {
           started.waitedMs = budgetMs
           started.connected = true
@@ -2109,3 +2117,49 @@ export function apply(ctx: PluginContext, config: BrowserUsePlaywrightConfig = {
 
 export default { name, inject: [], apply }
 
+
+/**
+ * The endpoint ACTUALLY dialled for `browserService.endpoint` / `wsEndpoint`.
+ *
+ * A deployment names the browser SERVICE by its DNS name (`http://browser:9222`,
+ * a compose service on the shared network), but chromium's DevTools server
+ * REJECTS any request whose `Host` header is neither an IP address nor
+ * `localhost` - its DNS-rebinding guard:
+ *
+ *   $ curl -sS http://browser:9222/json/version
+ *   Host header is specified and is not an IP address or localhost.
+ *
+ * The browser-service image is a plain TCP forwarder (`browser/cdp-forward.js`),
+ * so it passes that Host header through untouched and the attach would die with
+ * a protocol error that names nothing. Chromium also BUILDS the
+ * `webSocketDebuggerUrl` from the Host header, so rewriting the NAME to its
+ * ADDRESS fixes both the `/json/version` probe and the websocket that follows.
+ *
+ * The CONFIGURED string stays the one reported in results and typed errors; only
+ * the dialled URL is resolved. A name that does not resolve is returned
+ * unchanged, so the caller fails with the typed
+ * `browser-use.endpoint-unreachable` naming it, never with a silent local launch.
+ */
+export async function connectTarget(
+  endpoint: string,
+  resolve: (name: string) => Promise<string | undefined> = async (name) =>
+    dns.promises.lookup(name).then(
+      (answer) => answer.address,
+      () => undefined,
+    ),
+): Promise<string> {
+  let url: URL
+  try {
+    url = new URL(endpoint)
+  } catch {
+    return endpoint
+  }
+  const name = url.hostname.replace(/^\[|\]$/g, '')
+  if (name === 'localhost' || net.isIP(name) !== 0) return endpoint
+  const address = await resolve(name)
+  if (address === undefined) return endpoint
+  const host = net.isIP(address) === 6 ? `[${address}]` : address
+  const port = url.port.length === 0 ? '' : `:${url.port}`
+  const path = url.pathname === '/' ? '' : url.pathname
+  return `${url.protocol}//${host}${port}${path}${url.search}`
+}
