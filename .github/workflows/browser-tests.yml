@@ -1,0 +1,40 @@
+# The BROWSER GATE of this repository.
+#
+# `npm test` alone cannot gate the browser paths: on a host without a browser
+# the browser-USE seam test and the shared-chromium-launcher test SKIP, so the
+# suite is green even when the browser code is broken. This workflow runs the
+# SAME suite with `BROWSER_USE_REQUIRE_BROWSER=1` (`npm run test:browser`), where
+# an unavailable browser is a FAILURE - and it runs it inside the SEPARATE,
+# browser-capable image (`mcr.microsoft.com/playwright`, i.e. the image family
+# the deployment uses for its browser service), never inside the workbench image,
+# which ships no browser at all.
+name: browser tests
+
+on:
+  push:
+    branches: [main, stable]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  browser-suite:
+    runs-on: ubuntu-latest
+    container:
+      image: mcr.microsoft.com/playwright:v1.63.0-noble
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install (locked)
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Suite WITH a real browser (a skip is a failure)
+        run: |
+          set -euo pipefail
+          BROWSER_USE_CHROMIUM="$(ls -d /ms-playwright/chromium-*/chrome-linux64/chrome | head -1)"
+          export BROWSER_USE_CHROMIUM
+          echo "chromium: ${BROWSER_USE_CHROMIUM}"
+          npm run test:browser

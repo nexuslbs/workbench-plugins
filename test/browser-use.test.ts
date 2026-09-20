@@ -605,7 +605,14 @@ test('e2e: a REAL browser drives a LOCAL fixture page (open -> snapshot -> act -
   const capabilities = provider.capabilities()
   if (!capabilities.engine.available) {
     await fs.rm(dir, { recursive: true, force: true })
-    t.skip(`no browser available (set BROWSER_USE_CHROMIUM=<chrome binary> to run this): ${capabilities.engine.requirement ?? 'unknown requirement'}`)
+    const requirement = capabilities.engine.requirement ?? 'unknown requirement'
+    // A suite that is green only because the browser tests SKIP cannot gate a
+    // browser-PROVISIONING deployment: `BROWSER_USE_REQUIRE_BROWSER=1` (the
+    // `npm run test:browser` script and CI) turns the skip into a FAILURE.
+    if (process.env.BROWSER_USE_REQUIRE_BROWSER === '1') {
+      assert.fail(`no browser available and BROWSER_USE_REQUIRE_BROWSER=1: ${requirement}`)
+    }
+    t.skip(`no browser available (set BROWSER_USE_CHROMIUM=<chrome binary> to run this): ${requirement}`)
     return
   }
 
@@ -1029,11 +1036,17 @@ const RETRY_PAGE = `<!doctype html>
   <div id="host"><button id="send" type="button">Send</button></div>
   <output id="out"></output>
   <script>
+    // Every render STAMPS the generation of the node it creates, so the click
+    // handler can say WHICH node was clicked: 'clicked-gen2' can only come from
+    // the RE-RENDERED button (the pre-render node would answer 'clicked-gen1').
+    let generation = 0
     function render() {
+      generation += 1
+      const gen = generation
       const host = document.getElementById('host')
       host.innerHTML = '<button id="send" type="button">Send</button>'
       document.getElementById('send').addEventListener('click', function () {
-        document.getElementById('out').textContent = 'clicked'
+        document.getElementById('out').textContent = 'clicked-gen' + gen
       })
     }
     window.rerender = render
@@ -1073,7 +1086,11 @@ test('e2e seam: a stale ref is re-snapshotted and retried ONCE; an unrecoverable
   const capabilities = provider.capabilities()
   if (!capabilities.engine.available) {
     await fs.rm(dir, { recursive: true, force: true })
-    t.skip(`no browser available (set BROWSER_USE_CHROMIUM=<chrome binary> to run this): ${capabilities.engine.requirement ?? 'unknown requirement'}`)
+    const requirement = capabilities.engine.requirement ?? 'unknown requirement'
+    if (process.env.BROWSER_USE_REQUIRE_BROWSER === '1') {
+      assert.fail(`no browser available and BROWSER_USE_REQUIRE_BROWSER=1: ${requirement}`)
+    }
+    t.skip(`no browser available (set BROWSER_USE_CHROMIUM=<chrome binary> to run this): ${requirement}`)
     return
   }
   const server = http.createServer((request, response) => {
@@ -1105,10 +1122,20 @@ test('e2e seam: a stale ref is re-snapshotted and retried ONCE; an unrecoverable
     assert.equal(healed.resolved, true)
     assert.equal(healed.refRetry?.attempted, true, `the recovery must be REPORTED: ${JSON.stringify(healed)}`)
     assert.equal(healed.refRetry?.recovered, true, `the recovery must have SUCCEEDED: ${JSON.stringify(healed)}`)
-    assert.notEqual(healed.refRetry?.to, button.ref, 'the retry acted on a FRESH ref, not the stale one')
+    // The FRESHNESS proof is the SNAPSHOT, not the ref LABEL: refs are minted
+    // deterministically per DOM traversal (`e1`, `e2`, ...), so the re-rendered
+    // button legitimately gets the SAME label again (`refRetry.to === button.ref`
+    // is the CORRECT outcome for stable refs). What must be fresh is the
+    // snapshot the retry worked from, and what proves the action ran against
+    // the RE-RENDERED node is the node's own generation stamp below.
+    assert.notEqual(
+      healed.refRetry?.snapshotId,
+      first.snapshotId,
+      `the retry must work from a FRESH snapshot, not the one that minted the stale ref: ${JSON.stringify(healed)}`,
+    )
     assert.match(String(healed.refRetry?.snapshotId), /^s[0-9]+$/)
     const effect = await service.evaluate('seam', { expression: "document.getElementById('out').textContent" })
-    assert.equal(effect.value, 'clicked', 'the click really landed on the re-rendered node')
+    assert.equal(effect.value, 'clicked-gen2', 'the click really landed on the re-rendered node (generation 2), not on the pre-render one')
 
     // (2) UNRECOVERABLE: the element truly left the page. The typed stale-ref
     // carries the FRESH snapshot refs in details.nodes, so the caller can pick

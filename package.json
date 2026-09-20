@@ -11,6 +11,7 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
     "test": "node --test test/*.test.ts",
+    "test:browser": "BROWSER_USE_REQUIRE_BROWSER=1 node --test test/*.test.ts",
     "check:seam": "node scripts/check-seam.ts"
   },
   "devDependencies": {

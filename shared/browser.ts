@@ -62,14 +62,25 @@ export async function acquireSharedBrowser(options: SharedBrowserOptions): Promi
     shared.holders += 1
     return shared.browser
   }
-  if (launching === undefined) {
-    launching = launch(options)
-      .catch((error: unknown) => {
-        launching = undefined
-        throw error
-      })
+  // A launch IN FLIGHT is coalesced (two concurrent callers share one process);
+  // a SETTLED one is NOT reused. Reusing the settled promise handed out the
+  // browser of the LAST holder after it had been closed, so the next caller died
+  // with "Target page, context or browser has been closed" instead of getting a
+  // fresh process - only a LIVE browser may be reused.
+  let pending = launching
+  if (pending === undefined) {
+    pending = launch(options)
+    launching = pending
+    void pending.then(
+      () => {
+        if (launching === pending) launching = undefined
+      },
+      () => {
+        if (launching === pending) launching = undefined
+      },
+    )
   }
-  const state = await launching
+  const state = await pending
   state.holders += 1
   return state.browser
 }

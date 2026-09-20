@@ -375,13 +375,37 @@ process and an interval).
 
 ```bash
 npm install
-npm test          # node --test test/*.test.ts
+npm test              # node --test test/*.test.ts
 npm run typecheck
+npm run test:browser  # the SAME suite, but skips are failures (needs a browser)
 ```
 
 The plugin tests use a fake context (they do not need the core): the plugin only
 depends on the documented `ctx.workbench` service, which is exactly what the
 test simulates.
+
+### The browser gate (`npm run test:browser`)
+
+The browser tests (the `browser-use` e2e seam, the shared chromium launcher)
+need a REAL browser and SKIP - naming the prerequisite - when the host has none.
+A plain `npm test` is therefore green on a browser-less host EVEN WHEN the
+browser paths are broken: a suite that is green only because those tests skipped
+cannot gate a browser-provisioning release. `npm run test:browser` closes that
+hole: it is the same suite with `BROWSER_USE_REQUIRE_BROWSER=1`, where an
+unavailable browser is a FAILURE instead of a skip.
+
+Run the gate in a browser-capable environment - the SEPARATE browser image, never
+the workbench image (which ships no browser at all):
+
+```bash
+docker run --rm -v "$PWD:/repo" -w /repo mcr.microsoft.com/playwright:v1.63.0-noble \
+  sh -lc 'npm ci --no-audit --no-fund && \
+          BROWSER_USE_CHROMIUM=$(ls -d /ms-playwright/chromium-*/chrome-linux64/chrome | head -1) \
+          npm run test:browser'
+```
+
+`.github/workflows/browser-tests.yml` runs exactly this on every push and PR, so
+a browser regression can never land behind a skipped test.
 
 ## License
 
