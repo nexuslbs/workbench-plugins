@@ -46,7 +46,7 @@ export const contract = WEB_CONTRACT
 export interface WebImplConfig {
   /** Bind host (default `WORKBENCH_WEB_HOST`, then `127.0.0.1`). */
   host?: string
-  /** Bind port (default `WORKBENCH_WEB_PORT`, then `WORKBENCH_PORT`, then 12348). */
+  /** Bind port (default `WORKBENCH_WEB_PORT`, then `WORKBENCH_PORT`, then 8080). */
   port?: number
   /** Request body cap in bytes (default 1 MiB). */
   maxBodyBytes?: number

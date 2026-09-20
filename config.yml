@@ -770,9 +770,10 @@ web:
   # 127.0.0.1 and the dev service opts into 0.0.0.0 explicitly (and still needs
   # a published port to be reachable from the host).
   host: 0.0.0.0
-  # 8080 is the container-INTERNAL status port; the dev overlay publishes it on
-  # the host as `12347:8080`, and the compose healthcheck probes `/health`
-  # there. When the web port equals the
+  # 8080 is the container-INTERNAL port the workbench service always listens on;
+  # publishing it on a host port is a deployment/overlay concern (the dev overlay
+  # maps a host port onto this one), and the compose healthcheck probes `/health`
+  # here. When the web port equals the
   # status port, `workbench serve` starts ONE listener that serves the browser UI
   # and answers `/health` on the same port, so the operator-visible URL is the
   # documented workbench port and nothing else has to be published.

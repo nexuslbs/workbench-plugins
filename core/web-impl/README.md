@@ -37,15 +37,15 @@ The whole row is optional:
 plugins:
   web-impl:
     host: 0.0.0.0     # default: $WORKBENCH_WEB_HOST, then 127.0.0.1
-    port: 12347       # default: $WORKBENCH_WEB_PORT, then $WORKBENCH_PORT, then 12348
+    port: 8080        # default: $WORKBENCH_WEB_PORT, then $WORKBENCH_PORT, then 8080
     maxBodyBytes: 1048576
 ```
 
 **Port precedence**: the plugin row wins, then `WORKBENCH_WEB_PORT`, then
 `WORKBENCH_PORT` (the port a deployment publishes), then the definition default
-`12348`. The core publishes the `web:` config section of the deployment to
+`8080`. The core publishes the `web:` config section of the deployment to
 `WORKBENCH_PORT` / `WORKBENCH_WEB_HOST` before it loads the plugins, so a
-deployment keeps writing `web: { enabled: true, host: 0.0.0.0, port: 12347 }`
+deployment keeps writing `web: { enabled: true, host: 0.0.0.0, port: 8080 }`
 and this provider honours it. `port: 0` picks a free port (tests).
 
 The core DEFERS the web UI when the config enables it and no `web@1` provider is

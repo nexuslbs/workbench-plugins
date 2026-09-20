@@ -50,8 +50,8 @@ The tool is reachable through the shipped tools seam (same one the omniagent
 `workbench` MCP plugin uses):
 
 ```bash
-curl -s localhost:12347/api/tools | jq '.tools[] | select(.name=="session")'   # schema + owner
-curl -s -X POST localhost:12347/api/tool/call -H 'content-type: application/json' \
+curl -s localhost:8080/api/tools | jq '.tools[] | select(.name=="session")'   # schema + owner
+curl -s -X POST localhost:8080/api/tool/call -H 'content-type: application/json' \
      -d '{"tool":"session","params":{"action":"read","api":"list"}}'
 ```
 

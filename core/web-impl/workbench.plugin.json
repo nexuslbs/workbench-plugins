@@ -12,7 +12,7 @@
     "type": "object",
     "properties": {
       "host": { "type": "string", "description": "Bind host (default WORKBENCH_WEB_HOST, then 127.0.0.1)" },
-      "port": { "type": "number", "description": "Bind port (default WORKBENCH_WEB_PORT, then WORKBENCH_PORT, then 12348; 0 picks a free port)" },
+      "port": { "type": "number", "description": "Bind port (default WORKBENCH_WEB_PORT, then WORKBENCH_PORT, then 8080; 0 picks a free port)" },
       "maxBodyBytes": { "type": "number", "description": "Request body cap in bytes (default 1048576)" }
     }
   }

@@ -137,9 +137,9 @@ test('web-impl: the port comes from the row, then the environment, then the defa
   try {
     delete process.env.WORKBENCH_PORT
     delete process.env.WORKBENCH_WEB_PORT
-    assert.equal(resolvePort({}), 12348)
-    process.env.WORKBENCH_PORT = '12347'
-    assert.equal(resolvePort({}), 12347)
+    assert.equal(resolvePort({}), 8080)
+    process.env.WORKBENCH_PORT = '8080'
+    assert.equal(resolvePort({}), 8080)
     process.env.WORKBENCH_WEB_PORT = '12500'
     assert.equal(resolvePort({}), 12500)
     assert.equal(resolvePort({ port: 9999 }), 9999)

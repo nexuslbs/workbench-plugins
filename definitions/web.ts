@@ -42,7 +42,7 @@ export const WEB_CONTRACT = `${WEB}@${WEB_VERSION}`
 export const DEFAULT_WEB_HOST = '127.0.0.1'
 
 /** Default web UI port (`workbench web`, and `serve` when `web.enabled` is true). */
-export const DEFAULT_WEB_PORT = 12348
+export const DEFAULT_WEB_PORT = 8080
 
 /** A request as the seam hands it to a route handler (provider built, I/O free). */
 export interface WebRequest {

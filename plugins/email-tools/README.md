@@ -36,11 +36,11 @@ Parameter semantics, exactly as the definition specifies them:
 The tools are reachable over the shipped tools seam - no new transport:
 
 ```console
-$ curl -s -X POST http://127.0.0.1:12348/api/tools/email%20list \
+$ curl -s -X POST http://127.0.0.1:8080/api/tools/email%20list \
     -H 'content-type: application/json' -d '{"account":"work","limit":3}'
 {"status":"ok","tool":"email list","result":{"account":"work","count":3,"messages":[...]}}
 
-$ curl -s -X POST http://127.0.0.1:12348/api/tool/call \
+$ curl -s -X POST http://127.0.0.1:8080/api/tool/call \
     -H 'content-type: application/json' -d '{"tool":"email code","params":{"account":"personal","maxAgeSeconds":900}}'
 {"status":"ok","tool":"email code","result":{"account":"personal","code":"123456","subject":"Your sign-in code",...}}
 ```

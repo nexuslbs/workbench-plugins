@@ -32,7 +32,7 @@ export const MAX_BODY_BYTES = 1024 * 1024
 export interface WebServerOptions {
   /** Bind host (default `127.0.0.1`). */
   host?: string
-  /** Bind port (default 12348; `0` picks a free port, reported back). */
+  /** Bind port (default 8080; `0` picks a free port, reported back). */
   port?: number
   /** Log sink for request errors. */
   log?: (message: string) => void
