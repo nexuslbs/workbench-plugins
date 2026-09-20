@@ -389,7 +389,10 @@ plugins:
   # rest of the stack keeps running (core/fs-local/README.md). A loaded
   # `sandbox@1` provider is asked on EVERY read/write (never cached at apply
   # time, which would miss a provider applied later), so its policy narrows the
-  # writes of this seam too.
+  # writes of this seam too. A DENY of the `fs` resource (`deny: true`, or a
+  # fail-closed `unconfigured: deny` with no rule and no defaults) refuses the
+  # READ as well as the WRITE, and an explicit `writeRoots: []` grants no write
+  # at all (thread 2556).
   fs-local:
     cwd: ${env:OMNI_DIR}
     roots:
@@ -485,7 +488,8 @@ plugins:
   # `defaults` to fall back on - that is the fail-closed case (`sandbox.no-policy`).
   # The `fs` seam consumes this policy LAZILY (per read/write), so the
   # `resources.fs.writeRoots` below really confine `fs write` even though
-  # `fs-local` applies first in discovery order (thread 2553).
+  # `fs-local` applies first in discovery order (thread 2553); a DENY of the
+  # `fs` resource (rule `deny: true`) refuses the read too.
   sandbox-policy:
     source: config.yml (dev)
     unconfigured: deny

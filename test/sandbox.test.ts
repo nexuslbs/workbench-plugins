@@ -484,6 +484,102 @@ test('sandbox: a policy published AFTER fs-local applied still confines the fs s
   }
 })
 
+test('sandbox: a DENY is HONOURED by the fs seam (deny rule, fail-closed, empty writeRoots)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-sandbox-deny-'))
+  try {
+    const root = path.join(dir, 'root')
+    const inside = path.join(root, 'inside')
+    const outside = path.join(root, 'outside')
+    fs.mkdirSync(inside, { recursive: true })
+    fs.mkdirSync(outside, { recursive: true })
+    const isOutsideRoot = (error: unknown): boolean => error instanceof FsError && error.reason === 'fs.outside-root'
+
+    // A boot-shaped context: `fs-local` applies FIRST (discovery order), the
+    // sandbox provider is provided LATER, exactly like a real boot.
+    const boot = (policy?: SandboxPolicyConfig) => {
+      const services = new Map<string, unknown>()
+      const ctx = {
+        provide: (serviceName: string, value: unknown) => {
+          services.set(serviceName, value)
+        },
+        get: (serviceName: string) => services.get(serviceName),
+      } as unknown as ServiceContext
+      applyFsLocal(ctx, { cwd: root, roots: [root] })
+      const service = fsOf(ctx)
+      assert.ok(service !== undefined, 'fs-local registered its service')
+      if (policy !== undefined) services.set('sandbox', createSandboxPolicyService(policy))
+      return { ctx, services, service }
+    }
+
+    // 1. `resources.fs: { deny: true, writeRoots: [root] }`: the provider DECIDES
+    //    deny (sandbox.resource-denied) and the seam must refuse the READ as well
+    //    as the WRITE, never write around it (thread 2556, hole 1).
+    {
+      const { ctx, services, service } = boot()
+      assert.equal((await service.write({ path: 'seed.txt', content: 'seed\n' })).created, true)
+      const policy: SandboxPolicyConfig = {
+        source: 'deny-rule',
+        unconfigured: 'deny',
+        resources: { fs: { deny: true, writeRoots: [root], readRoots: [root] } },
+      }
+      services.set('sandbox', createSandboxPolicyService(policy))
+      const decision = await createSandboxPolicyService(policy).check({
+        resource: 'fs',
+        operation: 'write',
+        path: path.join(root, 'e1.txt'),
+      })
+      assert.equal(decision.allowed, false, 'the provider denies the fs resource outright')
+      assert.equal(sandboxPolicyFrom(ctx)?.denied, true, 'the deny is expressible to the fs seam')
+      await assert.rejects(() => service.write({ path: 'e1.txt', content: 'x' }), isOutsideRoot)
+      assert.equal(fs.existsSync(path.join(root, 'e1.txt')), false, 'a denied write reaches no disk')
+      await assert.rejects(() => service.read({ path: 'seed.txt' }), isOutsideRoot)
+    }
+
+    // 2. `unconfigured: 'deny'` with no defaults and no fs rule: the fail-closed
+    //    shape (sandbox.no-policy) must refuse BOTH operations too (hole 2).
+    {
+      const { ctx, services, service } = boot()
+      assert.equal((await service.write({ path: 'seed2.txt', content: 'seed\n' })).created, true)
+      services.set('sandbox', createSandboxPolicyService({ source: 'fail-closed', unconfigured: 'deny' }))
+      assert.equal(sandboxPolicyFrom(ctx)?.denied, true, 'unconfigured: deny is a deny for the fs seam')
+      await assert.rejects(() => service.write({ path: 'e3.txt', content: 'x' }), isOutsideRoot)
+      assert.equal(fs.existsSync(path.join(root, 'e3.txt')), false, 'a fail-closed policy writes nothing')
+      await assert.rejects(() => service.read({ path: 'seed2.txt' }), isOutsideRoot)
+    }
+
+    // 3. An EXPLICITLY empty `writeRoots` DECLARES "no write is allowed" (the
+    //    contract), while `readRoots` keeps confining reads and `[]` there still
+    //    means "no read confinement" (the two sides are NOT overloaded).
+    {
+      const { ctx, service } = boot({
+        source: 'empty-write-roots',
+        resources: { fs: { writeRoots: [], readRoots: [inside] } },
+      })
+      assert.equal(sandboxPolicyFrom(ctx)?.denied, undefined, 'an empty writeRoots is not a resource deny')
+      fs.writeFileSync(path.join(inside, 'ok.txt'), 'ok\n')
+      fs.writeFileSync(path.join(root, 'outside-read.txt'), 'nope\n')
+      await assert.rejects(() => service.write({ path: 'e2.txt', content: 'x' }), isOutsideRoot)
+      assert.equal(fs.existsSync(path.join(root, 'e2.txt')), false, 'an empty write root set writes nothing')
+      const allowed = await service.read({ path: path.join(inside, 'ok.txt') })
+      assert.ok(allowed.text.includes('ok'), 'a read INSIDE the declared read roots still works')
+      await assert.rejects(() => service.read({ path: path.join(root, 'outside-read.txt') }), isOutsideRoot)
+    }
+
+    // 4. A non-deny NARROWING still works: the fix must not refuse everything.
+    {
+      const { service } = boot({ source: 'narrowing', resources: { fs: { writeRoots: [inside] } } })
+      assert.equal((await service.write({ path: path.join(inside, 'ok4.txt'), content: 'ok\n' })).created, true)
+      await assert.rejects(
+        () => service.write({ path: path.join(outside, 'nope.txt'), content: 'x' }),
+        isOutsideRoot,
+      )
+      assert.equal(fs.existsSync(path.join(outside, 'nope.txt')), false)
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('sandbox: the enforcing provider carries the measured mechanisms and the contract', () => {
   const sandbox = enforcing()
   assert.equal(sandbox.contract, SANDBOX_CONTRACT)

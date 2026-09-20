@@ -400,19 +400,39 @@ export interface FsGrepResult {
  * configured roots. `ss` is a label naming the policy owner (diagnostics only).
  */
 export interface FsSandboxPolicy {
-  /** Write roots for this capability; intersected with the provider's roots. */
+  /**
+   * Write roots for this capability; intersected with the provider's roots. The
+   * contract defines an EMPTY array as "no write is allowed", so an explicit
+   * `[]` NARROWS to nothing, while an ABSENT (`undefined`) `writeRoots` leaves
+   * the configured roots untouched (thread 2556).
+   */
   writeRoots?: readonly string[]
-  /** Read roots; when present, reads outside them are refused too. */
+  /** Read roots; when present, reads outside them are refused too (`[]` = no read confinement). */
   readRoots?: readonly string[]
   /** Refuse every write (a read-only deployment). */
   readOnly?: boolean
+  /**
+   * The `sandbox@1` provider DENIED this capability outright (`deny: true` on the
+   * resource rule or on the defaults, or `unconfigured: 'deny'` with no rule and
+   * no defaults): READ and WRITE are both refused. A consumer that can read this
+   * field MUST refuse, never ignore it (requirement R1.2).
+   */
+  denied?: boolean
   /** Who declared the policy (diagnostics only). */
   source?: string
 }
 
+/** The `sandbox@1` constraint view as this seam reads it (`SandboxConstraints`). */
+export interface FsSandboxViewLike extends FsSandboxPolicy {
+  /** Which rule produced the view; `unconfigured` = no rule and no defaults for this resource. */
+  from?: 'resource' | 'defaults' | 'unconfigured'
+}
+
 /** The structural view of a future `sandbox@1` provider the `fs` provider may use. */
 export interface FsSandboxProviderLike {
-  policyFor?(capability: string): FsSandboxPolicy | undefined
+  policyFor?(capability: string): FsSandboxViewLike | undefined
+  /** The active policy; its `unconfigured` switch says whether a resource with NO rule is refused. */
+  activePolicy?(): { unconfigured?: 'deny' | 'allow' } | undefined
 }
 
 /** The filesystem capability, as a consumer sees it (never a backend detail). */
@@ -969,12 +989,40 @@ export function requireFs(ctx: ServiceContext, hint?: string): FsService {
 /**
  * The sandbox policy in effect for this capability, when a `sandbox@1` provider
  * is present (the OPTIONAL extension point; no dependency on it).
+ *
+ * A `sandbox@1` DENY must be EXPRESSIBLE to this seam (requirement R1.2: a
+ * consumer that cannot enforce a constraint must ask for a decision and honour a
+ * deny, never silently ignore it), so the constraint view is translated with the
+ * provider's own fail-closed switch:
+ *   * `denied` (the resource rule or the defaults refuse the capability) becomes
+ *     `denied: true`, which refuses the READ and the WRITE;
+ *   * a fail-closed provider (`unconfigured: 'deny'`) whose view comes from no
+ *     rule and no defaults becomes `denied: true` too - that is what
+ *     `sandbox.no-policy` decides;
+ *   * the view's `writeRoots` is ALWAYS carried (an empty one included), because
+ *     the contract defines an empty `writeRoots` as "no write is allowed": a
+ *     policy that grants no write root must reach the consumer as `[]`, not as
+ *     "no narrowing" (the thread-2556 hole).
  */
 export function sandboxPolicyFrom(ctx: ServiceContext): FsSandboxPolicy | undefined {
   const sandbox = serviceOf<FsSandboxProviderLike>(ctx, 'sandbox')
   if (sandbox === undefined || typeof sandbox.policyFor !== 'function') return undefined
   try {
-    return sandbox.policyFor(FS)
+    const view = sandbox.policyFor(FS)
+    if (view === undefined) return undefined
+    // Only the fail-closed switch needs the active policy, so a provider is
+    // asked for it ONLY when the view comes from no rule and no defaults.
+    const active = view.from === 'unconfigured' && typeof sandbox.activePolicy === 'function'
+      ? sandbox.activePolicy()
+      : undefined
+    const failClosed = view.from === 'unconfigured' && active?.unconfigured !== 'allow'
+    return {
+      writeRoots: view.writeRoots,
+      readRoots: view.readRoots,
+      readOnly: view.readOnly === true,
+      ...(view.denied === true || failClosed ? { denied: true } : {}),
+      ...(view.source === undefined ? {} : { source: view.source }),
+    }
   } catch {
     return undefined
   }

@@ -134,14 +134,26 @@ unavailable while the rest of the stack keeps running - the tools resolve
 `ctx.fs` at CALL time.
 
 Sandbox extension point (no hard dependency): the provider accepts an OPTIONAL
-`FsSandboxPolicy` (`writeRoots` / `readRoots` / `readOnly`), either from its
-own `sandbox:` config block or from a `sandbox@1` service when one is loaded
-(`sandboxPolicyFrom(ctx)`). BOTH are resolved on EVERY read/write, never once at
-apply time: plugins apply in discovery order, so `fs-local` is always applied
-BEFORE any `sandbox-*` provider is provided, and a policy cached at apply time
-silently ignored the provider's deny (thread 2553). Every policy in force is
-INTERSECTED, so a policy only NARROWS the configured roots, `readOnly: true`
-refuses every write and an empty intersection denies every write. Which policy a
+`FsSandboxPolicy` (`denied` / `writeRoots` / `readRoots` / `readOnly`), either
+from its own `sandbox:` config block or from a `sandbox@1` service when one is
+loaded (`sandboxPolicyFrom(ctx)`). BOTH are resolved on EVERY read/write, never
+once at apply time: plugins apply in discovery order, so `fs-local` is always
+applied BEFORE any `sandbox-*` provider is provided, and a policy cached at apply
+time silently ignored the provider's deny (thread 2553). Every policy in force is
+INTERSECTED, so a policy only NARROWS the configured roots.
+
+A `sandbox@1` DENY is HONOURED, never silently ignored. The mapping from the
+provider's constraint view (`policyFor`) to this seam is:
+
+| provider view | fs seam |
+| --- | --- |
+| the resource rule or the defaults refuse `fs` (`deny: true`), or the provider is fail-closed (`unconfigured: deny`) and the view comes from no rule and no defaults | `denied: true`: the READ and the WRITE are both refused (`fs.outside-root`, `details.denied`), and nothing reaches the disk (thread 2556) |
+| an explicit `writeRoots: []` | grants NO write root, so every write is refused |
+| `readRoots: []` | no read confinement (the documented meaning is kept, the two sides are not overloaded) |
+| `readOnly: true` | every write is refused |
+| any other narrowing | intersected with the configured roots; a write inside them still works |
+
+Which policy a
 `sandbox@1` provider hands out is ITS decision (see "Sandbox
 capability" below); with no provider loaded the behaviour is exactly the
 config-only confinement above.

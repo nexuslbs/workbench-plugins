@@ -304,11 +304,17 @@ export function createFsService(config: FsLocalConfig = {}, options: FsServiceOp
    * INTERSECTION (never a union): only the policy roots that lie inside a
    * configured root survive, so a policy can only make the seam STRICTER. An
    * empty intersection denies every write.
+   *
+   * ABSENT (`undefined`) means "this policy declares nothing"; EMPTY (`[]`) is a
+   * DECLARATION. The contract defines an empty `writeRoots` as "no write is
+   * allowed" (`definitions/sandbox.ts`, and `evaluateSandbox` denies exactly
+   * that), so an explicitly empty declaration must NARROW to nothing instead of
+   * being skipped - skipping it silently ignored a `sandbox@1` deny (thread 2556).
    */
   const writeRoots = (active: FsSandboxPolicy[]): string[] => {
     let roots: string[] | undefined
     for (const policy of active) {
-      if (policy.writeRoots === undefined || policy.writeRoots.length === 0) continue
+      if (policy.writeRoots === undefined) continue
       const narrowed = narrowRoots(policy.writeRoots)
       roots = roots === undefined
         ? narrowed
@@ -338,7 +344,23 @@ export function createFsService(config: FsLocalConfig = {}, options: FsServiceOp
     return path.resolve(cfg.cwd, raw)
   }
 
+  /**
+   * A policy that DENIES the `fs` resource outright refuses EVERY operation, a
+   * read as much as a write: the seam asks for the decision and HONOURS it
+   * (requirement R1.2), it never silently ignores it (thread 2556).
+   */
+  const assertNotDenied = (abs: string, stage: 'fs.read' | 'fs.write'): void => {
+    const denied = policies().find((policy) => policy.denied === true)
+    if (denied === undefined) return
+    const verb = stage === 'fs.write' ? 'write' : 'read'
+    throw new FsError('fs.outside-root', `${verb} denied: the sandbox policy denies the 'fs' resource outright${denied.source ? ` (${denied.source})` : ''}`, {
+      stage,
+      details: { path: abs, denied: true },
+    })
+  }
+
   const assertReadable = (abs: string): void => {
+    assertNotDenied(abs, 'fs.read')
     const roots = readRoots(policies())
     if (roots === undefined) return
     const real = realish(abs)
@@ -350,6 +372,7 @@ export function createFsService(config: FsLocalConfig = {}, options: FsServiceOp
   }
 
   const assertWritable = (abs: string): void => {
+    assertNotDenied(abs, 'fs.write')
     const active = policies()
     const readOnly = active.find((policy) => policy.readOnly === true)
     if (readOnly !== undefined) {
@@ -361,7 +384,11 @@ export function createFsService(config: FsLocalConfig = {}, options: FsServiceOp
     const roots = writeRoots(active)
     const real = realish(abs)
     if (roots.map(realpathOr).some((root) => within(root, real))) return
-    throw new FsError('fs.outside-root', `write denied: ${displayPath(abs)} is outside the allowed roots (${roots.map(displayPath).join(', ')})`, {
+    // An EMPTY root set is a refusal, never a fallback to the configured roots:
+    // the contract says an empty `writeRoots` grants no write at all.
+    throw new FsError('fs.outside-root', roots.length === 0
+      ? `write denied: the sandbox policy grants no write root for this capability (path ${displayPath(abs)})`
+      : `write denied: ${displayPath(abs)} is outside the allowed roots (${roots.map(displayPath).join(', ')})`, {
       stage: 'fs.write',
       details: { path: abs, roots: roots.map(displayPath) },
     })
