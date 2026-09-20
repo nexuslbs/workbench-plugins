@@ -35,13 +35,14 @@
 // reconcile/unload leaves no chromium process and no profile directory behind.
 import fs from 'node:fs'
 import path from 'node:path'
-import type { Browser, BrowserContext, Download, Page, Locator, Response } from 'playwright-core'
+import type { Browser, BrowserContext, CDPSession, Download, Frame, Page, Locator, Response } from 'playwright-core'
 import {
   BROWSER_USE,
   BROWSER_USE_VERSION,
   BrowserUseError,
   ACT_KINDS,
   EXTRACT_MODES,
+  FRAME_ACTIONS,
   SCROLL_DIRECTIONS,
   TAB_ACTIONS,
   WAIT_STATES,
@@ -56,11 +57,19 @@ import {
   slugOf,
   type BrowserActAnswer,
   type BrowserActRequest,
+  type BrowserChallengeAnswer,
+  type BrowserChallengeRequest,
   type BrowserEngineInfo,
   type BrowserEvaluateAnswer,
   type BrowserEvaluateRequest,
   type BrowserExtractAnswer,
   type BrowserExtractRequest,
+  type BrowserFrameInfo,
+  type BrowserFramesAnswer,
+  type BrowserFramesRequest,
+  type BrowserFrameTarget,
+  type BrowserMouseAnswer,
+  type BrowserMouseRequest,
   type BrowserNavigateAnswer,
   type BrowserNavigateRequest,
   type BrowserObserveAnswer,
@@ -100,6 +109,15 @@ import {
   type ResolvedProviderConfig,
 } from './config.ts'
 import { DEFAULT_ATTRIBUTES, extractInPage, snapshotInPage, type ExtractPayload } from './extract.ts'
+import {
+  driveMouse,
+  enumerateFrames,
+  kindOfFrameUrl,
+  readChallenge,
+  resolveFrameTarget,
+  solveChallenge,
+  type FrameBinding,
+} from './frames.ts'
 
 export const name = 'browser-use-playwright'
 /** The provider id this plugin registers on the seam. */
@@ -140,14 +158,22 @@ interface LiveSession {
   downloads: DownloadRecord[]
   /** ref -> the snapshot id it was minted in. */
   refs: Map<string, string>
-  /** page -> the snapshot id of its LAST snapshot (older refs are stale). */
-  snapshots: Map<Page, string>
+  /** page/FRAME -> the snapshot id of its LAST snapshot (older refs are stale). */
+  snapshots: Map<Page | Frame, string>
   /**
-   * page -> the NODES of its last snapshot. The ref retry of `act` re-resolves a
+   * page/FRAME -> the NODES of its last snapshot. The ref retry of `act` re-resolves a
    * stale ref by the ROLE + NAME of the node it was minted for, so the provider
-   * keeps what a ref POINTED AT, not only that it existed.
+   * keeps what a ref POINTED AT, not only that it existed. A FRAME is a key as
+   * well: a snapshot taken INSIDE an iframe mints refs that only that frame can
+   * resolve (scanning the main document for them would find nothing).
    */
-  nodes: Map<Page, BrowserSnapshotNode[]>
+  nodes: Map<Page | Frame, BrowserSnapshotNode[]>
+  /** frameId -> the live binding of the last `frames` call (so a frameId round-trips). */
+  frameBindings: Map<string, FrameBinding>
+  /** The frame every call targets by default (`undefined` = the main frame). */
+  selectedFrameId?: string
+  /** The page-level CDP session (created lazily: only frames/challenges need it). */
+  cdp?: CDPSession
   /** The last title read (the `sessions()` report is synchronous). */
   lastTitle: string
   openedAt: number
@@ -406,7 +432,12 @@ export class PlaywrightProvider implements BrowserUseProvider {
       observe: true,
       storageState: true,
       // The seam never serves these: a caller sees the gap instead of assuming it.
-      unsupported: ['pdf-export', 'proxy-rotation', 'captcha-solving', 'ai-vision-loop'],
+      unsupported: ['pdf-export', 'proxy-rotation', 'ai-vision-loop'],
+      // The REAL-browser halves: an iframe widget is reachable (frame targeting +
+      // coordinate mouse) and a challenge/block is CLASSIFIED instead of guessed.
+      frames: true,
+      mouse: true,
+      challenge: true,
     }
   }
 
@@ -504,6 +535,7 @@ export class PlaywrightProvider implements BrowserUseProvider {
       refs: new Map(),
       snapshots: new Map(),
       nodes: new Map(),
+      frameBindings: new Map(),
       lastTitle: '',
       openedAt: Date.now(),
       lastUsedAt: Date.now(),
@@ -569,12 +601,13 @@ export class PlaywrightProvider implements BrowserUseProvider {
   async snapshot(session: string, request: BrowserSnapshotRequest, options: BrowserUseCallOptions): Promise<BrowserSnapshot> {
     const live = this.requireSession(session)
     const page = this.activePage(live)
+    const root = await this.rootFor(live, request)
     const maxNodes = Math.min(request.maxNodes ?? options.maxSnapshotNodes, options.maxSnapshotNodes)
     const includeText = request.includeText !== false
     const selector = str(request.selector)
     let result: { nodes: BrowserSnapshotNode[]; totalNodes: number }
     try {
-      result = await page.evaluate(snapshotInPage, {
+      result = await root.evaluate(snapshotInPage, {
         includeText,
         maxNodes,
         refAttribute: REF_ATTRIBUTE,
@@ -585,8 +618,15 @@ export class PlaywrightProvider implements BrowserUseProvider {
     }
     const all = Array.isArray(result.nodes) ? result.nodes : []
     const nodes = all.slice(0, maxNodes)
+    if (root !== page) {
+      // A snapshot INSIDE a frame tags its nodes with the frame they came from,
+      // so a caller can see where a ref lives.
+      const index = page.frames().indexOf(root as Frame)
+      const frameId = [...live.frameBindings.entries()].find(([, binding]) => binding.index === index)?.[0] ?? `pw:${String(index)}`
+      for (const node of nodes) node.frameId = frameId
+    }
     const snapshotId = this.mintSnapshotId(live)
-    this.registerRefs(live, page, snapshotId, nodes)
+    this.registerRefs(live, root, snapshotId, nodes)
     live.lastTitle = await page.title().catch(() => live.lastTitle)
     await this.touch(live)
     return {
@@ -978,11 +1018,40 @@ export class PlaywrightProvider implements BrowserUseProvider {
     session.lastUsedAt = Date.now()
   }
 
-  /** Drops the refs of a page: they belong to a document that is gone. */
-  private invalidateRefs(session: LiveSession, page: Page): void {
-    const previous = session.snapshots.get(page)
-    session.snapshots.delete(page)
-    session.nodes.delete(page)
+  /**
+   * The ROOT a call acts in: the active page, or the FRAME the request names
+   * (falling back to the session's selected frame). A cross-origin iframe is
+   * only reachable THROUGH its frame object, so this is what makes an
+   * interaction inside a widget possible at all.
+   */
+  private async rootFor(live: LiveSession, request: { frame?: BrowserFrameTarget }): Promise<Page | Frame> {
+    const page = this.activePage(live)
+    if (request.frame !== undefined) return resolveFrameTarget(page, request.frame, live.frameBindings)
+    if (live.selectedFrameId === undefined) return page
+    const frame = await resolveFrameTarget(page, { frameId: live.selectedFrameId }, live.frameBindings).catch(() => undefined)
+    return frame ?? page
+  }
+
+  /**
+   * The page-level CDP session (created LAZILY: only frames and challenges need
+   * it). It is detached by the session disposers, so an unload leaves no CDP
+   * connection behind.
+   */
+  private async cdpFor(live: LiveSession, page: Page): Promise<CDPSession> {
+    if (live.cdp !== undefined) return live.cdp
+    const cdp = await page.context().newCDPSession(page)
+    live.cdp = cdp
+    live.disposers.push(() => {
+      void cdp.detach().catch(() => undefined)
+    })
+    return cdp
+  }
+
+  /** Drops the refs of a root: they belong to a document that is gone. */
+  private invalidateRefs(session: LiveSession, root: Page | Frame): void {
+    const previous = session.snapshots.get(root)
+    session.snapshots.delete(root)
+    session.nodes.delete(root)
     if (previous === undefined) return
     for (const [ref, snapshotId] of session.refs) {
       if (snapshotId === previous) session.refs.delete(ref)
@@ -1000,12 +1069,12 @@ export class PlaywrightProvider implements BrowserUseProvider {
    * same page is `stale-ref`: the page changed under the caller's feet, and a
    * silent click at the old position is exactly what this provider refuses.
    */
-  private registerRefs(session: LiveSession, page: Page, snapshotId: string, nodes: BrowserSnapshotNode[]): void {
-    this.invalidateRefs(session, page)
-    session.snapshots.set(page, snapshotId)
+  private registerRefs(session: LiveSession, root: Page | Frame, snapshotId: string, nodes: BrowserSnapshotNode[]): void {
+    this.invalidateRefs(session, root)
+    session.snapshots.set(root, snapshotId)
     // The node SHAPES are kept too: the stale-ref retry below re-resolves a ref
     // by the role+name it was minted for instead of guessing a new position.
-    session.nodes.set(page, nodes)
+    session.nodes.set(root, nodes)
     for (const node of nodes) session.refs.set(node.ref, snapshotId)
   }
 
@@ -1017,14 +1086,14 @@ export class PlaywrightProvider implements BrowserUseProvider {
    */
   private async resolveTarget(
     session: LiveSession,
-    page: Page,
+    root: Page | Frame,
     request: { ref?: string; selector?: string },
     what: string,
   ): Promise<ResolvedTarget> {
     const ref = request.ref === undefined ? undefined : requireRef(request.ref)
     if (ref !== undefined) {
       const snapshotId = session.refs.get(ref)
-      const current = session.snapshots.get(page)
+      const current = session.snapshots.get(root)
       if (snapshotId === undefined || snapshotId !== current) {
         throw new BrowserUseError(
           'browser-use.stale-ref',
@@ -1032,7 +1101,7 @@ export class PlaywrightProvider implements BrowserUseProvider {
           { stage: what, details: { ref, snapshot: current ?? null, mintedIn: snapshotId ?? null } },
         )
       }
-      const locator = page.locator(`[${REF_ATTRIBUTE}="${ref}"]`)
+      const locator = root.locator(`[${REF_ATTRIBUTE}="${ref}"]`)
       const count = await locator.count().catch(() => 0)
       if (count === 0) {
         throw new BrowserUseError('browser-use.stale-ref', `the element behind '${ref}' is gone from the page (take a fresh \`snapshot\`)`, {
@@ -1049,7 +1118,7 @@ export class PlaywrightProvider implements BrowserUseProvider {
       })
     }
     const selector = requireText(request.selector, 'selector', 4_096)
-    const locator = page.locator(selector)
+    const locator = root.locator(selector)
     const count = await locator.count().catch(() => 0)
     if (count === 0) {
       throw new BrowserUseError('browser-use.selector-not-found', `${what}: '${selector}' matched no element`, {
@@ -1061,8 +1130,8 @@ export class PlaywrightProvider implements BrowserUseProvider {
   }
 
   /** The role+name a ref was minted for (undefined: the ref is not known here). */
-  private shapeOf(session: LiveSession, page: Page, ref: string): RefShape | undefined {
-    const node = session.nodes.get(page)?.find((candidate) => candidate.ref === ref)
+  private shapeOf(session: LiveSession, root: Page | Frame, ref: string): RefShape | undefined {
+    const node = session.nodes.get(root)?.find((candidate) => candidate.ref === ref)
     if (node === undefined) return undefined
     return {
       tag: node.tag,
@@ -1086,20 +1155,22 @@ export class PlaywrightProvider implements BrowserUseProvider {
    */
   private async resolveTargetWithRetry(
     session: LiveSession,
-    page: Page,
+    root: Page | Frame,
     request: { ref?: string; selector?: string },
     what: string,
     options: BrowserUseCallOptions,
+    frame?: BrowserFrameTarget,
   ): Promise<{ target: ResolvedTarget; retry?: BrowserRefRetry }> {
     try {
-      return { target: await this.resolveTarget(session, page, request, what) }
+      return { target: await this.resolveTarget(session, root, request, what) }
     } catch (error) {
       if (request.ref === undefined || !isStaleRef(error)) throw error
       const ref = requireRef(request.ref)
       // The identity is read BEFORE the fresh snapshot: a snapshot replaces the
-      // node table of the page.
-      const shape = this.shapeOf(session, page, ref)
-      const fresh = await this.snapshot(session.id, {}, options)
+      // node table of the ROOT, and it keeps the SAME frame scope, so a ref
+      // minted inside a widget frame is re-resolved inside that frame.
+      const shape = this.shapeOf(session, root, ref)
+      const fresh = await this.snapshot(session.id, frame === undefined ? {} : { frame }, options)
       // Identity first (role+name), then a UNIQUE shape match: a control with no
       // accessible name is still recoverable without guessing a position.
       const byName = shape === undefined ? undefined : matchRef(fresh.nodes, shape)
@@ -1115,7 +1186,7 @@ export class PlaywrightProvider implements BrowserUseProvider {
       const candidate = byName ?? byShape
       if (candidate !== undefined) {
         try {
-          const target = await this.resolveTarget(session, page, { ref: candidate }, what)
+          const target = await this.resolveTarget(session, root, { ref: candidate }, what)
           return { target, retry: { ...retry, recovered: true, to: candidate } }
         } catch (second) {
           if (!isStaleRef(second)) throw second
@@ -1214,6 +1285,9 @@ export class PlaywrightProvider implements BrowserUseProvider {
   async act(session: string, request: BrowserActRequest, options: BrowserUseCallOptions): Promise<BrowserActAnswer> {
     const live = this.requireSession(session)
     const page = this.activePage(live)
+    // A TARGETED act can run INSIDE a frame (a cross-origin widget has no other
+    // door): the root below is the page, or the frame the request names.
+    const root = await this.rootFor(live, request)
     const kind = requireEnum(request.kind, ACT_KINDS, 'kind')
     const timeout = request.timeoutMs ?? options.actionTimeoutMs
     const started = Date.now()
@@ -1230,7 +1304,7 @@ export class PlaywrightProvider implements BrowserUseProvider {
         // was minted for and re-runs the very same action (see
         // `resolveTargetWithRetry`); only when THAT fails does the caller get
         // the typed `stale-ref`, together with the FRESH refs.
-        const attempt = await this.resolveTargetWithRetry(live, page, request, `act: ${kind}`, options)
+        const attempt = await this.resolveTargetWithRetry(live, root, request, `act: ${kind}`, options, request.frame)
         retry = attempt.retry
         target = attempt.target
         appliedRef = attempt.target.ref
@@ -1354,7 +1428,7 @@ export class PlaywrightProvider implements BrowserUseProvider {
       if (appliedRef !== undefined) answer.ref = appliedRef
       if (appliedSelector !== undefined) answer.selector = appliedSelector
       if (retry !== undefined) answer.refRetry = retry
-      if (request.snapshot === true) answer.snapshot = await this.snapshot(live.id, {}, options)
+      if (request.snapshot === true) answer.snapshot = await this.snapshot(live.id, request.frame === undefined ? {} : { frame: request.frame }, options)
       return answer
     } catch (error) {
       // A timeout on a control we DID resolve names the element and the reason
@@ -1428,9 +1502,12 @@ export class PlaywrightProvider implements BrowserUseProvider {
     const page = this.activePage(live)
     const mode = request.mode === undefined ? 'text' : requireEnum(request.mode, EXTRACT_MODES, 'mode', 'text')
     const maxChars = Math.min(request.maxChars ?? options.maxTextChars, options.maxTextChars)
+    // `extract` reads the SESSION's root: the frame selected through `frames
+    // select` when there is one, else the main document.
+    const root = await this.rootFor(live, {})
     let scope: string | undefined
     if (request.ref !== undefined) {
-      const target = await this.resolveTarget(live, page, { ref: request.ref }, 'extract')
+      const target = await this.resolveTarget(live, root, { ref: request.ref }, 'extract')
       scope = target.selector
     } else if (request.selector !== undefined) {
       scope = requireText(request.selector, 'selector', 4_096)
@@ -1446,7 +1523,7 @@ export class PlaywrightProvider implements BrowserUseProvider {
     if (mode === 'json' && request.expression !== undefined) payload.expression = requireText(request.expression, 'expression', 100_000)
     let result: Awaited<ReturnType<typeof extractInPage>>
     try {
-      result = await page.evaluate(extractInPage, payload)
+      result = await root.evaluate(extractInPage, payload)
     } catch (error) {
       throw mapError(error, 'extract', 'browser-use.provider-failed', { mode, selector: scope ?? null })
     }
@@ -1735,6 +1812,113 @@ export class PlaywrightProvider implements BrowserUseProvider {
       ...(raw === undefined ? {} : { bytes: Buffer.byteLength(raw, 'utf8') }),
       ...(parsed === undefined ? {} : { cookies: parsed.cookies, origins: parsed.origins }),
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // FRAMES, MOUSE and CHALLENGES: the halves that make this a REAL browser on a
+  // Cloudflare-protected page (a cross-origin widget is unreachable otherwise).
+  // -------------------------------------------------------------------------
+
+  /** Enumerates the frame tree and selects/clears the session's default frame. */
+  async frames(session: string, request: BrowserFramesRequest, options: BrowserUseCallOptions): Promise<BrowserFramesAnswer> {
+    const live = this.requireSession(session)
+    const page = this.activePage(live)
+    const action = request.frameAction === undefined ? 'list' : requireEnum(request.frameAction, FRAME_ACTIONS, 'frameAction', 'list')
+    const started = Date.now()
+    const maxFrames = Math.min(request.maxFrames ?? Math.max(options.maxSnapshotNodes, 40), 500)
+    const cdp = await this.cdpFor(live, page)
+    const { frames, bindings, mainFrameId } = await enumerateFrames(page, cdp, maxFrames)
+    live.frameBindings = bindings
+    if (action === 'clear') live.selectedFrameId = undefined
+    let target: BrowserFrameInfo | undefined
+    if (action === 'select') {
+      const frame = await resolveFrameTarget(page, request.frame, bindings)
+      const index = page.frames().indexOf(frame)
+      const frameId = [...bindings.entries()].find(([, binding]) => binding.index === index)?.[0] ?? mainFrameId
+      live.selectedFrameId = frameId
+      target = frames.find((candidate) => candidate.frameId === frameId)
+    }
+    live.lastTitle = await page.title().catch(() => live.lastTitle)
+    await this.touch(live)
+    return {
+      action: 'frames',
+      session: live.id,
+      frameAction: action,
+      url: page.url(),
+      title: live.lastTitle,
+      mainFrameId,
+      frames,
+      totalFrames: page.frames().length,
+      selectedFrameId: live.selectedFrameId ?? mainFrameId,
+      ...(target === undefined ? {} : { target }),
+      durationMs: Date.now() - started,
+    }
+  }
+
+  /** Drives the REAL mouse at COORDINATES (the only door into a widget). */
+  async mouse(session: string, request: BrowserMouseRequest, options: BrowserUseCallOptions): Promise<BrowserMouseAnswer> {
+    const live = this.requireSession(session)
+    const page = this.activePage(live)
+    const started = Date.now()
+    const cdp = await this.cdpFor(live, page)
+    const { bindings } = await enumerateFrames(page, cdp, 200)
+    live.frameBindings = bindings
+    let fallback: Frame | undefined
+    if (request.frame !== undefined) fallback = await resolveFrameTarget(page, request.frame, bindings)
+    else if (live.selectedFrameId !== undefined) {
+      fallback = await resolveFrameTarget(page, { frameId: live.selectedFrameId }, bindings).catch(() => undefined)
+    }
+    let result: Awaited<ReturnType<typeof driveMouse>>
+    try {
+      result = await driveMouse(page, request, bindings, fallback)
+    } catch (error) {
+      if (isBrowserUseError(error)) throw error
+      throw mapError(error, 'mouse', 'browser-use.provider-failed', { mouseAction: request.mouseAction ?? 'click' })
+    }
+    live.lastTitle = await page.title().catch(() => live.lastTitle)
+    await this.touch(live)
+    return {
+      action: 'mouse',
+      session: live.id,
+      mouseAction: result.mouseAction,
+      x: Math.round(result.x),
+      y: Math.round(result.y),
+      ...(result.toX === undefined ? {} : { toX: Math.round(result.toX) }),
+      ...(result.toY === undefined ? {} : { toY: Math.round(result.toY) }),
+      relativeTo: result.relativeTo,
+      button: result.button,
+      ...(result.frameId === undefined ? {} : { frameId: result.frameId }),
+      url: page.url(),
+      title: live.lastTitle,
+      durationMs: Date.now() - started,
+    }
+  }
+
+  /**
+   * Detects, classifies and (for `solve`) completes a challenge. The answer is
+   * ALWAYS structured: a hard IP-reputation refusal is reported as `blocked-ip`
+   * / `unsolvable-from-this-ip` with the raw HTTP status and a body excerpt,
+   * never as a silent empty read.
+   */
+  async challenge(session: string, request: BrowserChallengeRequest, options: BrowserUseCallOptions): Promise<BrowserChallengeAnswer> {
+    const live = this.requireSession(session)
+    const page = this.activePage(live)
+    const cdp = await this.cdpFor(live, page)
+    const started = Date.now()
+    let preferFrameUrl: string | undefined
+    if (request.frame !== undefined) {
+      const bindings = live.frameBindings.size > 0 ? live.frameBindings : (await enumerateFrames(page, cdp, 200)).bindings
+      live.frameBindings = bindings
+      preferFrameUrl = (await resolveFrameTarget(page, request.frame, bindings)).url()
+    }
+    const answer = await solveChallenge(page, cdp, live.id, request, {
+      timeoutMs: options.timeoutMs,
+      maxTextChars: options.maxTextChars,
+      ...(preferFrameUrl === undefined ? {} : { preferFrameUrl }),
+    })
+    live.lastTitle = await page.title().catch(() => live.lastTitle)
+    await this.touch(live)
+    return { ...answer, elapsedMs: Date.now() - started }
   }
 
   /**

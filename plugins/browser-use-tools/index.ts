@@ -52,7 +52,13 @@ import {
   ACT_KINDS,
   BROWSER_USE_CONFIG_ROW,
   BROWSER_USE_TOOL_NAME,
+  CHALLENGE_ACTIONS,
+  CHALLENGE_KINDS,
   EXTRACT_MODES,
+  FRAME_ACTIONS,
+  MOUSE_ACTIONS,
+  MOUSE_BUTTONS,
+  MOUSE_ORIGINS,
   SCREENSHOT_FORMATS,
   TAB_ACTIONS,
   WAIT_STATES,
@@ -65,7 +71,11 @@ import {
 import type {
   ActKind,
   BrowserActRequest,
+  BrowserChallengeRequest,
   BrowserExtractRequest,
+  BrowserFrameTarget,
+  BrowserFramesRequest,
+  BrowserMouseRequest,
   BrowserNavigateRequest,
   BrowserScreenshotRequest,
   BrowserSnapshotRequest,
@@ -120,10 +130,21 @@ const ACTIONS = [
   'wait',
   'observe',
   'state',
+  'frames',
+  'mouse',
+  'challenge',
   'sessions',
   'close',
 ] as const
 type Action = (typeof ACTIONS)[number]
+
+/**
+ * The parameters that TARGET A FRAME (`frameId` from `frames`, or the frame
+ * element / URL / name / index), accepted by every frame-scoped action. They are
+ * flat on the tool surface (the tools provider validates scalars) and are folded
+ * into the contract's `frame` object by {@link frameTarget}.
+ */
+const FRAME_PARAMS = ['frameId', 'frameSelector', 'frameUrl', 'frameName', 'frameIndex'] as const
 
 /** The parameters each action accepts (a wrong name is a typed answer, not silence). */
 const KNOWN_PARAMS: Record<Action, readonly string[]> = {
@@ -134,15 +155,18 @@ const KNOWN_PARAMS: Record<Action, readonly string[]> = {
   open: ['action', 'provider', 'session', 'url', 'headless', 'viewportWidth', 'viewportHeight', 'locale', 'timezoneId', 'userAgent', 'stateMode', 'stateFile', 'downloadDir'],
   close: ['action', 'provider', 'session'],
   navigate: ['action', 'provider', 'session', 'url', 'waitUntil', 'allowHttpError', 'timeoutMs'],
-  snapshot: ['action', 'provider', 'session', 'selector', 'includeText', 'maxNodes'],
-  act: ['action', 'provider', 'session', 'kind', 'ref', 'selector', 'value', 'byLabel', 'key', 'files', 'direction', 'amount', 'state', 'checked', 'timeoutMs', 'settle', 'snapshot'],
+  snapshot: ['action', 'provider', 'session', 'selector', 'includeText', 'maxNodes', ...FRAME_PARAMS],
+  act: ['action', 'provider', 'session', 'kind', 'ref', 'selector', 'value', 'byLabel', 'key', 'files', 'direction', 'amount', 'state', 'checked', 'timeoutMs', 'settle', 'snapshot', ...FRAME_PARAMS],
   evaluate: ['action', 'provider', 'session', 'expression', 'args', 'awaitPromise', 'maxChars'],
-  extract: ['action', 'provider', 'session', 'mode', 'selector', 'ref', 'attributes', 'index', 'expression', 'maxChars', 'useRecipe'],
+  extract: ['action', 'provider', 'session', 'mode', 'selector', 'ref', 'attributes', 'index', 'expression', 'maxChars', 'useRecipe', ...FRAME_PARAMS],
   screenshot: ['action', 'provider', 'session', 'fullPage', 'selector', 'ref', 'format', 'quality', 'path', 'label', 'maxBytes'],
   tabs: ['action', 'provider', 'session', 'tabAction', 'index', 'url', 'navigate', 'timeoutMs'],
-  wait: ['action', 'provider', 'session', 'ms', 'ref', 'selector', 'state', 'urlContains', 'text', 'networkIdle', 'timeoutMs'],
+  wait: ['action', 'provider', 'session', 'ms', 'ref', 'selector', 'state', 'urlContains', 'text', 'networkIdle', 'timeoutMs', ...FRAME_PARAMS],
   observe: ['action', 'provider', 'session', 'limit', 'filter'],
   state: ['action', 'provider', 'session', 'stateAction', 'path'],
+  frames: ['action', 'provider', 'session', 'frameAction', 'maxFrames', ...FRAME_PARAMS],
+  mouse: ['action', 'provider', 'session', 'mouseAction', 'x', 'y', 'toX', 'toY', 'deltaX', 'deltaY', 'button', 'clickCount', 'steps', 'relativeTo', ...FRAME_PARAMS],
+  challenge: ['action', 'provider', 'session', 'challengeAction', 'kinds', 'kind', 'selector', 'click', 'waitMs', 'maxAttempts', 'timeoutMs', ...FRAME_PARAMS],
 }
 
 /**
@@ -161,6 +185,9 @@ const PARAM_ALIASES: Partial<Record<Action, Record<string, string>>> = {
   open: { storageStateFile: 'stateFile', storageState: 'stateFile' },
   screenshot: { timeout: 'timeoutMs' },
   tabs: { timeout: 'timeoutMs' },
+  frames: { index: 'frameIndex', url: 'frameUrl', name: 'frameName' },
+  mouse: { timeout: 'timeoutMs' },
+  challenge: { timeout: 'timeoutMs', attempts: 'maxAttempts' },
 }
 
 /**
@@ -185,6 +212,9 @@ const REQUIRED_PARAMS: Record<Action, readonly string[]> = {
   wait: ['session'],
   observe: ['session'],
   state: ['session'],
+  frames: ['session'],
+  mouse: ['session'],
+  challenge: ['session'],
 }
 
 /** One action's published contract (what `action: schema` answers). */
@@ -451,6 +481,7 @@ function snapshotRequest(params: Record<string, unknown>): BrowserSnapshotReques
     ...(selector === undefined ? {} : { selector }),
     ...(includeText === undefined ? {} : { includeText }),
     ...(maxNodes === undefined ? {} : { maxNodes }),
+    ...frameSpread(params),
   }
 }
 
@@ -490,6 +521,7 @@ function actRequest(params: Record<string, unknown>): BrowserActRequest {
     ...(timeoutMs === undefined ? {} : { timeoutMs }),
     ...(settle === undefined ? {} : { settle }),
     ...(snapshot === undefined ? {} : { snapshot }),
+    ...frameSpread(params),
   }
 }
 
@@ -511,6 +543,7 @@ function extractRequest(params: Record<string, unknown>): BrowserExtractRequest 
     ...(expression === undefined ? {} : { expression }),
     ...(maxChars === undefined ? {} : { maxChars }),
     ...(useRecipe === undefined ? {} : { useRecipe }),
+    ...frameSpread(params),
   }
 }
 
@@ -574,6 +607,7 @@ function waitRequest(params: Record<string, unknown>): BrowserWaitRequest {
     ...(text === undefined ? {} : { text }),
     ...(networkIdle === undefined ? {} : { networkIdle }),
     ...(timeoutMs === undefined ? {} : { timeoutMs }),
+    ...frameSpread(params),
   }
 }
 
@@ -593,6 +627,121 @@ function stateRequest(params: Record<string, unknown>) {
     ...(action === undefined ? {} : { action }),
     ...(path === undefined ? {} : { path }),
   }
+}
+
+/**
+ * The frame a call targets, folded from the flat `frame*` parameters. Absent when
+ * the caller named none, which means the MAIN frame (never a guess).
+ */
+function frameTarget(params: Record<string, unknown>): BrowserFrameTarget | undefined {
+  const target: BrowserFrameTarget = {}
+  const frameId = optionalString(params, 'frameId')
+  const selector = optionalString(params, 'frameSelector')
+  const url = optionalString(params, 'frameUrl')
+  const name = optionalString(params, 'frameName')
+  const index = optionalNumber(params, 'frameIndex')
+  if (frameId !== undefined) target.frameId = frameId
+  if (selector !== undefined) target.selector = selector
+  if (url !== undefined) target.url = url
+  if (name !== undefined) target.name = name
+  if (index !== undefined) target.index = index
+  return Object.keys(target).length === 0 ? undefined : target
+}
+
+/** `{ frame }` when the caller named a frame, `{}` otherwise (spreadable). */
+function frameSpread(params: Record<string, unknown>): { frame?: BrowserFrameTarget } {
+  const frame = frameTarget(params)
+  return frame === undefined ? {} : { frame }
+}
+
+function framesRequest(params: Record<string, unknown>): BrowserFramesRequest {
+  const action = optionalOneOf(params, 'frameAction', FRAME_ACTIONS) ?? 'list'
+  const request: BrowserFramesRequest = { frameAction: action }
+  const frame = frameTarget(params)
+  if (frame !== undefined) request.frame = frame
+  const maxFrames = optionalNumber(params, 'maxFrames')
+  if (maxFrames !== undefined) request.maxFrames = maxFrames
+  if (action === 'select' && frame === undefined) {
+    throw new BrowserUseError(
+      'browser-use.invalid-input',
+      "'frameAction: select' needs a frame target: 'frameId' (the id `frames` reported), 'frameSelector', 'frameUrl', 'frameName' or 'frameIndex'",
+      { stage: 'request', details: { frameAction: action } },
+    )
+  }
+  return request
+}
+
+function mouseRequest(params: Record<string, unknown>): BrowserMouseRequest {
+  const action = optionalOneOf(params, 'mouseAction', MOUSE_ACTIONS) ?? 'click'
+  const request: BrowserMouseRequest = { mouseAction: action }
+  const x = optionalNumber(params, 'x')
+  const y = optionalNumber(params, 'y')
+  const toX = optionalNumber(params, 'toX')
+  const toY = optionalNumber(params, 'toY')
+  const deltaX = optionalNumber(params, 'deltaX')
+  const deltaY = optionalNumber(params, 'deltaY')
+  const button = optionalOneOf(params, 'button', MOUSE_BUTTONS)
+  const clickCount = optionalNumber(params, 'clickCount')
+  const steps = optionalNumber(params, 'steps')
+  const relativeTo = optionalOneOf(params, 'relativeTo', MOUSE_ORIGINS)
+  if (x !== undefined) request.x = x
+  if (y !== undefined) request.y = y
+  if (toX !== undefined) request.toX = toX
+  if (toY !== undefined) request.toY = toY
+  if (deltaX !== undefined) request.deltaX = deltaX
+  if (deltaY !== undefined) request.deltaY = deltaY
+  if (button !== undefined) request.button = button
+  if (clickCount !== undefined) request.clickCount = clickCount
+  if (steps !== undefined) request.steps = steps
+  if (relativeTo !== undefined) request.relativeTo = relativeTo
+  Object.assign(request, frameSpread(params))
+  if (action !== 'wheel' && (x === undefined || y === undefined)) {
+    throw notImplemented(
+      `'mouseAction: ${action}' needs 'x' and 'y' (the point in the viewport; this is how an interactive widget inside a cross-origin iframe is reached)`,
+      { stage: 'request', details: { mouseAction: action } },
+    )
+  }
+  if (action === 'drag' && (toX === undefined || toY === undefined)) {
+    throw notImplemented("'mouseAction: drag' needs 'toX' and 'toY' (the destination of the drag)", {
+      stage: 'request',
+      details: { mouseAction: action },
+    })
+  }
+  if (action === 'wheel' && deltaX === undefined && deltaY === undefined) {
+    throw notImplemented("'mouseAction: wheel' needs 'deltaX' and/or 'deltaY'", { stage: 'request', details: { mouseAction: action } })
+  }
+  return request
+}
+
+function challengeRequest(params: Record<string, unknown>): BrowserChallengeRequest {
+  const action = optionalOneOf(params, 'challengeAction', CHALLENGE_ACTIONS) ?? 'detect'
+  const request: BrowserChallengeRequest = { challengeAction: action }
+  const list = params.kinds === undefined ? params.kind : params.kinds
+  if (list !== undefined) {
+    const entries = Array.isArray(list) ? list : [list]
+    request.kinds = entries.map((entry) => {
+      const value = typeof entry === 'string' ? entry.trim() : ''
+      if (!(CHALLENGE_KINDS as readonly string[]).includes(value)) {
+        throw notImplemented(`'kinds' must be one of ${CHALLENGE_KINDS.join(' | ')}`, {
+          stage: 'request',
+          details: { got: String(entry) },
+        })
+      }
+      return value as (typeof CHALLENGE_KINDS)[number]
+    })
+  }
+  const selector = optionalString(params, 'selector')
+  const click = optionalBoolean(params, 'click')
+  const waitMs = optionalNumber(params, 'waitMs')
+  const maxAttempts = optionalNumber(params, 'maxAttempts')
+  const timeoutMs = optionalNumber(params, 'timeoutMs')
+  if (selector !== undefined) request.selector = selector
+  if (click !== undefined) request.click = click
+  if (waitMs !== undefined) request.waitMs = waitMs
+  if (maxAttempts !== undefined) request.maxAttempts = maxAttempts
+  if (timeoutMs !== undefined) request.timeoutMs = timeoutMs
+  Object.assign(request, frameSpread(params))
+  return request
 }
 
 // ---------------------------------------------------------------------------
@@ -683,6 +832,33 @@ const BROWSER_TOOL_PARAMETERS: ParameterSchemaSpec = {
   limit: { type: 'integer', description: "'observe': how many of the newest requests to report" },
   filter: { type: 'string', description: "'observe': only requests whose URL contains this fragment" },
   stateAction: { type: 'string', description: "'action: state' only: save (default) | read | clear" },
+  // frames / mouse / challenge (the Cloudflare-facing half: frames, coordinates
+  // and a STRUCTURED verdict instead of an empty read)
+  frameAction: { type: 'string', description: `'action: frames' only: ${FRAME_ACTIONS.join(' | ')} (default list)` },
+  frameId: { type: 'string', description: "the frame id `frames` reported (CDP-based); targets a frame on 'frames'/'mouse'/'challenge' and on 'snapshot'/'act'/'extract'/'wait'" },
+  frameSelector: { type: 'string', description: 'alternative frame target: the CSS selector of the iframe/frame ELEMENT in its PARENT document' },
+  frameUrl: { type: 'string', description: 'alternative frame target: the frame URL (matched exactly first, then as a substring)' },
+  frameName: { type: 'string', description: "alternative frame target: the frame's `name` attribute" },
+  name: { type: 'string', description: "'frames': alias of `frameName` (the frame's `name` attribute)" },
+  attempts: { type: 'integer', description: "'challenge': alias of `maxAttempts` (how many widget clicks at most, default 3)" },
+  frameIndex: { type: 'integer', description: 'alternative frame target: the index in the frame tree (0 = the main frame)' },
+  maxFrames: { type: 'integer', description: "'frames': cap the reported frames" },
+  mouseAction: { type: 'string', description: `'action: mouse' only: ${MOUSE_ACTIONS.join(' | ')} (default click)` },
+  x: { type: 'number', description: 'the x of the point in CSS pixels (or the drag start); with `y` this is the REAL mouse position' },
+  y: { type: 'number', description: 'the y of the point in CSS pixels (or the drag start)' },
+  toX: { type: 'number', description: "'mouseAction: drag': the destination x" },
+  toY: { type: 'number', description: "'mouseAction: drag': the destination y" },
+  deltaX: { type: 'number', description: "'mouseAction: wheel': the horizontal delta in pixels" },
+  deltaY: { type: 'number', description: "'mouseAction: wheel': the vertical delta in pixels" },
+  button: { type: 'string', description: `the mouse button: ${MOUSE_BUTTONS.join(' | ')} (default left)` },
+  clickCount: { type: 'integer', description: "'click'/'dblclick': how many clicks (default 1 / 2)" },
+  steps: { type: 'integer', description: "'mouseAction: drag': intermediate move steps (default 10)" },
+  relativeTo: { type: 'string', description: `where 'x'/'y' are measured: ${MOUSE_ORIGINS.join(' | ')} (default page = the same origin a screenshot uses; 'frame' adds the frame box offset)` },
+  challengeAction: { type: 'string', description: `'action: challenge' only: ${CHALLENGE_ACTIONS.join(' | ')} (default detect; 'classify' never touches the page)` },
+  kinds: { type: 'array', description: `'challenge': only these widget kinds (${CHALLENGE_KINDS.join(' | ')}; default all known)` },
+  click: { type: 'boolean', description: "'challenge solve': drive the mouse on the widget (default true)" },
+  waitMs: { type: 'integer', description: "'challenge solve': how long to wait for the token / `cf_clearance` after the click, in MILLISECONDS (default 15000)" },
+  maxAttempts: { type: 'integer', description: "'challenge': how many click attempts at most (default 3); alias: `attempts`" },
 }
 
 export function apply(ctx: PluginContext): void {
@@ -699,6 +875,13 @@ export function apply(ctx: PluginContext): void {
         '`screenshot` writes a PNG/JPEG FILE and answers its path + bytes (never inline base64), ' +
         '`tabs` lists/opens/switches/closes tabs, `wait` sleeps and/or waits for a ref/selector/text/URL/network idle, ' +
         '`observe` reports the requests and downloads the session saw, `state` saves/reads/clears the storage state, ' +
+        '`frames` lists the FRAME (iframe) TREE of the page and selects the frame later calls act in (`frameAction`: ' + FRAME_ACTIONS.join(' | ') + '), ' +
+        '`mouse` drives the REAL mouse at COORDINATES (`mouseAction`: ' + MOUSE_ACTIONS.join(' | ') + ' with `x`/`y`, `relativeTo`: ' + MOUSE_ORIGINS.join(' | ') + ') - ' +
+        'the only way into a cross-origin widget no selector can reach, ' +
+        '`challenge` detects/classifies/solves a Cloudflare Turnstile, hCaptcha or reCAPTCHA (' +
+        '`classification`: none | managed-pass | interactive | blocked-ip | unknown, `outcome`: solved | unsolvable-from-this-ip | ...) and answers the ' +
+        'STRUCTURED result (widget, token field, `cf_clearance` state, HTTP status and a body excerpt) - a hard IP-reputation block is REPORTED as ' +
+        '`blocked-ip` / `unsolvable-from-this-ip`, NEVER silently read as an empty page - ' +
         '`sessions` lists the live sessions and `close` closes one. ' +
         '`schema` publishes the FULL per-action contract (parameter names, types, units - every duration is MILLISECONDS -, ' +
         'which are required, and the accepted aliases such as `text` for `value` on `act`, `milliseconds` for `ms` on `wait`, ' +
@@ -811,6 +994,12 @@ export function apply(ctx: PluginContext): void {
               return { ok: true, ...(await service.wait(requireSession(session, 'wait'), waitRequest(params), provider)) }
             case 'observe':
               return { ok: true, ...(await service.observe(requireSession(session, 'observe'), observeRequest(params), provider)) }
+            case 'frames':
+              return { ok: true, ...(await service.frames(requireSession(session, 'frames'), framesRequest(params), provider)) }
+            case 'mouse':
+              return { ok: true, ...(await service.mouse(requireSession(session, 'mouse'), mouseRequest(params), provider)) }
+            case 'challenge':
+              return { ok: true, ...(await service.challenge(requireSession(session, 'challenge'), challengeRequest(params), provider)) }
             default:
               return { ok: true, ...(await service.state(requireSession(session, 'state'), stateRequest(params), provider)) }
           }

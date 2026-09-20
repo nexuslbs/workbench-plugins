@@ -151,6 +151,289 @@ export const STATE_MODES = ['reuse', 'fresh', 'inline'] as const
 export type StateMode = (typeof STATE_MODES)[number]
 
 // ---------------------------------------------------------------------------
+// Frames, mouse and challenges.
+//
+// These three vocabularies exist because the interesting half of a real page
+// often lives in a CROSS-ORIGIN iframe (a Cloudflare Turnstile widget, an
+// embedded payment form, a third-party editor): a CSS selector of the main
+// document can never reach it, so a caller needs (1) the FRAME TREE with a
+// target it can name, (2) MOUSE-LEVEL input at coordinates for the pixels no
+// selector can address, and (3) a structured answer to "is this page a
+// challenge I can pass, or does it refuse this address?" - the difference
+// between a page that a real browser passes and a hard IP-reputation block.
+// ---------------------------------------------------------------------------
+
+/** What `frames` does with the frame tree of the active page. */
+export const FRAME_ACTIONS = ['list', 'select', 'clear'] as const
+/** One `frames` action. */
+export type FrameAction = (typeof FRAME_ACTIONS)[number]
+
+/** The mouse gestures of the contract (`mouse`). */
+export const MOUSE_ACTIONS = ['click', 'dblclick', 'move', 'down', 'up', 'hover', 'drag', 'wheel'] as const
+/** One mouse gesture. */
+export type MouseAction = (typeof MOUSE_ACTIONS)[number]
+
+/** The mouse buttons of the contract. */
+export const MOUSE_BUTTONS = ['left', 'right', 'middle'] as const
+/** One mouse button. */
+export type MouseButton = (typeof MOUSE_BUTTONS)[number]
+
+/**
+ * Where a mouse coordinate is measured. `page` (default) is the MAIN frame
+ * viewport, the SAME origin a `screenshot` uses, so a coordinate read off an
+ * image is directly usable; `frame` is relative to the target frame's own box
+ * (the provider adds the box offset before driving the real mouse).
+ */
+export const MOUSE_ORIGINS = ['page', 'frame'] as const
+/** One coordinate origin. */
+export type MouseOrigin = (typeof MOUSE_ORIGINS)[number]
+
+/** What `challenge` does: read the page, or try to pass it. */
+export const CHALLENGE_ACTIONS = ['detect', 'solve', 'classify'] as const
+/** One challenge action (`classify` is `detect` without touching the page). */
+export type ChallengeAction = (typeof CHALLENGE_ACTIONS)[number]
+
+/** The challenge widgets this contract knows by name. */
+export const CHALLENGE_KINDS = ['turnstile', 'hcaptcha', 'recaptcha', 'unknown'] as const
+/** One widget kind. */
+export type ChallengeKind = (typeof CHALLENGE_KINDS)[number]
+
+/** The token field names a solved widget writes (checked in the page). */
+export const CHALLENGE_TOKEN_FIELDS = [
+  'input[name="cf-turnstile-response"]',
+  'textarea[name="g-recaptcha-response"]',
+  'textarea[name="h-captcha-response"]',
+] as const
+
+/**
+ * How a document classifies. It is the honest discriminator a caller branches
+ * on:
+ *   * `none`        - an ordinary page, no challenge in sight;
+ *   * `managed-pass`- a Cloudflare-style MANAGED challenge was auto-solved by a
+ *                     real browser (the `cf_clearance` cookie proves it), the
+ *                     caller got the real page and did not interact;
+ *   * `interactive` - a widget is ON SCREEN (Turnstile checkbox / hCaptcha /
+ *                     reCAPTCHA): it needs a mouse interaction to be passed;
+ *   * `blocked-ip`  - a hard refusal with NO solvable challenge (HTTP 403
+ *                     `Just a moment...` + "unusual traffic patterns" + "you
+ *                     have been temporarily blocked"): this address is refused,
+ *                     no amount of browser realism changes it;
+ *   * `unknown`     - a challenge-shaped document the reader cannot classify.
+ */
+export const CHALLENGE_CLASSIFICATIONS = ['none', 'managed-pass', 'interactive', 'blocked-ip', 'unknown'] as const
+/** One classification. */
+export type ChallengeClassification = (typeof CHALLENGE_CLASSIFICATIONS)[number]
+
+/** What `challenge` really achieved (never inferred from a hope). */
+export const CHALLENGE_OUTCOMES = [
+  'no-challenge',
+  'already-passed',
+  'solved',
+  'unsolved',
+  'unsolvable-from-this-ip',
+  'unknown',
+] as const
+/** One outcome. */
+export type ChallengeOutcome = (typeof CHALLENGE_OUTCOMES)[number]
+
+/**
+ * How a frame is named. ONE of these is enough; they are tried in the order
+ * `frameId`, `selector`, `url`, `name`, `index`, and no target at all means the
+ * MAIN frame (the page itself).
+ */
+export interface BrowserFrameTarget {
+  /** The frame id `frames` reported (`cdp` when the engine gave one). */
+  frameId?: string
+  /** A selector of the `iframe`/`frame` ELEMENT in its PARENT document. */
+  selector?: string
+  /** The frame URL, matched exactly first and then as a substring. */
+  url?: string
+  /** The frame's `name` attribute. */
+  name?: string
+  /** The index in the frame tree, `0` being the main frame. */
+  index?: number
+}
+
+/** One frame of the tree, as `frames` reports it. */
+export interface BrowserFrameInfo {
+  /** The frame id: the engine's CDP frameId when it could be read, else a positional id. */
+  frameId: string
+  /** How `frameId` was produced, so a caller knows what it can trust. */
+  frameIdSource: 'cdp' | 'positional'
+  /** The parent frame id (`undefined` for the main frame). */
+  parentFrameId?: string
+  url: string
+  name?: string
+  /** Distance from the main frame (`0` = main). */
+  depth: number
+  isMainFrame: boolean
+  /** True when this frame's origin differs from the main frame's. */
+  crossOrigin: boolean
+  /** A selector for the frame element in the parent, when one can be built. */
+  selector?: string
+  /** The challenge widget detected in this frame, when one was. */
+  challenge?: ChallengeKind
+}
+
+/** `frames`: list the tree, select a frame, or clear the selection. */
+export interface BrowserFramesRequest {
+  /** `list` (default), `select` or `clear`. */
+  frameAction?: FrameAction
+  /** Alias of `frameAction` (every other action of this capability names its verb `action`). */
+  action?: FrameAction
+  /** `select`: which frame becomes the session's default target. */
+  frame?: BrowserFrameTarget
+  /** Cap the reported frames (bounded by the seam). */
+  maxFrames?: number
+}
+
+/** `frames` answers the tree plus which frame is the current target. */
+export interface BrowserFramesAnswer {
+  action: 'frames'
+  session: string
+  frameAction: FrameAction
+  url: string
+  title: string
+  /** The MAIN frame id of the page. */
+  mainFrameId: string
+  frames: BrowserFrameInfo[]
+  /** How many frames the page really has (before the cap). */
+  totalFrames: number
+  /** The frame the session now targets by default (the main frame when none). */
+  selectedFrameId: string
+  /** The target that was resolved, when one was. */
+  target?: BrowserFrameInfo
+  durationMs: number
+}
+
+/** `mouse`: drive the real mouse at COORDINATES (the only way into a widget). */
+export interface BrowserMouseRequest {
+  /** `click` (default), `dblclick`, `move`, `down`, `up`, `hover`, `drag`, `wheel`. */
+  mouseAction?: MouseAction
+  /** Alias of `mouseAction`. */
+  action?: MouseAction
+  /** The x of the point (or the drag START). */
+  x?: number
+  /** The y of the point (or the drag START). */
+  y?: number
+  /** `drag`: the destination x. */
+  toX?: number
+  /** `drag`: the destination y. */
+  toY?: number
+  /** `wheel`: horizontal delta in pixels. */
+  deltaX?: number
+  /** `wheel`: vertical delta in pixels. */
+  deltaY?: number
+  /** Which button to press (default `left`). */
+  button?: MouseButton
+  /** `click`/`dblclick`: how many clicks (default 1 / 2). */
+  clickCount?: number
+  /** `drag`: intermediate move steps (default 10). */
+  steps?: number
+  /** The origin of `x`/`y` (default `page`). */
+  relativeTo?: MouseOrigin
+  /** The frame `relativeTo: 'frame'` is measured in (default: the session target). */
+  frame?: BrowserFrameTarget
+}
+
+/** `mouse` answers the coordinates that were really driven. */
+export interface BrowserMouseAnswer {
+  action: 'mouse'
+  session: string
+  mouseAction: MouseAction
+  /** The resolved point in MAIN-frame coordinates (what the browser received). */
+  x: number
+  y: number
+  toX?: number
+  toY?: number
+  relativeTo: MouseOrigin
+  button: MouseButton
+  /** The frame the input landed in, when it was addressed through one. */
+  frameId?: string
+  url: string
+  title: string
+  durationMs: number
+}
+
+/** `challenge`: detect, classify or try to pass a challenge. */
+export interface BrowserChallengeRequest {
+  /** `detect` (default), `solve` (detect + interact), `classify` (read only). */
+  challengeAction?: ChallengeAction
+  /** Alias of `challengeAction`. */
+  action?: ChallengeAction
+  /** Only look for these widget kinds (default: all known ones). */
+  kinds?: ChallengeKind[]
+  /** Alias of `kinds` for a SINGLE widget kind. */
+  kind?: ChallengeKind | ChallengeKind[]
+  /** Scope the widget search to a frame, e.g. the widget's iframe. */
+  frame?: BrowserFrameTarget
+  /** A selector of the clickable widget part, when the caller knows it. */
+  selector?: string
+  /** `solve`: click the widget (default true). */
+  click?: boolean
+  /** `solve`: how long to wait for the token/cookie after a click (default 15000). */
+  waitMs?: number
+  /** How many click attempts at most (default 3). */
+  maxAttempts?: number
+  /** Whole-call budget in ms (default from the seam bounds). */
+  timeoutMs?: number
+}
+
+/** What was found and done about ONE widget. */
+export interface BrowserChallengeWidget {
+  /** True when a widget frame was found at all. */
+  found: boolean
+  kind: ChallengeKind
+  frameId?: string
+  frameUrl?: string
+  /** The frame element selector in the parent document, when one was built. */
+  frameSelector?: string
+  /** True when a mouse interaction was really driven. */
+  clicked: boolean
+  /** How many interactions were driven. */
+  attempts: number
+  /** The MAIN-frame coordinates the mouse was driven to, when it was. */
+  coordinates?: { x: number; y: number }
+  /** The selector that was clicked inside the widget, when one resolved. */
+  clickedSelector?: string
+  /** True when the response token is present and non-empty. */
+  tokenPresent: boolean
+  /** Which field carried the token. */
+  tokenField?: string
+  /** True when the widget's own frame reported the solved state. */
+  widgetReportedSuccess?: boolean
+  /** One line per attempt (so a failure is diagnosable, never a shrug). */
+  log: string[]
+}
+
+/** `challenge` answers a STRUCTURED classification, never an empty read. */
+export interface BrowserChallengeAnswer {
+  action: 'challenge'
+  session: string
+  challengeAction: ChallengeAction
+  url: string
+  title: string
+  classification: ChallengeClassification
+  outcome: ChallengeOutcome
+  /** True when NO interaction can pass this page from this address. */
+  unsolvableFromThisIp: boolean
+  /** One precise sentence (carried into the caller's report). */
+  reason: string
+  /** The signals the classification rests on. */
+  signals: string[]
+  /** The HTTP status of the main document when it could be read. */
+  httpStatus?: number
+  /** A bounded excerpt of the body on a block page (the raw evidence). */
+  bodyExcerpt?: string
+  /** The widget report when one was found. */
+  widget?: BrowserChallengeWidget
+  /** The `cf_clearance` cookie state (never its value). */
+  cookie?: { name: string; present: boolean; domain?: string; expires?: number }
+  /** How long the call took. */
+  elapsedMs: number
+}
+
+// ---------------------------------------------------------------------------
 // Errors. Every failure of this capability is a `BrowserUseError` (a
 // `ServiceError` subclass) whose `reason` is machine-branchable and whose
 // `details` name the missing half or the config row to touch.
@@ -335,6 +618,14 @@ export interface BrowserProviderCapabilities {
   observe: boolean
   /** True when storage state can be read/written. */
   storageState: boolean
+  /** True when the frame tree can be enumerated and frames can be targeted. */
+  frames?: boolean
+  /** True when mouse-level input at coordinates is served. */
+  mouse?: boolean
+  /** True when challenge detection/completion is served. */
+  challenge?: boolean
+  /** The widget kinds the challenge reader knows by name. */
+  challengeKinds?: ChallengeKind[]
   /** Everything the provider does NOT serve, so a caller sees the gaps. */
   unsupported: string[]
 }
@@ -487,6 +778,12 @@ export interface BrowserSnapshotRequest {
   includeText?: boolean
   /** Cap the nodes of THIS answer (bounded by the seam's `maxSnapshotNodes`). */
   maxNodes?: number
+  /**
+   * Read INSIDE a frame instead of the main document (default: the main frame).
+   * This is what makes a CROSS-ORIGIN widget readable at all: its DOM belongs to
+   * another origin, so no selector of the main document can reach it.
+   */
+  frame?: BrowserFrameTarget
 }
 
 /**
@@ -515,6 +812,11 @@ export interface BrowserSnapshotNode {
   disabled?: boolean
   /** True for a checked checkbox/radio. */
   checked?: boolean
+  /**
+   * The id of the FRAME this node lives in (`undefined` = the main frame).
+   * `act`/`snapshot` accept it back through their `frame.frameId`.
+   */
+  frameId?: string
 }
 
 /** `snapshot` answers the view + the identity of the snapshot the refs belong to. */
@@ -565,6 +867,11 @@ export interface BrowserActRequest {
   settle?: boolean
   /** Answer a FRESH snapshot with the result (default false: refs go stale). */
   snapshot?: boolean
+  /**
+   * Act INSIDE a frame instead of the main document (default: the main frame).
+   * A `ref` resolves within that frame, a `selector` is looked up THERE.
+   */
+  frame?: BrowserFrameTarget
 }
 
 /**
@@ -640,6 +947,8 @@ export interface BrowserEvaluateAnswer {
 
 /** `extract`: read the page, or a part of it, in a caller-chosen shape. */
 export interface BrowserExtractRequest {
+  /** Extract INSIDE this frame (from `frames`), when the content is in an iframe. */
+  frame?: BrowserFrameTarget
   mode?: ExtractMode
   /** Scope the extraction to a selector or a ref. */
   selector?: string
@@ -738,6 +1047,8 @@ export interface BrowserTabAnswer {
 
 /** `wait`: a bounded sleep and/or a condition. */
 export interface BrowserWaitRequest {
+  /** Wait for the element inside this frame (from `frames`). */
+  frame?: BrowserFrameTarget
   /** Sleep this long (bounded by the seam's deadline). */
   ms?: number
   /** Wait for this element (ref or selector) to reach `state`. */
@@ -851,6 +1162,15 @@ export interface BrowserUseProvider {
   wait(session: string, request: BrowserWaitRequest, options: BrowserUseCallOptions): Promise<BrowserWaitAnswer>
   observe(session: string, request: BrowserObserveRequest, options: BrowserUseCallOptions): Promise<BrowserObserveAnswer>
   state(session: string, request: BrowserStateRequest, options: BrowserUseCallOptions): Promise<BrowserStateAnswer>
+  /**
+   * The FRAME TREE of the active page plus frame targeting (optional half: a
+   * provider that does not serve it is called with the typed `not-implemented`).
+   */
+  frames?(session: string, request: BrowserFramesRequest, options: BrowserUseCallOptions): Promise<BrowserFramesAnswer>
+  /** Mouse-level input at coordinates (optional half, see above). */
+  mouse?(session: string, request: BrowserMouseRequest, options: BrowserUseCallOptions): Promise<BrowserMouseAnswer>
+  /** Challenge detection/completion with a structured classification (optional half). */
+  challenge?(session: string, request: BrowserChallengeRequest, options: BrowserUseCallOptions): Promise<BrowserChallengeAnswer>
   /** The live sessions of this provider (diagnostics; never a secret). */
   sessions(): BrowserSessionInfo[]
   /** Release every browser resource this provider owns (plugin unload). */
@@ -884,6 +1204,22 @@ export interface BrowserUseService {
   wait(session: string, request: BrowserWaitRequest, provider?: string): Promise<BrowserWaitAnswer>
   observe(session: string, request: BrowserObserveRequest, provider?: string): Promise<BrowserObserveAnswer>
   state(session: string, request: BrowserStateRequest, provider?: string): Promise<BrowserStateAnswer>
+  /**
+   * The frame tree of the active page (`list`), or the frame this session then
+   * targets by default (`select`/`clear`). A provider without the optional half
+   * answers the typed `browser-use.not-implemented`.
+   */
+  frames(session: string, request?: BrowserFramesRequest, provider?: string): Promise<BrowserFramesAnswer>
+  /** Real mouse input at coordinates - the only way into a cross-origin widget. */
+  mouse(session: string, request: BrowserMouseRequest, provider?: string): Promise<BrowserMouseAnswer>
+  /**
+   * Detects and classifies a challenge, and (with `challengeAction: 'solve'`)
+   * tries to complete it: it drives the widget through frame targeting +
+   * coordinates and reports a STRUCTURED result. A hard IP-reputation block is
+   * reported as `blocked-ip` / `unsolvable-from-this-ip` with the raw status and
+   * a body excerpt - NEVER a silent empty read.
+   */
+  challenge(session: string, request?: BrowserChallengeRequest, provider?: string): Promise<BrowserChallengeAnswer>
 }
 
 /** One registered backend, as the seam reports it. */

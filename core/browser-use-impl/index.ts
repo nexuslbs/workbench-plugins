@@ -58,6 +58,12 @@ import {
   DEFAULT_SESSION_TIMEOUT_MS,
   EXTRACT_MODES,
   ACT_KINDS,
+  CHALLENGE_ACTIONS,
+  CHALLENGE_KINDS,
+  FRAME_ACTIONS,
+  MOUSE_ACTIONS,
+  MOUSE_BUTTONS,
+  MOUSE_ORIGINS,
   normalizeViewport,
   notImplemented,
   requireEnum,
@@ -77,9 +83,16 @@ import {
 import type {
   BrowserActRequest,
   BrowserCapabilityReport,
+  BrowserChallengeAnswer,
+  BrowserChallengeRequest,
   BrowserEvaluateRequest,
   BrowserExtractAnswer,
   BrowserExtractRequest,
+  BrowserFrameTarget,
+  BrowserFramesAnswer,
+  BrowserFramesRequest,
+  BrowserMouseAnswer,
+  BrowserMouseRequest,
   BrowserNavigateRequest,
   BrowserObserveRequest,
   BrowserProviderInfo,
@@ -449,11 +462,141 @@ export function createBrowserUseService(
 
   /** Validates a `snapshot` request (a selector, a node cap, the text flag). */
   const snapshotRequest = (request: BrowserSnapshotRequest = {}): BrowserSnapshotRequest => {
-    rejectUnknown(request, ['selector', 'includeText', 'maxNodes'], 'snapshot')
+    rejectUnknown(request, ['selector', 'includeText', 'maxNodes', 'frame'], 'snapshot')
     const out: BrowserSnapshotRequest = {}
     if (request.selector !== undefined) out.selector = requireText(request.selector, 'selector', 4_096)
     if (request.includeText !== undefined) out.includeText = request.includeText === true
     if (request.maxNodes !== undefined) out.maxNodes = requirePositiveInt(request.maxNodes, 'maxNodes', 5_000)
+    if (request.frame !== undefined) out.frame = frameTargetParam(request.frame, 'frame')
+    return out
+  }
+
+  /** A finite number (a coordinate may be negative or fractional). */
+  const finiteNumber = (value: unknown, field: string): number => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      throw new BrowserUseError('browser-use.invalid-input', `'${field}' must be a finite number`, {
+        stage: 'request',
+        details: { field },
+      })
+    }
+    return value
+  }
+
+  /**
+   * Validates the target of a FRAME-scoped call: one of `frameId` (the id
+   * `frames` reported), `selector` (the frame element in the parent), `url`,
+   * `name` or `index`. An empty object is a typo, not "the main frame": the
+   * ABSENCE of `frame` means the main frame.
+   */
+  const frameTargetParam = (value: unknown, field: string): BrowserFrameTarget => {
+    if (!isRecord(value)) {
+      throw new BrowserUseError(
+        'browser-use.invalid-input',
+        `'${field}' must be an object naming a frame (frameId, selector, url, name or index)`,
+        { stage: 'request', details: { field } },
+      )
+    }
+    rejectUnknown(value, ['frameId', 'selector', 'url', 'name', 'index'], field)
+    const out: BrowserFrameTarget = {}
+    if (value.frameId !== undefined) out.frameId = requireText(value.frameId, `${field}.frameId`, 512)
+    if (value.selector !== undefined) out.selector = requireText(value.selector, `${field}.selector`, 4_096)
+    if (value.url !== undefined) out.url = requireText(value.url, `${field}.url`, 4_096)
+    if (value.name !== undefined) out.name = requireText(value.name, `${field}.name`, 512)
+    if (value.index !== undefined) out.index = requireNonNegativeInt(value.index, `${field}.index`, 10_000)
+    if (Object.keys(out).length === 0) {
+      throw new BrowserUseError(
+        'browser-use.invalid-input',
+        `'${field}' names no frame: pass frameId, selector, url, name or index (omit '${field}' to mean the main frame)`,
+        { stage: 'request', details: { field } },
+      )
+    }
+    return out
+  }
+
+  /** Validates a `frames` request: the action and (for `select`) the target. */
+  const framesRequest = (request: BrowserFramesRequest = {}): BrowserFramesRequest => {
+    rejectUnknown(request, ['frameAction', 'action', 'frame', 'maxFrames'], 'frames')
+    const out: BrowserFramesRequest = {
+      frameAction: requireEnum(request.frameAction ?? request.action, FRAME_ACTIONS, 'frameAction', 'list'),
+    }
+    if (request.frame !== undefined) out.frame = frameTargetParam(request.frame, 'frame')
+    if (request.maxFrames !== undefined) out.maxFrames = requirePositiveInt(request.maxFrames, 'maxFrames', 500)
+    if (out.frameAction === 'select' && out.frame === undefined) {
+      throw new BrowserUseError(
+        'browser-use.invalid-input',
+        "'frameAction: select' needs a 'frame' target (frameId, selector, url, name or index)",
+        { stage: 'request', details: { frameAction: out.frameAction } },
+      )
+    }
+    return out
+  }
+
+  /** Validates a `mouse` request: the gesture and the coordinates it needs. */
+  const mouseRequest = (request: BrowserMouseRequest = {}): BrowserMouseRequest => {
+    rejectUnknown(
+      request,
+      ['mouseAction', 'action', 'x', 'y', 'toX', 'toY', 'deltaX', 'deltaY', 'button', 'clickCount', 'steps', 'relativeTo', 'frame'],
+      'mouse',
+    )
+    const out: BrowserMouseRequest = {
+      mouseAction: requireEnum(request.mouseAction ?? request.action, MOUSE_ACTIONS, 'mouseAction', 'click'),
+    }
+    if (request.x !== undefined) out.x = finiteNumber(request.x, 'x')
+    if (request.y !== undefined) out.y = finiteNumber(request.y, 'y')
+    if (request.toX !== undefined) out.toX = finiteNumber(request.toX, 'toX')
+    if (request.toY !== undefined) out.toY = finiteNumber(request.toY, 'toY')
+    if (request.deltaX !== undefined) out.deltaX = finiteNumber(request.deltaX, 'deltaX')
+    if (request.deltaY !== undefined) out.deltaY = finiteNumber(request.deltaY, 'deltaY')
+    if (request.button !== undefined) out.button = requireEnum(request.button, MOUSE_BUTTONS, 'button', 'left')
+    if (request.clickCount !== undefined) out.clickCount = requirePositiveInt(request.clickCount, 'clickCount', 10)
+    if (request.steps !== undefined) out.steps = requirePositiveInt(request.steps, 'steps', 200)
+    if (request.relativeTo !== undefined) out.relativeTo = requireEnum(request.relativeTo, MOUSE_ORIGINS, 'relativeTo', 'page')
+    if (request.frame !== undefined) out.frame = frameTargetParam(request.frame, 'frame')
+    const action = out.mouseAction ?? 'click'
+    const pointy = action !== 'wheel'
+    if (pointy && (out.x === undefined || out.y === undefined)) {
+      throw new BrowserUseError(
+        'browser-use.invalid-input',
+        `'mouseAction: ${action}' needs 'x' and 'y' (the point in the viewport; a widget unreachable by selector is driven at coordinates)`,
+        { stage: 'request', details: { mouseAction: action } },
+      )
+    }
+    if (action === 'drag' && (out.toX === undefined || out.toY === undefined)) {
+      throw new BrowserUseError('browser-use.invalid-input', "'mouseAction: drag' needs 'toX' and 'toY' (the destination)", {
+        stage: 'request',
+        details: { mouseAction: action },
+      })
+    }
+    if (action === 'wheel' && out.deltaX === undefined && out.deltaY === undefined) {
+      throw new BrowserUseError('browser-use.invalid-input', "'mouseAction: wheel' needs 'deltaX' and/or 'deltaY'", {
+        stage: 'request',
+        details: { mouseAction: action },
+      })
+    }
+    return out
+  }
+
+  /** Validates a `challenge` request: the action, the kinds and the budgets. */
+  const challengeRequest = (request: BrowserChallengeRequest = {}): BrowserChallengeRequest => {
+    rejectUnknown(
+      request,
+      ['challengeAction', 'action', 'kinds', 'kind', 'frame', 'selector', 'click', 'waitMs', 'maxAttempts', 'timeoutMs'],
+      'challenge',
+    )
+    const out: BrowserChallengeRequest = {
+      challengeAction: requireEnum(request.challengeAction ?? request.action, CHALLENGE_ACTIONS, 'challengeAction', 'detect'),
+    }
+    const kinds = request.kinds ?? request.kind
+    if (kinds !== undefined) {
+      const list = Array.isArray(kinds) ? kinds : [kinds]
+      out.kinds = list.map((kind) => requireEnum(kind, CHALLENGE_KINDS, 'kinds[]'))
+    }
+    if (request.frame !== undefined) out.frame = frameTargetParam(request.frame, 'frame')
+    if (request.selector !== undefined) out.selector = requireText(request.selector, 'selector', 4_096)
+    if (request.click !== undefined) out.click = request.click !== false
+    if (request.waitMs !== undefined) out.waitMs = requirePositiveInt(request.waitMs, 'waitMs', 600_000)
+    if (request.maxAttempts !== undefined) out.maxAttempts = requirePositiveInt(request.maxAttempts, 'maxAttempts', 10)
+    if (request.timeoutMs !== undefined) out.timeoutMs = requirePositiveInt(request.timeoutMs, 'timeoutMs', 600_000)
     return out
   }
 
@@ -464,7 +607,7 @@ export function createBrowserUseService(
     }
     rejectUnknown(
       request,
-      ['kind', 'ref', 'selector', 'value', 'byLabel', 'key', 'files', 'direction', 'amount', 'state', 'checked', 'timeoutMs', 'settle', 'snapshot'],
+      ['kind', 'ref', 'selector', 'value', 'byLabel', 'key', 'files', 'direction', 'amount', 'state', 'checked', 'timeoutMs', 'settle', 'snapshot', 'frame'],
       'act',
     )
     const kind = requireEnum(request.kind, ACT_KINDS, 'kind')
@@ -494,6 +637,7 @@ export function createBrowserUseService(
     if (request.timeoutMs !== undefined) out.timeoutMs = requirePositiveInt(request.timeoutMs, 'timeoutMs', 600_000)
     if (request.settle !== undefined) out.settle = request.settle !== false
     if (request.snapshot !== undefined) out.snapshot = request.snapshot === true
+    if (request.frame !== undefined) out.frame = frameTargetParam(request.frame, 'frame')
     if ((kind === 'type' || kind === 'fill') && out.value === undefined) {
       throw new BrowserUseError('browser-use.invalid-input', `'kind: ${kind}' needs a 'value' to write`, { stage: 'request', details: { kind } })
     }
@@ -694,7 +838,7 @@ export function createBrowserUseService(
       const id = sessionOf(session)
       rejectUnknown(
         request,
-        ['mode', 'selector', 'ref', 'maxChars', 'attributes', 'index', 'expression', 'useRecipe'],
+        ['mode', 'selector', 'ref', 'maxChars', 'attributes', 'index', 'expression', 'useRecipe', 'frame'],
         'extract',
       )
       const input: BrowserExtractRequest = { mode: requireEnum(request.mode, EXTRACT_MODES, 'mode', 'text') }
@@ -709,6 +853,7 @@ export function createBrowserUseService(
       }
       if (request.index !== undefined) input.index = requireNonNegativeInt(request.index, 'index', 1_000)
       if (request.expression !== undefined) input.expression = requireText(request.expression, 'expression', 100_000)
+      if (request.frame !== undefined) input.frame = frameTargetParam(request.frame, 'frame')
       const useRecipe = request.useRecipe !== false
       input.useRecipe = useRecipe
       await guard('extract')
@@ -792,10 +937,11 @@ export function createBrowserUseService(
     async wait(session: string, request: BrowserWaitRequest = {}, provider?) {
       const selected = select(provider)
       const id = sessionOf(session)
-      rejectUnknown(request, ['ms', 'ref', 'selector', 'state', 'urlContains', 'text', 'networkIdle', 'timeoutMs'], 'wait')
+      rejectUnknown(request, ['ms', 'ref', 'selector', 'frame', 'state', 'urlContains', 'text', 'networkIdle', 'timeoutMs'], 'wait')
       const input: BrowserWaitRequest = {}
       if (request.ms !== undefined) input.ms = requireNonNegativeInt(request.ms, 'ms', 600_000)
       if (request.ref !== undefined) input.ref = requireRef(request.ref)
+      if (request.frame !== undefined) input.frame = frameTargetParam(request.frame, 'frame')
       if (request.selector !== undefined) input.selector = requireText(request.selector, 'selector', 4_096)
       if (request.state !== undefined) input.state = requireEnum(request.state, WAIT_STATES, 'state', 'visible')
       if (request.urlContains !== undefined) input.urlContains = requireText(request.urlContains, 'urlContains', 4_096)
@@ -832,6 +978,44 @@ export function createBrowserUseService(
       const input: BrowserStateRequest = { action: requireEnum(request.action, ['save', 'read', 'clear'] as const, 'stateAction', 'save') }
       if (request.path !== undefined) input.path = requireText(request.path, 'path', 4_096)
       return await invoke<Awaited<ReturnType<BrowserUseProvider['state']>>>(selected, 'state', `state.${input.action}`, [
+        id,
+        input,
+        callOptions(),
+      ])
+    },
+
+    /**
+     * The frame tree + frame targeting. A provider without the optional half is
+     * the typed `browser-use.not-implemented` naming 'frames' (never a silent
+     * empty answer), so a caller can branch on the reason.
+     */
+    async frames(session: string, request: BrowserFramesRequest = {}, provider?: string): Promise<BrowserFramesAnswer> {
+      const selected = select(provider)
+      const id = sessionOf(session)
+      const input = framesRequest(request)
+      return await invoke<BrowserFramesAnswer>(selected, 'frames', 'frames', [id, input, callOptions()])
+    },
+
+    async mouse(session: string, request: BrowserMouseRequest = {}, provider?: string): Promise<BrowserMouseAnswer> {
+      const selected = select(provider)
+      const id = sessionOf(session)
+      const input = mouseRequest(request)
+      return await invoke<BrowserMouseAnswer>(selected, 'mouse', `mouse.${input.mouseAction ?? 'click'}`, [
+        id,
+        input,
+        callOptions(),
+      ])
+    },
+
+    async challenge(
+      session: string,
+      request: BrowserChallengeRequest = {},
+      provider?: string,
+    ): Promise<BrowserChallengeAnswer> {
+      const selected = select(provider)
+      const id = sessionOf(session)
+      const input = challengeRequest(request)
+      return await invoke<BrowserChallengeAnswer>(selected, 'challenge', `challenge.${input.challengeAction ?? 'detect'}`, [
         id,
         input,
         callOptions(),
