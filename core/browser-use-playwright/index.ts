@@ -1023,11 +1023,16 @@ export class PlaywrightProvider implements BrowserUseProvider {
     const format = request.format === undefined ? 'png' : requireEnum(request.format, SCREENSHOT_FORMATS, 'format', 'png')
     const maxBytes = Math.min(request.maxBytes ?? options.maxImageBytes, options.maxImageBytes)
     const explicit = str(request.path)
-    const dir = explicit === undefined ? options.screenshotDir : path.dirname(explicit)
+    // WHERE the file goes: an explicit `path` wins, then THIS provider's own
+    // `screenshotDir` config (the provider owns the file it writes; the host
+    // bound is only a fallback), then the absolute seam default. The answer is
+    // ALWAYS ABSOLUTE - a caller reads the path back in its own namespace, so a
+    // path resolved against the core's CWD is unusable (defect D1, thread 2577).
+    const dir = path.resolve(explicit !== undefined ? path.dirname(explicit) : (this.config.screenshotDir ?? options.screenshotDir))
     await fs.promises.mkdir(dir, { recursive: true }).catch(() => undefined)
     const label = slugOf(`${str(request.label) ?? live.lastTitle ?? 'page'}`)
     const extension = format === 'jpeg' ? 'jpg' : 'png'
-    const file = explicit ?? path.join(dir, `${label}-${String(Date.now())}.${extension}`)
+    const file = explicit !== undefined ? path.resolve(explicit) : path.join(dir, `${label}-${String(Date.now())}.${extension}`)
     const shot: ShotOptions = { path: file, type: format, fullPage: request.fullPage === true && request.ref === undefined && request.selector === undefined }
     if (format === 'jpeg' && request.quality !== undefined) shot.quality = requirePositiveInt(request.quality, 'quality', 100)
     let size: { width: number; height: number } | undefined

@@ -43,7 +43,12 @@ export interface BrowserUsePlaywrightConfig {
   browserArgs?: string[]
   /** Where storage-state files live (default `<tmp>/workbench-browser-use/state`). */
   storageStateDir?: string
-  /** Where screenshots are written (default `<tmp>/workbench-browser-use`). */
+  /**
+   * Where a screenshot without an explicit `path` is written. The provider OWNS
+   * this file, so this value WINS over the seam bound the host passes in; when
+   * neither names one, `DEFAULT_SCREENSHOT_DIR` (`<tmp>/workbench-browser-use`)
+   * applies. A relative value is resolved against the CWD once, here.
+   */
   screenshotDir?: string
   /** Where downloads are saved (default `<storageStateDir>/downloads`). */
   downloadDir?: string
@@ -68,7 +73,8 @@ export interface ResolvedProviderConfig {
   executablePath?: string
   browserArgs: string[]
   storageStateDir: string
-  screenshotDir: string
+  /** Absent when neither this config nor the seam bound named a directory. */
+  screenshotDir?: string
   downloadDir: string
   launchTimeoutMs: number
   defaultSession: string
@@ -106,9 +112,18 @@ export function resolveProviderConfig(
     viewportConfig !== undefined && boundInt(viewportConfig.width, 0, 20_000) > 0 && boundInt(viewportConfig.height, 0, 20_000) > 0
       ? { width: boundInt(viewportConfig.width, 1280, 20_000), height: boundInt(viewportConfig.height, 720, 20_000) }
       : { width: 1280, height: 720 }
-  const storageStateDir =
-    textOf(config.storageStateDir) ?? bounds?.storageStateDir ?? path.join(os.tmpdir(), DEFAULT_STORAGE_DIR)
-  const screenshotDir = textOf(config.screenshotDir) ?? bounds?.screenshotDir ?? path.join(os.tmpdir(), DEFAULT_SCREENSHOT_DIR)
+  const storageStateDir = path.resolve(textOf(config.storageStateDir) ?? bounds?.storageStateDir ?? DEFAULT_STORAGE_DIR)
+  // The provider config WINS over the seam bound (this plugin owns the file the
+  // screenshot is written to; `core/browser-use-impl` only forwards a default).
+  // Both are resolved to an ABSOLUTE path here, so the path the caller reads
+  // back never depends on the CWD the core was started in (defect D1, thread 2577).
+  const configuredScreenshotDir = textOf(config.screenshotDir)
+  const screenshotDir =
+    configuredScreenshotDir !== undefined
+      ? path.resolve(configuredScreenshotDir)
+      : bounds?.screenshotDir === undefined || typeof bounds.screenshotDir !== 'string'
+        ? undefined
+        : path.resolve(bounds.screenshotDir)
   const proxyServer = textOf(config.proxy?.server)
   const proxyUser = textOf(config.proxy?.username)
   const proxyCredential = textOf(config.proxy?.credential)
@@ -130,7 +145,7 @@ export function resolveProviderConfig(
       ? config.browserArgs.map((arg) => textOf(arg)).filter((arg): arg is string => arg !== undefined)
       : [],
     storageStateDir,
-    screenshotDir,
+    ...(screenshotDir === undefined ? {} : { screenshotDir }),
     downloadDir: textOf(config.downloadDir) ?? path.join(storageStateDir, 'downloads'),
     launchTimeoutMs: boundInt(config.launchTimeoutMs, 30_000, 300_000),
     defaultSession: textOf(config.defaultSession) ?? 'default',

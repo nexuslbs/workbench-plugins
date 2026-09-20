@@ -23,7 +23,7 @@
       "timeoutMs": { "type": "number", "default": 60000, "description": "Wall-clock bound of one call." },
       "navigationTimeoutMs": { "type": "number", "default": 30000, "description": "Default navigation budget when the caller names none." },
       "actionTimeoutMs": { "type": "number", "default": 10000, "description": "Default per-action budget (click/type/wait) when the caller names none." },
-      "screenshotDir": { "type": "string", "description": "Directory a screenshot FILE is written to (default: <tmpdir>/workbench-browser-use). The answer is always a path, never inline base64." },
+      "screenshotDir": { "type": "string", "description": "FALLBACK directory for screenshot FILES. The provider's own `screenshotDir` (plugins.browser-use-playwright) WINS when it names one; the seam default is <tmpdir>/workbench-browser-use. The answer is always an ABSOLUTE path, never inline base64." },
       "storageStateDir": { "type": "string", "description": "Directory holding the per-session storage-state files (default: <tmpdir>/workbench-browser-use/state); the same convention web-session uses, so a session can be continued across the two." }
     }
   }

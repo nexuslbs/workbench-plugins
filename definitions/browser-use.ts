@@ -50,6 +50,9 @@
 // reach the network (`browserUseSandbox(ctx)` below). Nothing here imports or
 // requires that seam: a deployment without it behaves exactly as documented.
 
+import os from 'node:os'
+import path from 'node:path'
+
 import {
   ServiceError,
   isRecord,
@@ -86,10 +89,17 @@ export const DEFAULT_MAX_TEXT_CHARS = 20_000
 export const HARD_MAX_TEXT_CHARS = 200_000
 /** Byte cap of ONE screenshot file that reaches the caller. */
 export const DEFAULT_SCREENSHOT_MAX_BYTES = 8 * 1024 * 1024
-/** Where a screenshot is written when the provider config names no directory. */
-export const DEFAULT_SCREENSHOT_DIR = 'workbench-browser-use'
+/**
+ * Where a screenshot is written when the provider config names no directory.
+ * ABSOLUTE on purpose (defect D1 of thread 2577): the answer of `screenshot` is
+ * a PATH a caller must be able to READ back, and that caller (omniagent) lives
+ * in another container/filesystem namespace than the core. A relative default
+ * resolves against whatever CWD the core was started in, so the path is either
+ * unreadable for the caller or unreadable at all (ENOENT).
+ */
+export const DEFAULT_SCREENSHOT_DIR = path.join(os.tmpdir(), 'workbench-browser-use')
 /** Where storage-state files live when the config names no directory. */
-export const DEFAULT_STORAGE_DIR = 'workbench-browser-use/state'
+export const DEFAULT_STORAGE_DIR = path.join(DEFAULT_SCREENSHOT_DIR, 'state')
 /** The `waitUntil` strategies `navigate` accepts. */
 export const WAIT_UNTIL = ['commit', 'domcontentloaded', 'load', 'networkidle'] as const
 /** One navigation wait strategy. */

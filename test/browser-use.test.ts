@@ -19,6 +19,7 @@ import {
   ACT_KINDS,
   BROWSER_USE_CONTRACT,
   BROWSER_USE_TOOL_NAME,
+  DEFAULT_SCREENSHOT_DIR,
   EXTRACT_MODES,
   BrowserUseError,
   isBrowserUseError,
@@ -56,6 +57,7 @@ import type {
 } from '../definitions/browser-use.ts'
 import { createBrowserUseService, validateBrowserUseConfig } from '../core/browser-use-impl/index.ts'
 import { createPlaywrightProvider } from '../core/browser-use-playwright/index.ts'
+import { resolveProviderConfig } from '../core/browser-use-playwright/config.ts'
 import * as browserTools from '../plugins/browser-use-tools/index.ts'
 
 // ---------------------------------------------------------------------------
@@ -479,6 +481,11 @@ test('tool: the whole session lifecycle answers through one action-enum tool', a
   const opened = (await tool?.handler({ action: 'open', session: 's1', url: 'http://127.0.0.1:1/' })) as Record<string, unknown>
   assert.equal(opened.ok, true)
   assert.equal(opened.id, 's1')
+  // F2: the top-level url/title of `open { url }` are the POST-navigation values,
+  // never the about:blank snapshot of the freshly opened session.
+  assert.equal(opened.url, 'http://127.0.0.1:1/')
+  assert.equal(opened.title, 'Fixture page')
+  assert.equal((opened.navigated as Record<string, unknown> | undefined)?.httpStatus, 200)
   const snapshot = (await tool?.handler({ action: 'snapshot', session: 's1' })) as { ok: boolean; nodes: { ref: string; tag: string }[] }
   assert.equal(snapshot.ok, true)
   assert.ok(snapshot.nodes.length > 0)
@@ -499,6 +506,20 @@ test('tool: the whole session lifecycle answers through one action-enum tool', a
 // ---------------------------------------------------------------------------
 // Screenshot cap, disposer, and the recipe non-dependency.
 // ---------------------------------------------------------------------------
+
+test('screenshot location: the seam default is ABSOLUTE and the provider config wins over the host bound', () => {
+  assert.equal(path.isAbsolute(DEFAULT_SCREENSHOT_DIR), true, `the seam default must be absolute: ${DEFAULT_SCREENSHOT_DIR}`)
+  const fromConfig = resolveProviderConfig({ screenshotDir: 'relative-shots' })
+  assert.equal(fromConfig.screenshotDir, path.resolve('relative-shots'), 'a relative config value is resolved once, against the CWD')
+  const fromBound = resolveProviderConfig({}, { screenshotDir: '/tmp/host-shots' })
+  assert.equal(fromBound.screenshotDir, path.resolve('/tmp/host-shots'), 'a deployment that only sets the seam bound is honoured')
+  const both = resolveProviderConfig({ screenshotDir: '/tmp/provider-shots' }, { screenshotDir: '/tmp/host-shots' })
+  assert.equal(both.screenshotDir, path.resolve('/tmp/provider-shots'), 'the provider owns the file it writes: its own config wins')
+  const none = resolveProviderConfig({})
+  assert.equal(none.screenshotDir, undefined, 'neither side named a directory: the call site falls back to the absolute seam default')
+  assert.equal(path.isAbsolute(none.storageStateDir), true)
+  assert.equal(resolveProviderConfig({ storageStateDir: 'relative-state' }).storageStateDir, path.resolve('relative-state'))
+})
 
 test('screenshot: a path (never base64) is answered and the byte cap of the seam is enforced', async () => {
   const { service, optionsSeen } = serviceWithFake()
@@ -595,7 +616,11 @@ test('e2e: a REAL browser drives a LOCAL fixture page (open -> snapshot -> act -
   const port = (server.address() as AddressInfo).port
   const base = `http://127.0.0.1:${port}/`
 
-  const service = createBrowserUseService({} as never, { provider: 'playwright', storageStateDir: path.join(dir, 'state'), screenshotDir: path.join(dir, 'shots') })
+  // The HOST bound points somewhere else ON PURPOSE: the provider's own
+  // `screenshotDir` config must win, and the path it answers must be absolute
+  // (defect D1 of thread 2577).
+  const hostShots = path.join(dir, 'host-shots')
+  const service = createBrowserUseService({} as never, { provider: 'playwright', storageStateDir: path.join(dir, 'state'), screenshotDir: hostShots })
   const unregister = service.register(provider)
   try {
     const session = await service.open({ session: 'e2e', viewport: { width: 900, height: 600 } })
@@ -625,6 +650,16 @@ test('e2e: a REAL browser drives a LOCAL fixture page (open -> snapshot -> act -
     const stat = await fs.stat(shot.path)
     assert.ok(stat.size > 0, 'the screenshot file exists and is not empty')
     assert.equal(stat.size, shot.bytes)
+    // D1 REGRESSION: an absolute path, in the PROVIDER's configured dir - not the
+    // host bound and not relative to whatever CWD the core happens to run in.
+    assert.equal(path.isAbsolute(shot.path), true, `the screenshot path must be absolute: ${shot.path}`)
+    assert.equal(path.dirname(shot.path), path.join(dir, 'shots'), `the provider config dir must win over the host bound: ${shot.path}`)
+    assert.equal(await fs.stat(hostShots).then(() => true, () => false), false, 'nothing is written into the host bound')
+
+    // An EXPLICIT path is honoured too, and still answered as an absolute path.
+    const explicitShot = await service.screenshot('e2e', { path: path.join(dir, 'explicit-shot.png') })
+    assert.equal(explicitShot.path, path.join(dir, 'explicit-shot.png'))
+    assert.equal(await fs.stat(explicitShot.path).then(() => true, () => false), true)
 
     const evaluation = await service.evaluate('e2e', { expression: 'document.title' })
     assert.equal(evaluation.value, 'Fixture page')

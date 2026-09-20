@@ -34,7 +34,7 @@
       "executablePath": { "type": "string", "description": "A chromium/chrome binary to launch. Absent: playwright resolves its own cache (`PLAYWRIGHT_BROWSERS_PATH`)." },
       "browserArgs": { "type": "array", "items": { "type": "string" }, "description": "Extra chromium argv, handed over verbatim (argv, never a shell string)." },
       "storageStateDir": { "type": "string", "description": "Where the per-session storage-state files live (default `<tmpdir>/workbench-browser-use/state`), the SAME convention `web-session` uses." },
-      "screenshotDir": { "type": "string", "description": "Where a screenshot without an explicit path is written (default `<tmpdir>/workbench-browser-use`)." },
+      "screenshotDir": { "type": "string", "description": "Where a screenshot without an explicit path is written (default `<tmpdir>/workbench-browser-use`; a relative value is resolved against the CWD). This provider OWNS the file it writes, so this value WINS over the host bound `plugins.browser-use-impl.screenshotDir`, and the answered path is always ABSOLUTE." },
       "downloadDir": { "type": "string", "description": "Where a session's downloads are saved (default `<storageStateDir>/downloads`)." },
       "launchTimeoutMs": { "type": "number", "default": 30000, "description": "Budget of the shared chromium launch." },
       "defaultSession": { "type": "string", "default": "default", "description": "The session id a call uses when it names none." },

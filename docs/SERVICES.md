@@ -375,6 +375,15 @@ The `sandbox@1` gate is an EXTENSION POINT, not a dependency: the host consults 
 request names the network/download roots) and degrades to "no policy handle" when
 none is - the same optional shape `fs@1`, `subprocess@1` and `computer-use@1` use.
 
+SCREENSHOT LOCATION: `screenshot` answers a PATH, never inline base64, and that
+path is ALWAYS ABSOLUTE. The caller (omniagent) reads the file back in its own
+container/filesystem namespace, so a path resolved against whatever CWD the core
+was started in is useless (and can even be ENOENT). Precedence: an explicit
+`path` in the call wins, then the provider's own `screenshotDir`, then the
+`screenshotDir` bound of the `browser-use-impl` row, then the seam default
+`<tmpdir>/workbench-browser-use`. An oversized image is deleted and reported as
+the typed `browser-use.oversized`, never handed over.
+
 Prerequisites for a REAL browser: `playwright-core` (already a dependency) plus
 a chromium build reachable through `executablePath`, the `PLAYWRIGHT_BROWSERS_PATH`
 cache, or a system chromium; without one every browser action answers the typed

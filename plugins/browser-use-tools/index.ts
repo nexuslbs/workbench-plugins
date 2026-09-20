@@ -596,7 +596,12 @@ export function apply(ctx: PluginContext): void {
               const url = optionalString(params, 'url')
               if (url !== undefined) {
                 const navigated = await service.navigate(info.id, { url }, provider)
-                return { ok: true, ...info, navigated }
+                // The TOP-LEVEL url/title of the answer are the POST-navigation
+                // values: `info` is the freshly opened session (about:blank), so
+                // a caller reading the top-level `url` must not read a stale
+                // value while `navigated` holds the real one (finding F2, thread
+                // 2577). The full navigation answer stays under `navigated`.
+                return { ok: true, ...info, url: navigated.url, title: navigated.title, navigated }
               }
               return { ok: true, ...info }
             }
