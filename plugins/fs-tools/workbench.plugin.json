@@ -1,0 +1,28 @@
+{
+  "name": "fs-tools",
+  "version": "0.1.0",
+  "description": "External fs consumer: exposes the fs@1 capability as the tools 'fs read', 'fs write', 'fs append', 'fs str_replace', 'fs insert', 'fs apply_patch', 'fs list', 'fs info', 'fs search' and 'fs grep' - provider agnostic, no backend named",
+  "entry": "index.ts",
+  "capabilities": [
+    "tool:fs read",
+    "tool:fs write",
+    "tool:fs append",
+    "tool:fs str_replace",
+    "tool:fs insert",
+    "tool:fs apply_patch",
+    "tool:fs list",
+    "tool:fs info",
+    "tool:fs search",
+    "tool:fs grep"
+  ],
+  "config": {
+    "type": "object",
+    "description": "The consumer only shapes the tools it registers; roots, caps and the spill directory belong to the provider's row.",
+    "properties": {
+      "listLimit": {
+        "type": "integer",
+        "description": "Default 'limit' of the 'fs list' tool (default 1000, the provider's own cap still applies)."
+      }
+    }
+  }
+}

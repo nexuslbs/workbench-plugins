@@ -100,6 +100,46 @@ general:
 a second `docker@1` provider) and `test/general-service.test.ts` proves the
 config-driven dispatch and the missing-transport failure.
 
+## Filesystem capability (`fs@1`)
+
+The filesystem is a capability like any other transport (contract
+`definitions/fs.ts`, service `ctx.fs`), which is what lets an agent reach files
+WITHOUT going through `shell@1`:
+
+| role | plugin | what it does |
+| --- | --- | --- |
+| Definition | `definitions/fs.ts` | the typed contract + the pure algorithms (paging, the edit engine, the glob compiler, the ripgrep `--json` parser) and the error taxonomy (`FsError`, `fs.*` reasons) |
+| Provider | `core/fs-local` (`local-fs`) | the LOCAL filesystem through `node:fs` only (no shell): stat/read/write/append/edit/list/glob/grep |
+| Consumer | `plugins/fs-tools` | the ten tools `fs read`, `fs write`, `fs append`, `fs str_replace`, `fs insert`, `fs apply_patch`, `fs list`, `fs info`, `fs search`, `fs grep` |
+
+The one rule that matters operationally: **reads are unrestricted, writes are
+confined**. `fs-local.roots` lists the directories a write may land in; a write
+outside them (including through `..` or a symlink, both resolved BEFORE the
+check) fails with `reason: fs.outside-root` (shared code `policy`). There is no
+silent success, no fallback target and no retry.
+
+Caps and spill: every answer is bounded. `read` pages by LINE (`offset` /
+`limit`, default and max 2000 lines, per-line byte cap) and reports `truncated`
+/ `nextOffset` / `eof` plus a human `note`; `list` and `glob` are capped and
+report `truncated`; `grep` keeps at most `maxResults` (default 250) matches
+inline and, when the walk found more, writes the FULL match list to a SPILL file
+whose path it returns (`spill: { path, bytes, lines }`) - nothing is lost, and
+the spill file is itself readable through `fs read`.
+
+Execution policy: `core/fs-local` reads and writes HOST paths, so its manifest
+declares `"execution": "host"` and the `fs` provide/require policy, and
+`apply()` enforces it with `assertPolicyDeclared` (the same guard
+`core/shell-impl` uses). Drop the `fs-local` row and every `fs *` tool becomes
+unavailable while the rest of the stack keeps running - the tools resolve
+`ctx.fs` at CALL time.
+
+Sandbox extension point (no hard dependency): the provider accepts an OPTIONAL
+`FsSandboxPolicy` (`writeRoots` / `readRoots` / `readOnly`), either from its
+own `sandbox:` config block or from a `sandbox@1` service when one is loaded
+(`sandboxPolicyFrom(ctx)`); a policy only NARROWS the configured roots. The
+sandbox capability is a separate task; with none loaded the behaviour is exactly
+the config-only confinement above.
+
 ## Shell safety invariant (mandatory)
 
 For every REMOTE type the caller's input string is evaluated **exactly once, in

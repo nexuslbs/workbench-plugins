@@ -1,0 +1,54 @@
+{
+  "name": "fs-local",
+  "version": "0.1.0",
+  "description": "The fs@1 provider `local-fs`: the LOCAL filesystem of the workbench host behind the capability contract - reads unrestricted, WRITES confined to the configured roots. Declares execution/policies because it touches host paths directly (no shell, no transport).",
+  "entry": "index.ts",
+  "execution": "host",
+  "capabilities": [{ "id": "fs", "version": 1, "provider": "local-fs" }],
+  "policies": {
+    "fs": { "provide": "fs@1", "require": "fs@1" }
+  },
+  "config": {
+    "type": "object",
+    "description": "The allowed roots, the default cwd, the symlink policy and the per-call byte/result caps.",
+    "properties": {
+      "roots": {
+        "type": "array",
+        "description": "Absolute (or cwd-relative) directories WRITES are confined to. Default: [cwd]. A write outside them fails with reason fs.outside-root."
+      },
+      "cwd": {
+        "type": "string",
+        "description": "Directory a relative path resolves against for BOTH reads and writes (default: the process cwd)."
+      },
+      "followSymlinks": {
+        "type": "boolean",
+        "default": true,
+        "description": "Follow a symlink to its target in stat/read (false = observe the link itself). Confinement is still enforced on the RESOLVED path."
+      },
+      "maxReadBytes": { "type": "number", "default": 4194304, "description": "Byte cap of one read call." },
+      "maxWriteBytes": { "type": "number", "default": 16777216, "description": "Byte cap of one write/append/edit payload." },
+      "listLimit": { "type": "number", "default": 1000, "description": "Directory entries one list returns." },
+      "globLimit": { "type": "number", "default": 200, "description": "Matches one glob returns." },
+      "spillDir": { "type": "string", "description": "Where grep writes its overflow (default: <tmpdir>/workbench-fs-spill)." },
+      "ignore": {
+        "type": "array",
+        "description": "Directory names the glob/grep walk never descends into (default: [\".git\", \"node_modules\"])."
+      },
+      "grep": {
+        "type": "object",
+        "description": "The content-search engine: `node` (default, pure RegExp) or `ripgrep` (needs `binary`: absolute rg path).",
+        "properties": {
+          "engine": { "type": "string", "enum": ["node", "ripgrep"], "default": "node" },
+          "binary": { "type": "string", "description": "Absolute rg binary path (required by the ripgrep engine)." },
+          "maxResults": { "type": "number", "default": 250, "description": "Inline match cap; the rest goes to the spill file." },
+          "maxFileBytes": { "type": "number", "default": 4194304, "description": "Files larger than this are skipped." },
+          "maxTotal": { "type": "number", "default": 20000, "description": "Hard ceiling on collected matches before the walk stops." }
+        }
+      },
+      "sandbox": {
+        "type": "object",
+        "description": "EXTENSION POINT: an explicit sandbox policy ({ writeRoots, readRoots, readOnly, source }) intersected with (never added to) the config above, so it can only make the seam stricter. See definitions/fs.ts, 'Sandbox extension point'."
+      }
+    }
+  }
+}

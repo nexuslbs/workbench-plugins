@@ -34,6 +34,7 @@ Provider ---------> Definition <----------- Consumer
 | `himalaya@1` | `himalaya.ts` | `ctx.himalaya` | typed mail-CLI actions (`accounts`, `folders`, `envelopeList`, `messageRead`, `run`) |
 | `email@1` | `email.ts` | `ctx.mail` | the generic email capability (`accounts`, `list`, `get`, `code`, `search`, `send`) |
 | `web@1` | `web.ts` | `ctx.web` | the web seam (routes / assets / pages) served by the provider plugin `core/web-impl`; moved here from the CORE in v0.0.3 |
+| `fs@1` | `fs.ts` | `ctx.fs` | the filesystem capability (stat / read / write / append / edit / list / glob / grep) served by a provider plugin (`core/fs-local` today); reads unrestricted, writes confined to the provider roots |
 
 ## Why a definition per transport AND a `general-service`
 

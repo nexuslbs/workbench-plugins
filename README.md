@@ -133,6 +133,7 @@ implements is `definitions/<id>.ts`, and its consumer side stays under
 | `tools-impl` | `tools` (`registry`) | the named-tool registry, the `/api/tools*` seams and the CLI |
 | `web-impl` | `web` (`http`) | the HTTP server, the shell and `/health` |
 | `shell-impl` | `shell` (`local-bash`) | the LOCAL transport (the only host-running one) |
+| `fs-local` | `fs` (`local-fs`) | the LOCAL filesystem: reads unrestricted, WRITES confined to the configured roots; line-numbered paged read, atomic edits, glob/grep with caps + spill (no shell at all) |
 | `docker-impl` | `docker` (`docker-compose-cli`) | the container transport |
 | `ssh-impl` | `ssh` (`ssh-cli`) | the remote transport |
 | `http-impl` | `http` (`fetch`) | a plain HTTP call, no shell at all |

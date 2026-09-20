@@ -376,6 +376,29 @@ plugins:
     maxListLimit: 50
     includeBodies: true
 
+  # The FILESYSTEM capability (definitions/fs.ts, docs/SERVICES.md): the
+  # PROVIDER below serves `fs@1` on the LOCAL filesystem of the workbench host
+  # (node:fs only, NO shell), the CONSUMER exposes it as the tools 'fs read',
+  # 'fs write', 'fs append', 'fs str_replace', 'fs insert', 'fs apply_patch',
+  # 'fs list', 'fs info', 'fs search' and 'fs grep'.
+  #
+  # `roots` is the SAFETY knob: READS are unrestricted (an agent asked to
+  # diagnose a deployment must be able to look at it), WRITES are confined to
+  # these directories - outside them a call fails with fs.outside-root, never
+  # silently. Drop the `fs-local` row and every fs tool stops working while the
+  # rest of the stack keeps running (core/fs-local/README.md).
+  fs-local:
+    cwd: ${env:OMNI_DIR}
+    roots:
+      - ${env:OMNI_DIR}
+      - /tmp
+    # engine `node` needs no binary and answers identically everywhere;
+    # `ripgrep` with an absolute `binary` is the opt-in fast path.
+    grep:
+      engine: node
+      maxResults: 250
+  fs-tools: {}
+
 web:
   enabled: true
   # Inside the compose service the listener must not bind the container's
