@@ -8,8 +8,9 @@
 # `browser-use-playwright` provider at it with `browserService.endpoint`.
 #
 # It contains NO workbench code and NO workbench dependency: chromium, a raw TCP
-# forwarder that publishes chromium's loopback CDP endpoint on 0.0.0.0, and a tiny
-# entrypoint (start-browser / cdp-forward.js).
+# forwarder that publishes chromium's loopback CDP endpoint on 0.0.0.0, a live-view
+# (x11vnc + websockify + noVNC) that is OFF unless a deployment asks for it, and a
+# tiny entrypoint (start-browser / cdp-forward.js).
 #
 # Published from THIS repository (nexuslbs/workbench-plugins) by
 # `.github/workflows/browser-publish.yml` on a `browser-*` tag as
@@ -32,6 +33,18 @@ ENV BROWSER_DISPLAY=:99
 ENV BROWSER_SCREEN=1440x1000x24
 ENV BROWSER_WINDOW_SIZE=1440,1000
 
+# THE LIVE VIEW: the operator watches and drives THE SAME chromium the agent uses
+# (telegram 2026-09-21, thread 2785), i.e. chromium -> X display :99 -> x11vnc ->
+# websockify + noVNC -> a tunnel (cloudflared) -> a phone browser. It is OFF by
+# default (`BROWSER_VNC=0`): a deployment that does not opt in runs exactly the
+# processes it ran before. See browser/README.md for the full env contract and the
+# security note (noVNC = full remote control of this container, so the published
+# hostname needs Cloudflare Access or an unguessable path on top of the password).
+ENV BROWSER_VNC=0
+ENV BROWSER_VNC_PORT=5900
+ENV BROWSER_NOVNC_PORT=8080
+ENV BROWSER_NOVNC_WEB=/usr/share/novnc
+
 COPY start-browser.sh /usr/local/bin/start-browser
 COPY cdp-forward.js /usr/local/bin/cdp-forward.js
 RUN chmod 0755 /usr/local/bin/start-browser /usr/local/bin/cdp-forward.js
@@ -42,5 +55,54 @@ RUN chmod 0755 /usr/local/bin/start-browser /usr/local/bin/cdp-forward.js
 # cannot start.
 RUN command -v Xvfb >/dev/null 2>&1 && command -v node >/dev/null 2>&1 || { echo "the base image must ship Xvfb (headful default) and node (CDP forwarder)" >&2; exit 1; }
 
-EXPOSE 9222
+# ---------------------------------------------------------------------------
+# THE LIVE-VIEW PACKAGES (apt, from the distribution the base image pins).
+#
+#   x11vnc          the VNC server that attaches to the EXISTING X display the
+#                   agent's chromium draws on - a real pointer/keyboard, so the
+#                   human can click, type, scroll and drag in the agent's browser
+#   websockify      the TCP<->WebSocket bridge that serves noVNC and proxies to
+#                   x11vnc's RFB port (noVNC cannot speak raw TCP from a browser)
+#   novnc           the static noVNC client under /usr/share/novnc (vnc.html)
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      x11vnc \
+      novnc \
+      websockify \
+ && rm -rf /var/lib/apt/lists/*
+
+# FAIL THE BUILD when a base-image/package change drops a live-view piece: a
+# container that starts and silently has no live view is worse than a failed
+# build.
+RUN command -v x11vnc >/dev/null 2>&1 \
+ && command -v websockify >/dev/null 2>&1 \
+ && [ -f "$BROWSER_NOVNC_WEB/vnc.html" ] \
+ || { echo "the live view needs x11vnc + websockify + $BROWSER_NOVNC_WEB/vnc.html (BROWSER_VNC=1 deployments would start with no live view)" >&2; exit 1; }
+
+# PHONE-FRIENDLY DEFAULT PAGE. The noVNC client is `vnc.html`, and its mobile-usable
+# defaults are URL parameters, which nobody types on a phone: autoconnect (no
+# "Connect" prompt), resize=scale (the 1440x1000 screen FITS the phone viewport
+# instead of forcing the human to pan a desktop-sized framebuffer), and a view-only
+# default of OFF (the point is to be able to solve a captcha). `/` therefore lands
+# on the same client with those parameters already set; the password is still typed
+# by the human and never appears in this page or in any file.
+RUN printf '%s\n' \
+    '<!doctype html>' \
+    '<html lang="en"><head><meta charset="utf-8">' \
+    '<meta name="viewport" content="width=device-width, initial-scale=1">' \
+    '<title>workbench browser live view</title>' \
+    '<meta http-equiv="refresh" content="0; url=vnc.html?autoconnect=1&amp;resize=scale&amp;reconnect=1">' \
+    '</head><body>' \
+    '<p>Opening the live view of the browser the agent drives... ' \
+    '<a href="vnc.html?autoconnect=1&amp;resize=scale&amp;reconnect=1">continue</a></p>' \
+    '</body></html>' \
+    > "$BROWSER_NOVNC_WEB/index.html" \
+ && chmod 0644 "$BROWSER_NOVNC_WEB/index.html" \
+ && grep -q 'autoconnect=1' "$BROWSER_NOVNC_WEB/index.html"
+
+# 9222 = CDP (what the workbench provider attaches to);
+# 8080 = the noVNC page, ON THE CONTAINER NETWORK ONLY. A deployment publishes it
+#        through its tunnel (cloudflared reaches `browser:8080` by service name);
+#        never publish it to the open internet directly.
+EXPOSE 9222 8080
 ENTRYPOINT ["/usr/local/bin/start-browser"]

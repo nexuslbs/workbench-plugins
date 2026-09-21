@@ -12,8 +12,9 @@
 # workbench code and NO workbench dependency, only chromium + the `start-browser`
 # entrypoint (see browser/README.md). The core image stays browser-free.
 #
-# The image is built ONCE, smoke-tested (the CDP endpoint must answer), and only
-# then pushed - the pushed image is the tested one.
+# The image is built ONCE, smoke-tested (the CDP endpoint must answer, the live
+# view must serve noVNC when BROWSER_VNC=1 and must REFUSE to start without a
+# password), and only then pushed - the pushed image is the tested one.
 #
 # Auth: GHCR only via the workflow's own GITHUB_TOKEN (`packages: write`).
 # No PAT, no app key, no secret is referenced or committed anywhere here.
@@ -90,6 +91,44 @@ jobs:
           test "$ok" = "1" || { echo "::error::the browser image never answered on the CDP endpoint /json/version"; exit 1; }
           grep -q '"Browser"' /tmp/version.json
           echo "OK: the browser service answers CDP on 127.0.0.1:9222"
+
+      # THE LIVE VIEW (browser-0.0.4+): the image must serve the noVNC page when a
+      # deployment opts in (BROWSER_VNC=1 + a password) ...
+      - name: Smoke-test the live view (BROWSER_VNC=1 serves noVNC on 8080)
+        run: |
+          set -euo pipefail
+          PW="smoke-$(head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+          docker run -d --name browser-vnc-smoke -e BROWSER_VNC=1 -e BROWSER_VNC_PASSWORD="$PW" -p 8080:8080 "$IMAGE:local"
+          ok=0
+          for i in $(seq 1 60); do
+            if [ "$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/vnc.html 2>/dev/null || true)" = "200" ]; then
+              ok=1
+              break
+            fi
+            sleep 2
+          done
+          echo "-- live-view log lines --"
+          docker logs browser-vnc-smoke 2>&1 | grep -iE 'live view|novnc|x11vnc|websockify|password' || true
+          code="$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/ 2>/dev/null || true)"
+          echo "GET / -> $code"
+          docker rm -f browser-vnc-smoke >/dev/null 2>&1 || true
+          test "$ok" = "1" || { echo "::error::BROWSER_VNC=1 did not serve the noVNC page on 8080"; exit 1; }
+          test "$code" = "200" || { echo "::error::the live-view landing page did not answer"; exit 1; }
+          echo "OK: the live view serves noVNC with BROWSER_VNC=1 and a password"
+
+      # ... and it must FAIL CLOSED when the opt-in omits the password: noVNC is
+      # full remote control of the browser container, so there is no passwordless mode.
+      - name: Smoke-test the live view fails CLOSED (BROWSER_VNC=1, no password)
+        run: |
+          set -euo pipefail
+          set +e
+          docker run --rm -e BROWSER_VNC=1 "$IMAGE:local" >/tmp/nopw.log 2>&1
+          code=$?
+          set -e
+          tail -n 20 /tmp/nopw.log || true
+          test "$code" != "0" || { echo "::error::the image started with BROWSER_VNC=1 and NO password: there is no passwordless mode"; exit 1; }
+          grep -qi 'BROWSER_VNC_PASSWORD' /tmp/nopw.log || { echo "::error::the refusal did not name the missing BROWSER_VNC_PASSWORD"; exit 1; }
+          echo "OK: BROWSER_VNC=1 without a password refuses to start (exit $code)"
 
       - name: Log in to GHCR
         uses: docker/login-action@v3

@@ -146,3 +146,90 @@ and needs no third party and no endpoint at all. Without
 `BROWSER_USE_CDP_ENDPOINT` the DEPLOYED half SKIPS, naming the prerequisite;
 `BROWSER_USE_REQUIRE_CDP=1` turns that skip into a failure, which is what the
 one-command gate above sets.
+
+## The live view: watch and drive THE SAME browser from a phone (noVNC)
+
+The agent drives this container's chromium over CDP. The **live view** streams that
+**same** X display out as a phone-usable noVNC page, so a human can watch - and, when
+an origin asks for a captcha, solve it - in the browser the agent is driving:
+
+```
+chromium (headful, display :99) -> x11vnc -> websockify + noVNC (:8080)
+                                            -> your tunnel (cloudflared) -> phone
+```
+
+It is **off by default**: a deployment that does not opt in starts exactly the
+processes it started before (`BROWSER_VNC=0`).
+
+| variable | default | meaning |
+| --- | --- | --- |
+| `BROWSER_VNC` | `0` | `1` starts the live view. Anything else than `0/1` (and `true/yes/on`, `false/no/off`) is refused (exit 2). |
+| `BROWSER_VNC_PASSWORD` | (none) | **Required** when `BROWSER_VNC=1`. A secret reference (`${cred:...}`), never a literal in a compose file. Absent/empty -> the entrypoint REFUSES to start (exit 2); there is no passwordless mode. |
+| `BROWSER_VNC_PORT` | `5900` | x11vnc's RFB port, bound on **loopback only** inside the container. |
+| `BROWSER_NOVNC_PORT` | `8080` | websockify's port (`--web` serves noVNC), bound on the container network so a tunnel can reach `browser:8080`. |
+| `BROWSER_NOVNC_WEB` | `/usr/share/novnc` | the noVNC static files (`vnc.html`). |
+
+### What the entrypoint does (and what it refuses)
+
+* After Xvfb (`BROWSER_DISPLAY`, default `:99`), chromium and the CDP forwarder are
+  really up, it starts `x11vnc -display :99 -forever -shared -localhost -rfbport 5900
+  -rfbauth <0600 pwfile>` and `websockify --web=/usr/share/novnc 0.0.0.0:8080
+  127.0.0.1:5900`. The password reaches x11vnc through a `0600` file, so it is
+  neither on a command line (`ps`) nor in a log.
+* `-localhost` is deliberate: x11vnc is reachable only from inside the container,
+  websockify is the single thing listening on the container network.
+* **One display, one chromium, one profile.** No second Xvfb, no second chromium, no
+  per-session display: what the agent opens appears in your view, and your clicks,
+  keys, scrolls and drags are `XTEST` events into *its* session.
+* It **fails closed**: `BROWSER_VNC=1` without `BROWSER_VNC_PASSWORD` exits 2 before
+  anything starts; `BROWSER_VNC=1` together with `BROWSER_HEADLESS=1` exits 2 (that
+  launch has no X display to stream); a missing `x11vnc`/`websockify`/`vnc.html` exits
+  1, and the **build** fails when the image loses any of them.
+* Readiness is a real HTTP response, in BOTH run modes: the live view is reported up
+  only once `GET /vnc.html` returns 200. `start-browser --background` exits 0 only
+  after that, so a launcher that gets exit 0 knows both endpoints are usable. The
+  foreground supervisor also fails loudly if x11vnc or websockify dies.
+
+### Opening it from a phone
+
+The container's `/` is a tiny page that redirects to
+`vnc.html?autoconnect=1&resize=scale&reconnect=1`, which is the phone-friendly
+default: it connects immediately (no button to hunt for), scales the 1440x1000 screen
+into the phone viewport instead of forcing you to pan a desktop-sized framebuffer, and
+reconnects after a mobile network stall. The password is still typed by the human
+(never in the URL, never in the page, never in a file).
+
+A deployment that shares a network with `cloudflared` publishes this as a Public
+Hostname route in the Cloudflare Zero Trust dashboard, e.g.
+
+```
+browser-live.<your-domain>  ->  http://browser:8080
+```
+
+`EXPOSE 8080` is documentation, not a publication: **never publish 8080 to the open
+internet directly.** noVNC is full remote control of this container (and therefore of
+whatever session the agent holds in it), so the tunnel hostname must be protected
+**in addition to** the password - Cloudflare Access in front of it, or an unguessable
+path - and the password is never the only line of defence.
+
+This is a way to SEE and TOUCH the real browser the agent uses. It is not a stealth or
+anti-bot feature and it does not solve captchas for you: a human does, in a normal
+chromium on a normal X display. No patched chromium, no proxy rotation, no challenge
+service is involved, and the browser stays free of any site-specific knowledge.
+
+### Verifying a deployment
+
+```sh
+# the page a phone opens answers (inside the container / its network):
+curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/vnc.html   # 200
+# the RFB port requires the password: a connect without it is refused
+# (x11vnc logs "password check failed"), and with it the handshake completes.
+```
+
+Measured on the built image (throwaway project, thread 2785, 2026-09-21):
+`/vnc.html` -> 200, `/` -> 200, `/vnc_lite.html` -> 200; a handshake with a wrong
+password -> `authentication failed` / `password check failed`, with the right one ->
+`security_result: 0` and `ServerInit` reporting `1440x1000`, desktop name
+`<container-id>:99` (i.e. the SAME display the agent's chromium draws on); a page opened
+over CDP was visible in the captured framebuffer, and a click + key injected through the
+VNC session changed that page (`document.title` became `click 710,403` / `keydown t`).

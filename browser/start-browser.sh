@@ -40,6 +40,55 @@ LOG="${BROWSER_LOG:-/tmp/start-browser.log}"
 FORWARDER="${BROWSER_FORWARDER:-/usr/local/bin/cdp-forward.js}"
 
 # ---------------------------------------------------------------------------
+# THE LIVE VIEW (opt-in, OFF by default): the operator watches and drives THE SAME
+# chromium the agent uses - no second X server, no second browser, no per-session
+# display. The chain is
+#
+#   chromium on $DISPLAY_NAME -> x11vnc 127.0.0.1:$VNC_PORT (RFB, password auth)
+#                             -> websockify 0.0.0.0:$NOVNC_PORT (noVNC + WebSocket)
+#                             -> a tunnel (cloudflared) -> the operator's phone
+#
+# so whatever the agent opens appears in the live view, and whatever the human
+# clicks / types / scrolls happens in the agent's browser.
+#
+#   BROWSER_VNC=0 (default)  nothing extra runs: a deployment that does not opt in
+#                            starts exactly the processes it started before
+#   BROWSER_VNC=1            start x11vnc + websockify; REQUIRES
+#                            BROWSER_VNC_PASSWORD and a headful X display, and
+#                            refuses to start the VNC part otherwise (FAIL CLOSED:
+#                            a passwordless VNC endpoint is full remote control of
+#                            this container for anyone who can reach the port)
+#
+# noVNC = full remote control of this browser container. The tunnel hostname must
+# ADDITIONALLY be protected (Cloudflare Access, or an unguessable path): the
+# password is the second line of defence, never the only one.
+VNC_ENABLED=""
+case "${BROWSER_VNC:-0}" in
+  1|true|yes|on) VNC_ENABLED="1" ;;
+  0|false|no|off|"") VNC_ENABLED="" ;;
+  *)
+    echo "start-browser: BROWSER_VNC must be 0 or 1 (got '$BROWSER_VNC')" >&2
+    exit 2
+    ;;
+esac
+VNC_PORT="${BROWSER_VNC_PORT:-5900}"
+NOVNC_PORT="${BROWSER_NOVNC_PORT:-8080}"
+NOVNC_WEB="${BROWSER_NOVNC_WEB:-/usr/share/novnc}"
+VNC_PWFILE="${BROWSER_VNC_PWFILE:-/tmp/.browser-vnc-passwd}"
+if [ -n "$VNC_ENABLED" ]; then
+  # FAIL CLOSED, in this order: a live view that would come up without the password
+  # the operator expects, or without one of its pieces, must never start.
+  if [ -z "${BROWSER_VNC_PASSWORD:-}" ]; then
+    echo "start-browser: BROWSER_VNC=1 but BROWSER_VNC_PASSWORD is empty - refusing to start a PASSWORDLESS live view (that is full remote control of this browser): set BROWSER_VNC_PASSWORD (secret) or BROWSER_VNC=0" >&2
+    exit 2
+  fi
+  if ! command -v x11vnc >/dev/null 2>&1 || ! command -v websockify >/dev/null 2>&1 || [ ! -f "$NOVNC_WEB/vnc.html" ]; then
+    echo "start-browser: BROWSER_VNC=1 but the live view is incomplete: x11vnc / websockify / $NOVNC_WEB/vnc.html missing from this image" >&2
+    exit 1
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # THE LAUNCH MODE - the DEPLOYED DEFAULT is a REAL, HEADFUL browser.
 #
 # A headless chromium is REFUSED by an origin that checks for a real browser:
@@ -62,6 +111,13 @@ case "${BROWSER_HEADLESS:-0}" in
     exit 2
     ;;
 esac
+# A live view attaches to the X display the browser draws on; the headless launch
+# has no display at all, so there is nothing to stream - refuse instead of serving
+# an empty VNC screen.
+if [ -n "$HEADLESS" ] && [ -n "$VNC_ENABLED" ]; then
+  echo "start-browser: BROWSER_VNC=1 needs the X display a headful browser runs on, and BROWSER_HEADLESS=1 starts no X server (set BROWSER_HEADLESS=0 or BROWSER_VNC=0)" >&2
+  exit 2
+fi
 DISPLAY_NAME="${BROWSER_DISPLAY:-:99}"
 SCREEN="${BROWSER_SCREEN:-1440x1000x24}"
 WINDOW_SIZE="${BROWSER_WINDOW_SIZE:-1440,1000}"
@@ -81,6 +137,20 @@ cdp_answers() {
   ' "$1" 2>/dev/null
 }
 
+# Does the noVNC page answer? The live-view readiness probe, same shape as the CDP
+# one: a live view is up when the page a phone will open is really served.
+novnc_answers() {
+  node -e '
+    const http = require("http");
+    const req = http.get({ host: "127.0.0.1", port: Number(process.argv[1]), path: "/vnc.html", timeout: 2000 }, (res) => {
+      res.resume();
+      process.exit(res.statusCode === 200 ? 0 : 1);
+    });
+    req.on("error", () => process.exit(1));
+    req.on("timeout", () => { req.destroy(); process.exit(1); });
+  ' "$1" 2>/dev/null
+}
+
 # Background mode: detach the FOREGROUND supervisor (this same script) and wait for
 # the CDP endpoint it must bring up. One startup path, two behaviours - the exit
 # code is the proof that the service is up, no sleep-and-hope.
@@ -92,6 +162,23 @@ if [ "$MODE" = "background" ]; then
   while [ "$waited" -lt "$WAIT_SECONDS" ]; do
     if cdp_answers "$PORT"; then
       echo "start-browser: CDP endpoint answering on 0.0.0.0:$PORT (after ${waited}s)"
+      # With the live view enabled, exit 0 only once the noVNC page answers too: the
+      # supervisor starts it right after the CDP endpoint comes up, and a launcher
+      # that gets exit 0 must know BOTH endpoints are usable.
+      if [ -n "$VNC_ENABLED" ]; then
+        while [ "$waited" -lt "$WAIT_SECONDS" ]; do
+          if novnc_answers "$NOVNC_PORT"; then
+            echo "start-browser: live view answering on 0.0.0.0:$NOVNC_PORT (noVNC, after ${waited}s)"
+            exit 0
+          fi
+          sleep 1
+          waited=$((waited + 1))
+        done
+        echo "start-browser: no answer on 127.0.0.1:$NOVNC_PORT (noVNC) within ${WAIT_SECONDS}s - log tail:" >&2
+        tail -n 20 "$LOG" >&2 2>/dev/null || true
+        kill -TERM "$SUPERVISOR_PID" 2>/dev/null || true
+        exit 1
+      fi
       exit 0
     fi
     if ! kill -0 "$SUPERVISOR_PID" 2>/dev/null; then
@@ -134,9 +221,13 @@ fi
 
 CHROME_PID=""
 FWD_PID=""
+VNC_PID=""
+WS_PID=""
 stop_children() {
   if [ -n "$CHROME_PID" ]; then kill -TERM "$CHROME_PID" 2>/dev/null || true; fi
   if [ -n "$FWD_PID" ]; then kill -TERM "$FWD_PID" 2>/dev/null || true; fi
+  if [ -n "$WS_PID" ]; then kill -TERM "$WS_PID" 2>/dev/null || true; fi
+  if [ -n "$VNC_PID" ]; then kill -TERM "$VNC_PID" 2>/dev/null || true; fi
   if [ -n "$XVFB_PID" ]; then kill -TERM "$XVFB_PID" 2>/dev/null || true; fi
 }
 trap 'stop_children; exit 143' TERM INT
@@ -283,11 +374,56 @@ if ! cdp_answers "$PORT"; then
   fail_loudly "no answer on 127.0.0.1:$PORT within ${WAIT_SECONDS}s"
 fi
 
+# ---------------------------------------------------------------------------
+# THE LIVE VIEW, started AFTER the browser is really up and ON THE SAME DISPLAY:
+# x11vnc attaches to $DISPLAY_NAME (the display chromium is drawing on), websockify
+# serves the noVNC client and proxies the RFB connection to x11vnc. The password is
+# handed to x11vnc through a 0600 file (never on the command line, so it does not
+# show up in `ps`, and never in a log); the x11vnc server itself binds LOOPBACK
+# only and websockify is the only thing listening on the container network.
+start_live_view() {
+  [ -n "$VNC_ENABLED" ] || return 0
+  rm -f "$VNC_PWFILE"
+  umask 077
+  if ! x11vnc -storepasswd "$BROWSER_VNC_PASSWORD" "$VNC_PWFILE" >/dev/null 2>&1; then
+    fail_loudly "could not store the VNC password in $VNC_PWFILE"
+  fi
+  chmod 0600 "$VNC_PWFILE"
+  x11vnc -display "$DISPLAY_NAME" -forever -shared -localhost \
+    -rfbport "$VNC_PORT" -rfbauth "$VNC_PWFILE" >>"$LOG" 2>&1 &
+  VNC_PID=$!
+  websockify --web="$NOVNC_WEB" "0.0.0.0:$NOVNC_PORT" "127.0.0.1:$VNC_PORT" >>"$LOG" 2>&1 &
+  WS_PID=$!
+  vwaited=0
+  while [ "$vwaited" -lt "$WAIT_SECONDS" ]; do
+    if ! kill -0 "$VNC_PID" 2>/dev/null; then
+      fail_loudly "x11vnc exited during startup"
+    fi
+    if ! kill -0 "$WS_PID" 2>/dev/null; then
+      fail_loudly "websockify exited during startup"
+    fi
+    if novnc_answers "$NOVNC_PORT"; then
+      echo "start-browser: live view on 0.0.0.0:$NOVNC_PORT (noVNC) -> 127.0.0.1:$VNC_PORT (x11vnc on $DISPLAY_NAME), password required"
+      return 0
+    fi
+    sleep 1
+    vwaited=$((vwaited + 1))
+  done
+  fail_loudly "no answer on 127.0.0.1:$NOVNC_PORT (noVNC) within ${WAIT_SECONDS}s"
+}
+start_live_view
+
 # Foreground (the container entrypoint): supervise both children and leave as soon
 # as one of them dies - a half-dead browser service must not look healthy.
 while kill -0 "$CHROME_PID" 2>/dev/null && kill -0 "$FWD_PID" 2>/dev/null; do
   if [ -n "$XVFB_PID" ] && ! kill -0 "$XVFB_PID" 2>/dev/null; then
     fail_loudly "Xvfb exited"
+  fi
+  if [ -n "$VNC_PID" ] && ! kill -0 "$VNC_PID" 2>/dev/null; then
+    fail_loudly "x11vnc exited"
+  fi
+  if [ -n "$WS_PID" ] && ! kill -0 "$WS_PID" 2>/dev/null; then
+    fail_loudly "websockify exited"
   fi
   sleep 5
 done
