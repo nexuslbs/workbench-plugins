@@ -42,13 +42,13 @@ FORWARDER="${BROWSER_FORWARDER:-/usr/local/bin/cdp-forward.js}"
 # ---------------------------------------------------------------------------
 # THE LAUNCH MODE - the DEPLOYED DEFAULT is a REAL, HEADFUL browser.
 #
-# A headless chromium is REFUSED by Cloudflare-protected origins: the managed
-# challenge passes (a `cf_clearance` cookie appears) and the origin STILL answers
-# 403 "Just a moment..." on the next navigation. The SAME image served the page
-# directly (HTTP 200, classification `none`, no widget at all) as soon as
-# chromium ran HEADFUL under Xvfb (measured on downdetector.com.br, threads 2607
-# and 2688). That is why the default here is headful: not a fingerprint trick but
-# an ordinary desktop chromium on a real X display.
+# A headless chromium is REFUSED by an origin that checks for a real browser:
+# the verification step passes (the cookie such an origin sets appears) and the
+# origin STILL answers 403 "Just a moment..." on the next navigation. The SAME
+# image served the page directly (HTTP 200, no verification step at all) as soon
+# as chromium ran HEADFUL under Xvfb (measured on a public page, threads 2607 and
+# 2688). That is why the default here is headful: not a fingerprint trick but an
+# ordinary desktop chromium on a real X display.
 #
 #   BROWSER_HEADLESS=0 (default) headful chromium on the Xvfb display below
 #   BROWSER_HEADLESS=1           the old `--headless=new` launch (opt-in; a

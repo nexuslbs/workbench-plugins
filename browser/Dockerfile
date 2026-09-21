@@ -23,8 +23,8 @@ ENV BROWSER_CDP_PORT=9222
 ENV BROWSER_CDP_INTERNAL_PORT=9223
 
 # THE LAUNCH MODE of the deployed browser: `0` (the default) is a REAL HEADFUL
-# chromium on the Xvfb display the entrypoint starts, which is what a
-# Cloudflare-protected origin serves; `1` is the old `--headless=new` launch, an
+# chromium on the Xvfb display the entrypoint starts, which is what an origin
+# that checks for a real browser serves; `1` is the old `--headless=new` launch, an
 # explicit opt-in (see start-browser.sh for the measurement behind this default).
 # BROWSER_DISPLAY / BROWSER_SCREEN / BROWSER_WINDOW_SIZE shape the Xvfb display.
 ENV BROWSER_HEADLESS=0

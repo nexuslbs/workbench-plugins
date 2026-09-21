@@ -407,15 +407,26 @@ docker run --rm -v "$PWD:/repo" -w /repo mcr.microsoft.com/playwright:v1.63.0-no
 `.github/workflows/browser-tests.yml` runs exactly this on every push and PR, so
 a browser regression can never land behind a skipped test.
 
-### The DEPLOYED gate (`npm run test:browser` against the browser service)
+### The DEPLOYED gate (`npm test -- browser-real-page`)
 
 The suite above launches a LOCAL chromium, so it cannot see a deployment-level
-regression (the browser SERVICE image launching headless, which is exactly what
-makes a Cloudflare-protected origin answer 403 "Just a moment..."). That half is
-gated by pointing the same suite at the RUNNING browser service over CDP, which is
-what `test/browser-cloudflare.test.ts` does when `BROWSER_USE_CDP_ENDPOINT` is set
-(a local chromium cannot pass those pages, so without the endpoint the test FAILS
-under `BROWSER_USE_REQUIRE_BROWSER=1` instead of skipping quietly).
+regression (the browser SERVICE image launching, and behaving, unlike itself).
+`test/browser-real-page.test.ts` is the acceptance gate of the browser service:
+pointed at the RUNNING service over CDP it measures the launch properties, the
+RAW facts of a load and a real pointer click inside a control the page offers,
+and it names no verification vendor (its A12 test fails the build when one
+appears anywhere in the product surface):
+
+```bash
+BROWSER_USE_CDP_ENDPOINT=http://<browser host>:9222 npm test -- browser-real-page
+```
+
+Without the endpoint the deployment tests SKIP, naming the prerequisite;
+`BROWSER_USE_REQUIRE_CDP=1` turns that skip into a FAILURE (what the gate below
+sets). The DETERMINISTIC half is served by the test itself on loopback, so it
+needs no third party and cannot be throttled; the OBSERVATIONAL half writes its
+raw observations under `artifacts/browser-real-page/` and never fails on what a
+third party answers today.
 
 ONE command, on a clean boot of the DEPLOYED configuration (the image built from
 `browser/`, its own entrypoint, no override) - the exit code is the suite's:
