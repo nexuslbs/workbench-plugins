@@ -149,6 +149,51 @@ fail_loudly() {
   exit 1
 }
 
+# THE CHROMIUM SWITCH SET: the SAME stock automation switches playwright's own
+# chromium launcher spawns (playwright-core chromiumSwitches - i.e. the browser
+# the provider would launch itself, with the version of the library the plugin
+# already depends on). A SHORTER hand-rolled list is not neutral: measured
+# (thread 2755, same binary + display + egress IP) the shortened list made the
+# origin serve a DIFFERENT document than this set, while spawning with these
+# switches got the same document bare playwright gets. Keep it in sync with
+# node_modules/playwright-core when playwright is upgraded.
+STOCK_FLAGS="\
+--disable-field-trial-config \
+--disable-background-networking \
+--disable-background-timer-throttling \
+--disable-backgrounding-occluded-windows \
+--disable-back-forward-cache \
+--disable-breakpad \
+--disable-client-side-phishing-detection \
+--disable-component-extensions-with-background-pages \
+--disable-component-update \
+--no-default-browser-check \
+--disable-default-apps \
+--disable-edgeupdater \
+--disable-extensions \
+--disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,BlockOriginHeaderModificationOnRedirect,Translate,AutoDeElevate,OptimizationHints,msForceBrowserSignIn,msEdgeUpdateLaunchServicesPreferredVersion \
+--enable-features=CDPScreenshotNewSurface \
+--allow-pre-commit-input \
+--disable-hang-monitor \
+--disable-ipc-flooding-protection \
+--disable-popup-blocking \
+--disable-prompt-on-repost \
+--disable-renderer-backgrounding \
+--disable-updater-scheduler \
+--force-color-profile=srgb \
+--metrics-recording-only \
+--no-first-run \
+--password-store=basic \
+--use-mock-keychain \
+--no-service-autorun \
+--export-tagged-pdf \
+--disable-search-engine-choice-screen \
+--unsafely-disable-devtools-self-xss-warnings \
+--edge-skip-compat-layer-relaunch \
+--disable-infobars \
+--disable-sync \
+--enable-unsafe-swiftshader"
+
 # The X DISPLAY: started and owned HERE in headful mode. Readiness is the X
 # socket, not a sleep: chromium refuses to start against a display that is not
 # there yet, and a container that half-started must never look healthy.
@@ -194,10 +239,10 @@ if [ -z "$HEADLESS" ]; then
   # has no GPU, so ANGLE falls back to software rendering on this display;
   # `--enable-unsafe-swiftshader` only ALLOWS that fallback (recent chromium
   # refuses software WebGL without it) and is inert where real GL exists.
-  LAUNCH_ARGS="--no-first-run --no-default-browser-check --disable-infobars --window-size=$WINDOW_SIZE --user-data-dir=$PROFILE_DIR --enable-unsafe-swiftshader"
+  LAUNCH_ARGS="$STOCK_FLAGS --window-size=$WINDOW_SIZE --user-data-dir=$PROFILE_DIR"
 else
   MODE="headless (--headless=new, BROWSER_HEADLESS=1)"
-  LAUNCH_ARGS="--headless=new"
+  LAUNCH_ARGS="$STOCK_FLAGS --headless=new --window-size=$WINDOW_SIZE --user-data-dir=$PROFILE_DIR"
 fi
 
 echo "start-browser: mode=$MODE, chromium $BIN ($($BIN --version 2>/dev/null || echo version-unknown)) on 127.0.0.1:$INTERNAL_PORT, CDP forwarded on 0.0.0.0:$PORT"
