@@ -44,12 +44,46 @@ import path from 'node:path'
 import { test } from 'node:test'
 import { chromium } from 'playwright-core'
 import type { Browser, BrowserContext, Page } from 'playwright-core'
-import { createPlaywrightProvider } from '../core/browser-use-playwright/index.ts'
+import { connectTarget, createPlaywrightProvider } from '../core/browser-use-playwright/index.ts'
 import { createBrowserUseService } from '../core/browser-use-impl/index.ts'
+import { resolveBrowserUseBounds } from '../definitions/browser-use.ts'
 import type { BrowserNavigateAnswer, BrowserMouseAnswer } from '../definitions/browser-use.ts'
 
 const ENDPOINT = process.env.BROWSER_USE_CDP_ENDPOINT ?? ''
+
+/**
+ * The per-call bounds the HOST would resolve. The provider methods take them as
+ * their last argument; this file calls the provider DIRECTLY in the two places
+ * where it must read the page (A8, the DOM-vs-frame-tree comparison), so it
+ * hands the provider the same bounds a host call carries.
+ */
+const CALL_OPTIONS = resolveBrowserUseBounds({})
 const REQUIRE_CDP = process.env.BROWSER_USE_REQUIRE_CDP === '1'
+
+/**
+ * The address the BROWSER must use to reach the fixture origins served here.
+ *
+ * The gate measures a DEPLOYED browser service, which normally runs in its own
+ * container: a fixture bound to loopback would be unreachable for it (the
+ * browser's own loopback is a different one). Every fixture therefore binds
+ * 0.0.0.0 and the URLs advertise this process's first non-loopback IPv4 - the
+ * address a peer on the same network can reach. The two servers sit on two
+ * different ports, and the port is part of an origin, which is what makes the
+ * control frame CROSS-ORIGIN. `BROWSER_USE_FIXTURE_HOST` overrides the address
+ * when the caller knows better.
+ */
+function fixtureHost(): string {
+  const declared = (process.env.BROWSER_USE_FIXTURE_HOST ?? '').trim()
+  if (declared.length > 0) return declared
+  for (const entries of Object.values(os.networkInterfaces())) {
+    for (const entry of entries ?? []) {
+      if (entry.family === 'IPv4' && !entry.internal) return entry.address
+    }
+  }
+  return '127.0.0.1'
+}
+
+const FIXTURE_HOST = fixtureHost()
 
 /** The UA the fixture origins see, recorded per path (A6). */
 const seenUserAgents: string[] = []
@@ -93,11 +127,11 @@ const WIDGET = `<!doctype html>
 </script>
 </body></html>`
 
-/** Start a fixture origin on loopback and answer its port. */
+/** Start a fixture origin reachable by the BROWSER (see FIXTURE_HOST). */
 function listen(handler: (request: http.IncomingMessage, response: http.ServerResponse) => void): Promise<http.Server> {
   return new Promise((resolve) => {
     const server = http.createServer(handler)
-    server.listen(0, '127.0.0.1', () => resolve(server))
+    server.listen(0, '0.0.0.0', () => resolve(server))
   })
 }
 
@@ -110,16 +144,16 @@ let fixtures: Promise<{ gated: string; landing: string; widget: string; stop: ()
 
 function fixtureOrigins(): Promise<{ gated: string; landing: string; widget: string; stop: () => Promise<void> }> {
   fixtures ??= (async () => {
-    // Origin 1 (the page): 127.0.0.1. Origin 2 (the control): localhost - a
-    // DIFFERENT origin for the same loopback host, which is what makes the
-    // control cross-origin without any network.
+    // Origin 2 (the control): the SAME reachable host on a DIFFERENT PORT - the
+    // port is part of an origin, so the control is cross-origin without any
+    // network of its own.
     let widgetBase = ''
     const widget = await listen((request, response) => {
       seenUserAgents.push(String(request.headers['user-agent'] ?? ''))
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
       response.end(WIDGET)
     })
-    widgetBase = `http://localhost:${portOf(widget)}/control.html`
+    widgetBase = `http://${FIXTURE_HOST}:${portOf(widget)}/control.html`
 
     const page = await listen((request, response) => {
       const url = request.url ?? '/'
@@ -135,7 +169,7 @@ function fixtureOrigins(): Promise<{ gated: string; landing: string; widget: str
           'retry-after': '30',
           'set-cookie': 'wb_fixture=1; Path=/; HttpOnly; SameSite=Lax',
         })
-        response.end(offeredPage(`${widgetBase}?target=${encodeURIComponent(`http://127.0.0.1:${portOf(page)}/ok`)}`))
+        response.end(offeredPage(`${widgetBase}?target=${encodeURIComponent(`http://${FIXTURE_HOST}:${portOf(page)}/ok`)}`))
         return
       }
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
@@ -143,10 +177,16 @@ function fixtureOrigins(): Promise<{ gated: string; landing: string; widget: str
     })
 
     return {
-      gated: `http://127.0.0.1:${portOf(page)}/`,
-      landing: `http://127.0.0.1:${portOf(page)}/ok`,
+      gated: `http://${FIXTURE_HOST}:${portOf(page)}/`,
+      landing: `http://${FIXTURE_HOST}:${portOf(page)}/ok`,
       widget: widgetBase,
+      /**
+       * Stops both fixture origins AND drops the memo, so a test that runs after
+       * this one starts FRESH servers instead of reusing closed sockets (the
+       * fixtures are otherwise started once per process).
+       */
       stop: async () => {
+        fixtures = undefined
         await new Promise<void>((resolve) => page.close(() => resolve()))
         await new Promise<void>((resolve) => widget.close(() => resolve()))
       },
@@ -167,11 +207,23 @@ function skipOrFail(t: { skip: (reason: string) => void }, why: string): boolean
 }
 
 async function connect(): Promise<Browser> {
-  return chromium.connectOverCDP(ENDPOINT)
+  // The configured endpoint usually names the browser SERVICE by its DNS name,
+  // but the engine's DevTools server rejects any request whose Host header is
+  // neither an IP nor `localhost` (its DNS-rebinding guard), so dialling the name
+  // raw answers `Unexpected status 500`. The provider resolves the name to its
+  // ADDRESS before dialling (connectTarget); this gate drives the deployment the
+  // same way, and an endpoint that is already an address is returned unchanged.
+  return chromium.connectOverCDP(await connectTarget(ENDPOINT))
 }
 
 async function probePage(browser: Browser): Promise<{ context: BrowserContext; page: Page }> {
-  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  // NO viewport override here: an emulated viewport also REPLACES the engine's
+  // screen metrics (screen.width becomes the viewport width, 1280), which would
+  // hide the real display this test exists to measure - outerWidth then reports
+  // the emulated window plus its borders (1288) and the comparison below would
+  // be about emulation, not about the deployment. A4 reads the DEPLOYED window
+  // against the DEPLOYED display, so the probe page keeps the real geometry.
+  const context = await browser.newContext({ viewport: null })
   const page = await context.newPage()
   await page.goto('about:blank')
   return { context, page }
@@ -313,9 +365,11 @@ test('A7/A8/A11: a refusal answers the complete raw set, with the frame tree fro
     assert.ok(control.visible, `the control occupies an on-screen box: ${JSON.stringify(control)}`)
     assert.ok(control.box !== undefined && control.box.width > 0 && control.box.height > 0, `the control has real geometry: ${JSON.stringify(control.box)}`)
 
-    const dom = await provider.evaluate('raw', {
-      expression: "({ iframes: document.querySelectorAll('iframe').length, text: document.body.innerText.slice(0, 200) })",
-    })
+    const dom = await provider.evaluate(
+      'raw',
+      { expression: "({ iframes: document.querySelectorAll('iframe').length, text: document.body.innerText.slice(0, 200) })" },
+      CALL_OPTIONS,
+    )
     assert.deepEqual(
       (dom as { value?: unknown }).value,
       { iframes: 0, text: 'Verify you are human' },

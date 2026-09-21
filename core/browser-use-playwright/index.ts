@@ -1916,12 +1916,19 @@ export class PlaywrightProvider implements BrowserUseProvider {
     let resultingLoad: BrowserRawLoad | undefined
     if (moved) {
       await page.waitForLoadState('domcontentloaded', { timeout: 5_000 }).catch(() => undefined)
+      const landed = recorder
+        .since(navMark)
+        .filter((entry) => entry.response !== undefined)
+        .at(-1)
       resultingLoad = await this.captureLoad(live, page, {
         recorder,
         responseMark,
         navMark,
         startedAt: Date.now(),
-        response: null,
+        // The landing response is the one the ENGINE recorded for the navigation
+        // the PAGE performed; without it the transport could report only the URL,
+        // so the raw status and headers of the landing load would be missing.
+        response: landed?.response ?? null,
       })
     }
     live.lastTitle = await page.title().catch(() => live.lastTitle)

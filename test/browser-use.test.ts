@@ -1317,6 +1317,7 @@ test('host: frames/mouse FORWARD to a provider that implements them (session + v
     }
   }
   patched.mouse = async (session: string, request: Record<string, unknown>) => {
+    seen.push({ method: 'mouse', session, request })
     return {
       action: 'mouse',
       session,
