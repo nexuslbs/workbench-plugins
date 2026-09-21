@@ -127,3 +127,22 @@ The workflow builds the image once, **smoke-tests the built image** (it must ans
 `/json/version` on the CDP port), and pushes only the tested image. The image tag is
 the git tag with the `browser-` prefix stripped. Nothing else publishes this image:
 a branch push and a `v*` (core) tag build nothing here.
+## The real-browser acceptance gate
+
+One command measures the DEPLOYED service (the repository README documents it as
+"The DEPLOYED gate"): the suite attaches to THIS running container over CDP and
+asserts the RAW observations of each load - a real launch (no headless flag, a
+display, plugins, a WebGL renderer), the frame tree from the ENGINE rather than
+the page DOM, real pointer input inside an offered cross-origin control, and
+BOTH loads when the browser navigates itself:
+
+```sh
+BROWSER_USE_CDP_ENDPOINT=http://<host>:9222 npm test -- browser-real-page
+```
+
+Its deterministic half serves its own origins on loopback (a refusal with
+`retry-after`, an off-origin control, the landing page the control navigates to)
+and needs no third party and no endpoint at all. Without
+`BROWSER_USE_CDP_ENDPOINT` the DEPLOYED half SKIPS, naming the prerequisite;
+`BROWSER_USE_REQUIRE_CDP=1` turns that skip into a failure, which is what the
+one-command gate above sets.
