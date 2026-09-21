@@ -187,7 +187,14 @@ if [ -z "$HEADLESS" ]; then
     fail_loudly "no X display on $DISPLAY_NAME (socket $XSOCK) within ${WAIT_SECONDS}s"
   fi
   MODE="headful on $DISPLAY_NAME ($SCREEN), window $WINDOW_SIZE"
-  LAUNCH_ARGS="--no-first-run --no-default-browser-check --disable-infobars --window-size=$WINDOW_SIZE --user-data-dir=$PROFILE_DIR --disable-blink-features=AutomationControlled"
+  # NO GPU-DISABLING FLAG. `--disable-gpu` (and `--use-gl=disabled`) leave the
+  # browser with NO WebGL renderer at all: `canvas.getContext('webgl')` returns a
+  # context whose UNMASKED_RENDERER_WEBGL is null, which is not what an ordinary
+  # desktop browser exposes on a machine that has any GL stack. This container
+  # has no GPU, so ANGLE falls back to software rendering on this display;
+  # `--enable-unsafe-swiftshader` only ALLOWS that fallback (recent chromium
+  # refuses software WebGL without it) and is inert where real GL exists.
+  LAUNCH_ARGS="--no-first-run --no-default-browser-check --disable-infobars --window-size=$WINDOW_SIZE --user-data-dir=$PROFILE_DIR --enable-unsafe-swiftshader"
 else
   MODE="headless (--headless=new, BROWSER_HEADLESS=1)"
   LAUNCH_ARGS="--headless=new"
@@ -200,7 +207,6 @@ echo "start-browser: mode=$MODE, chromium $BIN ($($BIN --version 2>/dev/null || 
   $LAUNCH_ARGS \
   --no-sandbox \
   --disable-dev-shm-usage \
-  --disable-gpu \
   --remote-debugging-address=127.0.0.1 \
   --remote-debugging-port="$INTERNAL_PORT" \
   ${BROWSER_EXTRA_ARGS:-} \
