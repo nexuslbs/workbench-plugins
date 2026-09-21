@@ -303,7 +303,7 @@ test('deployed browser (CDP): nowsecure.nl is served for real (no regression)', 
   }
 })
 
-test('deployed browser (CDP): the DeepSeek status page is served >= 3 consecutive times, plus a fresh context', async (t) => {
+test('deployed browser (CDP): the DeepSeek status page is served on every load, OR the edge refusal is stated (never a silent pass)', async (t) => {
   const reason = skipReason()
   if (reason !== undefined) {
     t.skip(reason)
