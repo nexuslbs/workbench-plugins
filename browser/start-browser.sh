@@ -16,19 +16,29 @@
 # Nothing here knows about workbench.
 #
 #   start-browser                 foreground (the container entrypoint): start both,
-#                                 require the CDP endpoint to answer, then supervise
+#                                 require the CDP endpoint to answer, then supervise.
+#                                 THIS process owns the optional live view and answers
+#                                 the runtime switch below.
 #   start-browser --background    start it DETACHED, wait until the CDP endpoint
 #                                 answers, then exit 0 (bounded, for a launcher run
 #                                 through `docker exec` / ssh, which would otherwise
 #                                 block forever on a foreground child)
+#   start-browser vnc-start       THE LIVE VIEW, ON DEMAND: ask the RUNNING supervisor
+#   start-browser vnc-stop        to start/stop x11vnc + websockify on the display the
+#   start-browser vnc-status      agent's chromium already draws on. No container
+#                                 recreate, no second display, no second browser, and
+#                                 the agent's session is untouched either way.
 set -eu
 
 MODE="foreground"
 case "${1:-}" in
   ""|-f|--foreground) MODE="foreground" ;;
   -d|--background|--detach) MODE="background" ;;
+  vnc-start) MODE="vnc-start" ;;
+  vnc-stop) MODE="vnc-stop" ;;
+  vnc-status) MODE="vnc-status" ;;
   *)
-    echo "start-browser: unknown option '$1' (usage: start-browser [--background])" >&2
+    echo "start-browser: unknown option '$1' (usage: start-browser [--foreground|--background|vnc-start|vnc-stop|vnc-status])" >&2
     exit 2
     ;;
 esac
@@ -40,28 +50,32 @@ LOG="${BROWSER_LOG:-/tmp/start-browser.log}"
 FORWARDER="${BROWSER_FORWARDER:-/usr/local/bin/cdp-forward.js}"
 
 # ---------------------------------------------------------------------------
-# THE LIVE VIEW (opt-in, OFF by default): the operator watches and drives THE SAME
+# THE LIVE VIEW (ON DEMAND, OFF by default): the operator watches and drives THE SAME
 # chromium the agent uses - no second X server, no second browser, no per-session
 # display. The chain is
 #
-#   chromium on $DISPLAY_NAME -> x11vnc 127.0.0.1:$VNC_PORT (RFB, password auth)
+#   chromium on $DISPLAY_NAME -> x11vnc 127.0.0.1:$VNC_PORT (RFB, loopback, NO password)
 #                             -> websockify 0.0.0.0:$NOVNC_PORT (noVNC + WebSocket)
 #                             -> a tunnel (cloudflared) -> the operator's phone
 #
 # so whatever the agent opens appears in the live view, and whatever the human
 # clicks / types / scrolls happens in the agent's browser.
 #
-#   BROWSER_VNC=0 (default)  nothing extra runs: a deployment that does not opt in
-#                            starts exactly the processes it started before
-#   BROWSER_VNC=1            start x11vnc + websockify; REQUIRES
-#                            BROWSER_VNC_PASSWORD and a headful X display, and
-#                            refuses to start the VNC part otherwise (FAIL CLOSED:
-#                            a passwordless VNC endpoint is full remote control of
-#                            this container for anyone who can reach the port)
+#   BROWSER_VNC=0 (default)  nothing extra starts at BOOT: a deployment that does not
+#                            opt in runs exactly the processes it ran before, and the
+#                            live view is started ONLY when a human is needed:
+#                              docker exec <container> start-browser vnc-start
+#                            (and stopped again with `start-browser vnc-stop`)
+#   BROWSER_VNC=1            start the live view at boot as well (the same code path)
+#                            - vnc-start / vnc-stop still work at runtime.
 #
-# noVNC = full remote control of this browser container. The tunnel hostname must
-# ADDITIONALLY be protected (Cloudflare Access, or an unguessable path): the
-# password is the second line of defence, never the only one.
+# NO PASSWORD OF OUR OWN (operator correction, telegram 2786): x11vnc runs `-nopw`. The
+# access-control boundary is the operator's Cloudflare tunnel + Cloudflare Access OTP in
+# front of the published hostname; the RFB port therefore stays on LOOPBACK and 8080 is
+# never published on the host - websockify is the ONLY thing listening on the container
+# network. noVNC is full remote control of this container (and of whatever session the
+# agent holds in it), so that hostname MUST sit behind the Access policy: see
+# browser/README.md.
 VNC_ENABLED=""
 case "${BROWSER_VNC:-0}" in
   1|true|yes|on) VNC_ENABLED="1" ;;
@@ -74,18 +88,23 @@ esac
 VNC_PORT="${BROWSER_VNC_PORT:-5900}"
 NOVNC_PORT="${BROWSER_NOVNC_PORT:-8080}"
 NOVNC_WEB="${BROWSER_NOVNC_WEB:-/usr/share/novnc}"
-VNC_PWFILE="${BROWSER_VNC_PWFILE:-/tmp/.browser-vnc-passwd}"
-if [ -n "$VNC_ENABLED" ]; then
-  # FAIL CLOSED, in this order: a live view that would come up without the password
-  # the operator expects, or without one of its pieces, must never start.
-  if [ -z "${BROWSER_VNC_PASSWORD:-}" ]; then
-    echo "start-browser: BROWSER_VNC=1 but BROWSER_VNC_PASSWORD is empty - refusing to start a PASSWORDLESS live view (that is full remote control of this browser): set BROWSER_VNC_PASSWORD (secret) or BROWSER_VNC=0" >&2
-    exit 2
-  fi
-  if ! command -v x11vnc >/dev/null 2>&1 || ! command -v websockify >/dev/null 2>&1 || [ ! -f "$NOVNC_WEB/vnc.html" ]; then
-    echo "start-browser: BROWSER_VNC=1 but the live view is incomplete: x11vnc / websockify / $NOVNC_WEB/vnc.html missing from this image" >&2
-    exit 1
-  fi
+# THE CONTROL CHANNEL of the runtime switch: a request/response pair in a shared
+# directory (a `docker exec` sees the container's /tmp), so `vnc-start` / `vnc-stop`
+# reach the RUNNING supervisor that owns - and keeps supervising - x11vnc/websockify.
+VNC_CTL_DIR="${BROWSER_VNC_CTL_DIR:-/tmp/browser-vnc-ctl}"
+VNC_REQ="$VNC_CTL_DIR/request"
+VNC_RSP="$VNC_CTL_DIR/response"
+VNC_CTL_WAIT="${BROWSER_VNC_CTL_WAIT_SECONDS:-120}"
+# The live view needs all its pieces IN THE IMAGE (the Dockerfile asserts them at build
+# time too). A boot-time opt-in that cannot deliver refuses to start; a runtime
+# vnc-start reports the error to the caller and leaves the browser running.
+VNC_READY=""
+if command -v x11vnc >/dev/null 2>&1 && command -v websockify >/dev/null 2>&1 && [ -f "$NOVNC_WEB/vnc.html" ]; then
+  VNC_READY="1"
+fi
+if [ -n "$VNC_ENABLED" ] && [ -z "$VNC_READY" ]; then
+  echo "start-browser: BROWSER_VNC=1 but the live view is incomplete: x11vnc / websockify / $NOVNC_WEB/vnc.html missing from this image" >&2
+  exit 1
 fi
 
 # ---------------------------------------------------------------------------
@@ -150,6 +169,77 @@ novnc_answers() {
     req.on("timeout", () => { req.destroy(); process.exit(1); });
   ' "$1" 2>/dev/null
 }
+
+# Is a TCP port of THIS container open (something listening)? Proves the live view is
+# really up (RFB) and, after a stop, really gone.
+tcp_open() {
+  node -e '
+    const net = require("net");
+    const s = net.connect({ host: "127.0.0.1", port: Number(process.argv[1]) });
+    s.setTimeout(2000);
+    s.on("connect", () => { s.destroy(); process.exit(0); });
+    s.on("error", () => process.exit(1));
+    s.on("timeout", () => { s.destroy(); process.exit(1); });
+  ' "$1" 2>/dev/null
+}
+
+# ---------------------------------------------------------------------------
+# THE RUNTIME SWITCH of the live view (CLIENT side). The RUNNING supervisor (this same
+# script in foreground mode, i.e. the container entrypoint) owns x11vnc and websockify,
+# so `docker exec <container> start-browser vnc-start` turns the stream ON around a
+# captcha and `vnc-stop` turns it OFF again - no stack recreate, no second display, no
+# second browser, and the agent's page/session survives either way.
+if [ "$MODE" = "vnc-start" ] || [ "$MODE" = "vnc-stop" ] || [ "$MODE" = "vnc-status" ]; then
+  VERB="${MODE#vnc-}"
+  if [ ! -d "$VNC_CTL_DIR" ]; then
+    echo "start-browser: no live-view control channel at $VNC_CTL_DIR - is the browser service running (the container entrypoint owns the channel)? Use BROWSER_VNC=1 to have the live view at boot" >&2
+    exit 1
+  fi
+  RID="$$-$(date +%s)"
+  printf '%s %s\n' "$VERB" "$RID" >"$VNC_REQ.tmp.$$"
+  mv "$VNC_REQ.tmp.$$" "$VNC_REQ"
+  waited=0
+  RSTATUS=""
+  RID_SEEN=""
+  RMSG=""
+  while [ "$waited" -lt "$VNC_CTL_WAIT" ]; do
+    if [ -f "$VNC_RSP" ]; then
+      RSTATUS=""
+      RID_SEEN=""
+      RMSG=""
+      read RSTATUS RID_SEEN RMSG <"$VNC_RSP" || true
+      if [ "${RID_SEEN:-}" = "$RID" ]; then break; fi
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  if [ "${RID_SEEN:-}" != "$RID" ]; then
+    echo "start-browser: the live-view supervisor did not answer '$VERB' within ${VNC_CTL_WAIT}s" >&2
+    exit 1
+  fi
+  echo "start-browser: ${RMSG:-$VERB}"
+  if [ "${RSTATUS:-}" != "ok" ]; then exit 1; fi
+  # THE END STATE IS VERIFIED HERE, not taken from the supervisor's word: the switch
+  # either really answers, or it really is gone.
+  case "$VERB" in
+    start)
+      if novnc_answers "$NOVNC_PORT" && tcp_open "$VNC_PORT"; then
+        echo "start-browser: verified 127.0.0.1:$VNC_PORT (RFB, no password) and 127.0.0.1:$NOVNC_PORT (noVNC /vnc.html) both answer"
+      else
+        echo "start-browser: the supervisor reported the live view up, but the endpoints do not answer" >&2
+        exit 1
+      fi
+      ;;
+    stop)
+      if novnc_answers "$NOVNC_PORT" || tcp_open "$VNC_PORT"; then
+        echo "start-browser: the supervisor reported the live view stopped, but a listener is still there" >&2
+        exit 1
+      fi
+      echo "start-browser: verified that nothing listens on 127.0.0.1:$VNC_PORT (RFB) nor on $NOVNC_PORT (noVNC)"
+      ;;
+  esac
+  exit 0
+fi
 
 # Background mode: detach the FOREGROUND supervisor (this same script) and wait for
 # the CDP endpoint it must bring up. One startup path, two behaviours - the exit
@@ -375,55 +465,171 @@ if ! cdp_answers "$PORT"; then
 fi
 
 # ---------------------------------------------------------------------------
-# THE LIVE VIEW, started AFTER the browser is really up and ON THE SAME DISPLAY:
-# x11vnc attaches to $DISPLAY_NAME (the display chromium is drawing on), websockify
-# serves the noVNC client and proxies the RFB connection to x11vnc. The password is
-# handed to x11vnc through a 0600 file (never on the command line, so it does not
-# show up in `ps`, and never in a log); the x11vnc server itself binds LOOPBACK
-# only and websockify is the only thing listening on the container network.
-start_live_view() {
-  [ -n "$VNC_ENABLED" ] || return 0
-  rm -f "$VNC_PWFILE"
-  umask 077
-  if ! x11vnc -storepasswd "$BROWSER_VNC_PASSWORD" "$VNC_PWFILE" >/dev/null 2>&1; then
-    fail_loudly "could not store the VNC password in $VNC_PWFILE"
+# THE LIVE VIEW, ON THE SAME DISPLAY the agent's chromium draws on. These functions are
+# used from BOTH entry points - the boot-time opt-in (BROWSER_VNC=1) and the runtime
+# switch - so both start and stop the very same processes on the very same display.
+VNC_ERR=""
+
+vnc_is_up() {
+  [ -n "$VNC_PID" ] && [ -n "$WS_PID" ] || return 1
+  kill -0 "$VNC_PID" 2>/dev/null || return 1
+  kill -0 "$WS_PID" 2>/dev/null || return 1
+  novnc_answers "$NOVNC_PORT" || return 1
+  tcp_open "$VNC_PORT" || return 1
+  return 0
+}
+
+# Start x11vnc (attached to $DISPLAY_NAME, LOOPBACK only, NO PASSWORD: `-nopw`, because
+# the access-control boundary is the tunnel + Cloudflare Access OTP, see
+# browser/README.md) and websockify (the WebSocket bridge serving noVNC on the container
+# network). 0 = both endpoints answer; 1 = failed, nothing left running, $VNC_ERR says why.
+start_vnc() {
+  VNC_ERR=""
+  if [ -z "$VNC_READY" ]; then
+    VNC_ERR="the live view is incomplete: x11vnc / websockify / $NOVNC_WEB/vnc.html missing from this image"
+    return 1
   fi
-  chmod 0600 "$VNC_PWFILE"
-  x11vnc -display "$DISPLAY_NAME" -forever -shared -localhost \
-    -rfbport "$VNC_PORT" -rfbauth "$VNC_PWFILE" >>"$LOG" 2>&1 &
+  if [ -n "$HEADLESS" ]; then
+    VNC_ERR="the live view needs the X display a headful browser draws on, and this container runs headless (BROWSER_HEADLESS=1): there is nothing to stream"
+    return 1
+  fi
+  x11vnc -display "$DISPLAY_NAME" -forever -shared -localhost -nopw \
+    -rfbport "$VNC_PORT" >>"$LOG" 2>&1 &
   VNC_PID=$!
   websockify --web="$NOVNC_WEB" "0.0.0.0:$NOVNC_PORT" "127.0.0.1:$VNC_PORT" >>"$LOG" 2>&1 &
   WS_PID=$!
   vwaited=0
   while [ "$vwaited" -lt "$WAIT_SECONDS" ]; do
     if ! kill -0 "$VNC_PID" 2>/dev/null; then
-      fail_loudly "x11vnc exited during startup"
+      VNC_ERR="x11vnc exited during startup (see $LOG)"
+      stop_vnc
+      return 1
     fi
     if ! kill -0 "$WS_PID" 2>/dev/null; then
-      fail_loudly "websockify exited during startup"
+      VNC_ERR="websockify exited during startup (see $LOG)"
+      stop_vnc
+      return 1
     fi
-    if novnc_answers "$NOVNC_PORT"; then
-      echo "start-browser: live view on 0.0.0.0:$NOVNC_PORT (noVNC) -> 127.0.0.1:$VNC_PORT (x11vnc on $DISPLAY_NAME), password required"
+    if novnc_answers "$NOVNC_PORT" && tcp_open "$VNC_PORT"; then
       return 0
     fi
     sleep 1
     vwaited=$((vwaited + 1))
   done
-  fail_loudly "no answer on 127.0.0.1:$NOVNC_PORT (noVNC) within ${WAIT_SECONDS}s"
+  VNC_ERR="no answer on 127.0.0.1:$NOVNC_PORT (noVNC) within ${WAIT_SECONDS}s"
+  stop_vnc
+  return 1
 }
-start_live_view
 
-# Foreground (the container entrypoint): supervise both children and leave as soon
-# as one of them dies - a half-dead browser service must not look healthy.
+# Stop both and WAIT until the ports are really closed again: "stopped" must mean the
+# listeners are gone, not that a signal was sent.
+stop_vnc() {
+  if [ -n "$WS_PID" ]; then kill -TERM "$WS_PID" 2>/dev/null || true; fi
+  if [ -n "$VNC_PID" ]; then kill -TERM "$VNC_PID" 2>/dev/null || true; fi
+  closed_after=0
+  while [ "$closed_after" -lt 15 ]; do
+    if ! tcp_open "$VNC_PORT" && ! tcp_open "$NOVNC_PORT"; then
+      WS_PID=""
+      VNC_PID=""
+      return 0
+    fi
+    if [ "$closed_after" = "5" ]; then
+      if [ -n "$WS_PID" ]; then kill -KILL "$WS_PID" 2>/dev/null || true; fi
+      if [ -n "$VNC_PID" ]; then kill -KILL "$VNC_PID" 2>/dev/null || true; fi
+    fi
+    sleep 1
+    closed_after=$((closed_after + 1))
+  done
+  WS_PID=""
+  VNC_PID=""
+  return 1
+}
+
+# Answer the client that asked (see the runtime switch above); written atomically so a
+# client can never read a half-written line.
+vnc_respond() { # $1 = ok|error, $2 = request id, $3 = message
+  printf '%s %s %s\n' "$1" "$2" "$3" >"$VNC_RSP.tmp.$$"
+  mv "$VNC_RSP.tmp.$$" "$VNC_RSP"
+}
+
+# ONE pending request per supervise iteration. The supervisor stays the ONLY owner of
+# x11vnc/websockify (they are its children and it keeps checking them), while a `docker
+# exec` switch can turn the stream on and off around a captcha.
+vnc_handle_request() {
+  [ -f "$VNC_REQ" ] || return 0
+  req_verb=""
+  req_id=""
+  req_extra=""
+  read req_verb req_id req_extra <"$VNC_REQ" || true
+  rm -f "$VNC_REQ"
+  [ -n "${req_verb:-}" ] || return 0
+  [ -n "${req_id:-}" ] || req_id="-"
+  case "$req_verb" in
+    start)
+      if vnc_is_up; then
+        vnc_respond ok "$req_id" "live view already up: noVNC 0.0.0.0:$NOVNC_PORT -> x11vnc 127.0.0.1:$VNC_PORT on $DISPLAY_NAME (no password)"
+      elif start_vnc; then
+        vnc_respond ok "$req_id" "live view UP: noVNC 0.0.0.0:$NOVNC_PORT -> x11vnc 127.0.0.1:$VNC_PORT on $DISPLAY_NAME (loopback RFB, -nopw)"
+      else
+        vnc_respond error "$req_id" "$VNC_ERR"
+      fi
+      ;;
+    stop)
+      if [ -z "$VNC_PID" ] && [ -z "$WS_PID" ] && ! tcp_open "$VNC_PORT" && ! tcp_open "$NOVNC_PORT"; then
+        vnc_respond ok "$req_id" "live view already stopped: nothing listens on $VNC_PORT (RFB) nor $NOVNC_PORT (noVNC)"
+      elif stop_vnc; then
+        vnc_respond ok "$req_id" "live view STOPPED: nothing listens on $VNC_PORT (RFB) nor $NOVNC_PORT (noVNC)"
+      else
+        vnc_respond error "$req_id" "the live view did not release $VNC_PORT/$NOVNC_PORT within 15s"
+      fi
+      ;;
+    status)
+      if vnc_is_up; then
+        vnc_respond ok "$req_id" "live view up: noVNC 0.0.0.0:$NOVNC_PORT, x11vnc 127.0.0.1:$VNC_PORT on $DISPLAY_NAME"
+      else
+        vnc_respond ok "$req_id" "live view down"
+      fi
+      ;;
+    *)
+      vnc_respond error "$req_id" "unknown live-view request '$req_verb' (start|stop|status)"
+      ;;
+  esac
+  return 0
+}
+
+# THE CONTROL CHANNEL exists exactly as long as the supervisor does, so a client that
+# finds no channel knows the service is not up (never a silent success).
+mkdir -p "$VNC_CTL_DIR"
+rm -f "$VNC_REQ" "$VNC_RSP" "$VNC_RSP.tmp.$$"
+
+if [ -n "$VNC_ENABLED" ]; then
+  if start_vnc; then
+    echo "start-browser: live view on 0.0.0.0:$NOVNC_PORT (noVNC) -> 127.0.0.1:$VNC_PORT (x11vnc on $DISPLAY_NAME, -nopw, loopback only; the tunnel + Cloudflare Access OTP is the access boundary)"
+  else
+    fail_loudly "$VNC_ERR"
+  fi
+fi
+echo "start-browser: the live view is ON DEMAND: start-browser vnc-start | vnc-stop | vnc-status (control channel $VNC_CTL_DIR)"
+
+# Foreground (the container entrypoint): supervise the browser children AND answer the
+# live-view switch. The BROWSER dying is fatal - a half-dead browser service must not
+# look healthy. The LIVE VIEW is an ON-DEMAND accessory: if it dies while up it is
+# reported DOWN (and can be started again with `start-browser vnc-start`) instead of
+# taking the agent's browser session down with it.
 while kill -0 "$CHROME_PID" 2>/dev/null && kill -0 "$FWD_PID" 2>/dev/null; do
+  vnc_handle_request
   if [ -n "$XVFB_PID" ] && ! kill -0 "$XVFB_PID" 2>/dev/null; then
     fail_loudly "Xvfb exited"
   fi
   if [ -n "$VNC_PID" ] && ! kill -0 "$VNC_PID" 2>/dev/null; then
-    fail_loudly "x11vnc exited"
+    echo "start-browser: x11vnc exited - live view DOWN (start it again with: start-browser vnc-start)" >&2
+    VNC_PID=""
+    if [ -n "$WS_PID" ]; then kill -TERM "$WS_PID" 2>/dev/null || true; WS_PID=""; fi
   fi
   if [ -n "$WS_PID" ] && ! kill -0 "$WS_PID" 2>/dev/null; then
-    fail_loudly "websockify exited"
+    echo "start-browser: websockify exited - live view DOWN (start it again with: start-browser vnc-start)" >&2
+    WS_PID=""
+    if [ -n "$VNC_PID" ]; then kill -TERM "$VNC_PID" 2>/dev/null || true; VNC_PID=""; fi
   fi
   sleep 5
 done

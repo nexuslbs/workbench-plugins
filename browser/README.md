@@ -158,37 +158,57 @@ chromium (headful, display :99) -> x11vnc -> websockify + noVNC (:8080)
                                             -> your tunnel (cloudflared) -> phone
 ```
 
-It is **off by default**: a deployment that does not opt in starts exactly the
-processes it started before (`BROWSER_VNC=0`).
+It is **off by default** AND **on demand**: a deployment that does not opt in starts
+exactly the processes it started before (`BROWSER_VNC=0`), and the stream is turned on
+only while a human is needed - around a captcha, for supervised browsing, or for "show
+me the browser" - WITHOUT recreating the stack:
+
+```sh
+docker exec <browser-container> start-browser vnc-start    # stream ON
+docker exec <browser-container> start-browser vnc-stop     # stream OFF again
+docker exec <browser-container> start-browser vnc-status   # is it up?
+```
+
+`vnc-start` starts `x11vnc` on the display the agent's chromium already draws on plus
+`websockify`, waits until the RFB port answers AND `/vnc.html` returns 200, and exits 0
+only then (a failed start exits 1 and leaves the browser running). `vnc-stop` stops both
+and waits until neither port answers. The **agent's chromium, its profile, its tabs and
+its session are untouched** by either: the live view is an accessory process, not a
+browser lifecycle.
 
 | variable | default | meaning |
 | --- | --- | --- |
-| `BROWSER_VNC` | `0` | `1` starts the live view. Anything else than `0/1` (and `true/yes/on`, `false/no/off`) is refused (exit 2). |
-| `BROWSER_VNC_PASSWORD` | (none) | **Required** when `BROWSER_VNC=1`. A secret reference (`${cred:...}`), never a literal in a compose file. Absent/empty -> the entrypoint REFUSES to start (exit 2); there is no passwordless mode. |
+| `BROWSER_VNC` | `0` | `1` starts the live view at BOOT as well (the same code path as `vnc-start`). Anything else than `0/1` (and `true/yes/on`, `false/no/off`) is refused (exit 2). `0` does not disable the runtime switch: `start-browser vnc-start` still works. |
+| `BROWSER_VNC_PASSWORD` | (none) | **Not needed and not read.** x11vnc runs with `-nopw` (no password of our own); the access boundary is the operator's Cloudflare tunnel + Cloudflare Access OTP policy in front of the published hostname. A leftover value in an existing deployment is ignored. |
 | `BROWSER_VNC_PORT` | `5900` | x11vnc's RFB port, bound on **loopback only** inside the container. |
 | `BROWSER_NOVNC_PORT` | `8080` | websockify's port (`--web` serves noVNC), bound on the container network so a tunnel can reach `browser:8080`. |
 | `BROWSER_NOVNC_WEB` | `/usr/share/novnc` | the noVNC static files (`vnc.html`). |
+| `BROWSER_VNC_CTL_DIR` | `/tmp/browser-vnc-ctl` | the request/response directory of the runtime switch: the running entrypoint owns it, so a `docker exec` reaches the process that owns x11vnc/websockify. |
 
 ### What the entrypoint does (and what it refuses)
 
 * After Xvfb (`BROWSER_DISPLAY`, default `:99`), chromium and the CDP forwarder are
-  really up, it starts `x11vnc -display :99 -forever -shared -localhost -rfbport 5900
-  -rfbauth <0600 pwfile>` and `websockify --web=/usr/share/novnc 0.0.0.0:8080
-  127.0.0.1:5900`. The password reaches x11vnc through a `0600` file, so it is
-  neither on a command line (`ps`) nor in a log.
+  really up, it starts `x11vnc -display :99 -forever -shared -localhost -nopw
+  -rfbport 5900` and `websockify --web=/usr/share/novnc 0.0.0.0:8080 127.0.0.1:5900`
+  whenever the live view is on - at boot (`BROWSER_VNC=1`) or at runtime
+  (`start-browser vnc-start`). `-nopw` is deliberate: there is no password of our own,
+  the tunnel and its Access OTP policy are the boundary.
 * `-localhost` is deliberate: x11vnc is reachable only from inside the container,
   websockify is the single thing listening on the container network.
 * **One display, one chromium, one profile.** No second Xvfb, no second chromium, no
   per-session display: what the agent opens appears in your view, and your clicks,
   keys, scrolls and drags are `XTEST` events into *its* session.
-* It **fails closed**: `BROWSER_VNC=1` without `BROWSER_VNC_PASSWORD` exits 2 before
-  anything starts; `BROWSER_VNC=1` together with `BROWSER_HEADLESS=1` exits 2 (that
-  launch has no X display to stream); a missing `x11vnc`/`websockify`/`vnc.html` exits
-  1, and the **build** fails when the image loses any of them.
+* It **refuses loudly** instead of serving something broken: `BROWSER_VNC=1` together
+  with `BROWSER_HEADLESS=1` exits 2 (that launch has no X display to stream); a missing
+  `x11vnc`/`websockify`/`vnc.html` fails the **build**; a boot-time `BROWSER_VNC=1` whose
+  live view never answers exits 1 with the log tail, and a runtime `vnc-start` reports
+  the same error to the caller while the browser keeps running.
 * Readiness is a real HTTP response, in BOTH run modes: the live view is reported up
   only once `GET /vnc.html` returns 200. `start-browser --background` exits 0 only
   after that, so a launcher that gets exit 0 knows both endpoints are usable. The
-  foreground supervisor also fails loudly if x11vnc or websockify dies.
+  foreground supervisor keeps owning x11vnc/websockify: if the live view dies while it
+  is up it is reported DOWN (start it again with `start-browser vnc-start`) and the
+  agent's browser session keeps running.
 
 ### Opening it from a phone
 
@@ -196,8 +216,9 @@ The container's `/` is a tiny page that redirects to
 `vnc.html?autoconnect=1&resize=scale&reconnect=1`, which is the phone-friendly
 default: it connects immediately (no button to hunt for), scales the 1440x1000 screen
 into the phone viewport instead of forcing you to pan a desktop-sized framebuffer, and
-reconnects after a mobile network stall. The password is still typed by the human
-(never in the URL, never in the page, never in a file).
+reconnects after a mobile network stall. Nothing else is asked: the VNC server runs
+without a password of ours (`-nopw`), because the tunnel hostname sits behind the
+Cloudflare Access policy.
 
 A deployment that shares a network with `cloudflared` publishes this as a Public
 Hostname route in the Cloudflare Zero Trust dashboard, e.g.
@@ -208,9 +229,9 @@ browser-live.<your-domain>  ->  http://browser:8080
 
 `EXPOSE 8080` is documentation, not a publication: **never publish 8080 to the open
 internet directly.** noVNC is full remote control of this container (and therefore of
-whatever session the agent holds in it), so the tunnel hostname must be protected
-**in addition to** the password - Cloudflare Access in front of it, or an unguessable
-path - and the password is never the only line of defence.
+whatever session the agent holds in it) and there is no password of ours in front of
+it: the tunnel hostname **MUST** sit behind a Cloudflare Access policy (OTP). That
+policy, not the image, is the access boundary.
 
 This is a way to SEE and TOUCH the real browser the agent uses. It is not a stealth or
 anti-bot feature and it does not solve captchas for you: a human does, in a normal
@@ -220,10 +241,12 @@ service is involved, and the browser stays free of any site-specific knowledge.
 ### Verifying a deployment
 
 ```sh
-# the page a phone opens answers (inside the container / its network):
+# the switch is the deployment's own health check (no stack recreate):
+docker exec <browser-container> start-browser vnc-status
+# the page a phone opens, once the live view is on (inside the container / its network):
 curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/vnc.html   # 200
-# the RFB port requires the password: a connect without it is refused
-# (x11vnc logs "password check failed"), and with it the handshake completes.
+# OFF again: both listeners must be gone, so this curl fails to connect:
+docker exec <browser-container> start-browser vnc-stop
 ```
 
 Measured on the built image (throwaway project, thread 2785, 2026-09-21):

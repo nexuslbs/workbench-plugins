@@ -92,13 +92,52 @@ jobs:
           grep -q '"Browser"' /tmp/version.json
           echo "OK: the browser service answers CDP on 127.0.0.1:9222"
 
-      # THE LIVE VIEW (browser-0.0.4+): the image must serve the noVNC page when a
-      # deployment opts in (BROWSER_VNC=1 + a password) ...
-      - name: Smoke-test the live view (BROWSER_VNC=1 serves noVNC on 8080)
+      # THE LIVE VIEW (browser-0.0.4+): OFF by default and ON DEMAND, with NO password
+      # of our own (`x11vnc -nopw`; the tunnel hostname must sit behind a Cloudflare
+      # Access policy). The image must start the stream at RUNTIME - no recreate - and
+      # stop it again, leaving no listener behind.
+      - name: Smoke-test the live view is ON DEMAND (vnc-start / vnc-stop, no password)
         run: |
           set -euo pipefail
-          PW="smoke-$(head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-          docker run -d --name browser-vnc-smoke -e BROWSER_VNC=1 -e BROWSER_VNC_PASSWORD="$PW" -p 8080:8080 "$IMAGE:local"
+          docker run -d --name browser-vnc-smoke -p 9222:9222 -p 8080:8080 "$IMAGE:local"
+          ok=0
+          for i in $(seq 1 60); do
+            if [ "$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:9222/json/version 2>/dev/null || true)" = "200" ]; then
+              ok=1
+              break
+            fi
+            sleep 2
+          done
+          test "$ok" = "1" || { docker logs browser-vnc-smoke 2>&1 | tail -n 20 || true; docker rm -f browser-vnc-smoke >/dev/null 2>&1 || true; echo "::error::the browser service never answered CDP"; exit 1; }
+          # OFF at boot (BROWSER_VNC unset): the live view must NOT be listening.
+          if curl -sS --max-time 3 -o /dev/null http://127.0.0.1:8080/vnc.html 2>/dev/null; then
+            echo "::error::the live view answered although BROWSER_VNC was not set (it must be OFF by default)"; exit 1
+          fi
+          # the image ships the passwordless path and reads no password at all
+          docker exec browser-vnc-smoke sh -c 'grep -q -- "-nopw" /usr/local/bin/start-browser'
+          if docker exec browser-vnc-smoke sh -c 'grep -q BROWSER_VNC_PASSWORD /usr/local/bin/start-browser'; then
+            echo "::error::the entrypoint still reads BROWSER_VNC_PASSWORD"; exit 1
+          fi
+          docker exec browser-vnc-smoke start-browser vnc-status
+          # ... the runtime switch turns it ON: no stack recreate, no password.
+          docker exec browser-vnc-smoke start-browser vnc-start
+          test "$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/vnc.html)" = "200" || { echo "::error::vnc-start did not serve the noVNC page on 8080"; exit 1; }
+          curl -sS -o /dev/null -w 'GET / -> %{http_code}\n' http://127.0.0.1:8080/ || true
+          # ... and turns it OFF again: the listeners must be GONE.
+          docker exec browser-vnc-smoke start-browser vnc-stop
+          sleep 1
+          if curl -sS --max-time 3 -o /dev/null http://127.0.0.1:8080/vnc.html 2>/dev/null; then
+            echo "::error::vnc-stop left the noVNC page answering"; exit 1
+          fi
+          docker logs browser-vnc-smoke 2>&1 | grep -iE 'live view|novnc|x11vnc|websockify' || true
+          docker rm -f browser-vnc-smoke >/dev/null 2>&1 || true
+          echo "OK: live view OFF by default, vnc-start served noVNC, vnc-stop closed the listeners (no password, no recreate)"
+
+      # ... and BROWSER_VNC=1 starts the same thing at boot (one code path, two entries).
+      - name: Smoke-test the live view at boot (BROWSER_VNC=1 serves noVNC on 8080)
+        run: |
+          set -euo pipefail
+          docker run -d --name browser-vnc-boot -e BROWSER_VNC=1 -p 8080:8080 "$IMAGE:local"
           ok=0
           for i in $(seq 1 60); do
             if [ "$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/vnc.html 2>/dev/null || true)" = "200" ]; then
@@ -107,28 +146,13 @@ jobs:
             fi
             sleep 2
           done
-          echo "-- live-view log lines --"
-          docker logs browser-vnc-smoke 2>&1 | grep -iE 'live view|novnc|x11vnc|websockify|password' || true
           code="$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/ 2>/dev/null || true)"
           echo "GET / -> $code"
-          docker rm -f browser-vnc-smoke >/dev/null 2>&1 || true
+          docker logs browser-vnc-boot 2>&1 | grep -iE 'live view|novnc|x11vnc|websockify' || true
+          docker rm -f browser-vnc-boot >/dev/null 2>&1 || true
           test "$ok" = "1" || { echo "::error::BROWSER_VNC=1 did not serve the noVNC page on 8080"; exit 1; }
           test "$code" = "200" || { echo "::error::the live-view landing page did not answer"; exit 1; }
-          echo "OK: the live view serves noVNC with BROWSER_VNC=1 and a password"
-
-      # ... and it must FAIL CLOSED when the opt-in omits the password: noVNC is
-      # full remote control of the browser container, so there is no passwordless mode.
-      - name: Smoke-test the live view fails CLOSED (BROWSER_VNC=1, no password)
-        run: |
-          set -euo pipefail
-          set +e
-          docker run --rm -e BROWSER_VNC=1 "$IMAGE:local" >/tmp/nopw.log 2>&1
-          code=$?
-          set -e
-          tail -n 20 /tmp/nopw.log || true
-          test "$code" != "0" || { echo "::error::the image started with BROWSER_VNC=1 and NO password: there is no passwordless mode"; exit 1; }
-          grep -qi 'BROWSER_VNC_PASSWORD' /tmp/nopw.log || { echo "::error::the refusal did not name the missing BROWSER_VNC_PASSWORD"; exit 1; }
-          echo "OK: BROWSER_VNC=1 without a password refuses to start (exit $code)"
+          echo "OK: BROWSER_VNC=1 serves noVNC at boot with no password of our own"
 
       - name: Log in to GHCR
         uses: docker/login-action@v3

@@ -41,13 +41,13 @@ services:
       BROWSER_HEADLESS: ${BROWSER_HEADLESS:-0}
       # THE LIVE VIEW - the operator watching/driving the SAME browser the agent
       # uses (chromium -> x11vnc -> websockify/noVNC -> a tunnel -> a phone). OFF by
-      # default (`BROWSER_VNC=0`), so this project behaves exactly as before unless
-      # a deployment opts in. `BROWSER_VNC_PASSWORD` is a SECRET: pass it through a
-      # secret reference, never as a literal in a committed file. With
-      # BROWSER_VNC=1 and no password the container REFUSES to start the live view
-      # (passwordless VNC = full remote control of the browser).
+      # default (`BROWSER_VNC=0`), so this project behaves exactly as before unless a
+      # deployment opts in, and ON DEMAND at runtime either way to keep it off while
+      # no human is needed:
+      #   docker exec <container> start-browser vnc-start|vnc-stop|vnc-status
+      # NO password of ours: x11vnc runs `-nopw` and the access boundary is the
+      # Cloudflare tunnel hostname sitting behind a Cloudflare Access (OTP) policy.
       BROWSER_VNC: ${BROWSER_VNC:-0}
-      BROWSER_VNC_PASSWORD: ${BROWSER_VNC_PASSWORD:-}
       BROWSER_VNC_PORT: ${BROWSER_VNC_PORT:-5900}
       BROWSER_NOVNC_PORT: ${BROWSER_NOVNC_PORT:-8080}
     ports:
@@ -56,8 +56,9 @@ services:
       - "127.0.0.1:${BROWSER_CDP_PORT:-9222}:9222"
       # The noVNC page stays INSIDE the container network on purpose: a deployment
       # publishes it through its own tunnel (cloudflared reaches `browser:8080` by
-      # service name) and protects that hostname (Cloudflare Access or an
-      # unguessable path), because noVNC is full remote control of this container.
+      # service name) and protects that hostname with a Cloudflare Access (OTP)
+      # policy, because noVNC is full remote control of this container and the image
+      # runs x11vnc with NO password of its own.
       # Uncomment only for a deliberate, local access:
       # - "127.0.0.1:${BROWSER_NOVNC_PORT:-8080}:8080"
 
