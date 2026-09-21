@@ -52,8 +52,6 @@ import {
   ACT_KINDS,
   BROWSER_USE_CONFIG_ROW,
   BROWSER_USE_TOOL_NAME,
-  CHALLENGE_ACTIONS,
-  CHALLENGE_KINDS,
   EXTRACT_MODES,
   FRAME_ACTIONS,
   MOUSE_ACTIONS,
@@ -71,7 +69,6 @@ import {
 import type {
   ActKind,
   BrowserActRequest,
-  BrowserChallengeRequest,
   BrowserExtractRequest,
   BrowserFrameTarget,
   BrowserFramesRequest,
@@ -132,7 +129,6 @@ const ACTIONS = [
   'state',
   'frames',
   'mouse',
-  'challenge',
   'sessions',
   'close',
 ] as const
@@ -166,7 +162,6 @@ const KNOWN_PARAMS: Record<Action, readonly string[]> = {
   state: ['action', 'provider', 'session', 'stateAction', 'path'],
   frames: ['action', 'provider', 'session', 'frameAction', 'maxFrames', ...FRAME_PARAMS],
   mouse: ['action', 'provider', 'session', 'mouseAction', 'x', 'y', 'toX', 'toY', 'deltaX', 'deltaY', 'button', 'clickCount', 'steps', 'relativeTo', ...FRAME_PARAMS],
-  challenge: ['action', 'provider', 'session', 'challengeAction', 'kinds', 'kind', 'selector', 'click', 'waitMs', 'maxAttempts', 'timeoutMs', ...FRAME_PARAMS],
 }
 
 /**
@@ -187,7 +182,6 @@ const PARAM_ALIASES: Partial<Record<Action, Record<string, string>>> = {
   tabs: { timeout: 'timeoutMs' },
   frames: { index: 'frameIndex', url: 'frameUrl', name: 'frameName' },
   mouse: { timeout: 'timeoutMs' },
-  challenge: { timeout: 'timeoutMs', attempts: 'maxAttempts' },
 }
 
 /**
@@ -214,7 +208,6 @@ const REQUIRED_PARAMS: Record<Action, readonly string[]> = {
   state: ['session'],
   frames: ['session'],
   mouse: ['session'],
-  challenge: ['session'],
 }
 
 /** One action's published contract (what `action: schema` answers). */
@@ -713,37 +706,6 @@ function mouseRequest(params: Record<string, unknown>): BrowserMouseRequest {
   return request
 }
 
-function challengeRequest(params: Record<string, unknown>): BrowserChallengeRequest {
-  const action = optionalOneOf(params, 'challengeAction', CHALLENGE_ACTIONS) ?? 'detect'
-  const request: BrowserChallengeRequest = { challengeAction: action }
-  const list = params.kinds === undefined ? params.kind : params.kinds
-  if (list !== undefined) {
-    const entries = Array.isArray(list) ? list : [list]
-    request.kinds = entries.map((entry) => {
-      const value = typeof entry === 'string' ? entry.trim() : ''
-      if (!(CHALLENGE_KINDS as readonly string[]).includes(value)) {
-        throw notImplemented(`'kinds' must be one of ${CHALLENGE_KINDS.join(' | ')}`, {
-          stage: 'request',
-          details: { got: String(entry) },
-        })
-      }
-      return value as (typeof CHALLENGE_KINDS)[number]
-    })
-  }
-  const selector = optionalString(params, 'selector')
-  const click = optionalBoolean(params, 'click')
-  const waitMs = optionalNumber(params, 'waitMs')
-  const maxAttempts = optionalNumber(params, 'maxAttempts')
-  const timeoutMs = optionalNumber(params, 'timeoutMs')
-  if (selector !== undefined) request.selector = selector
-  if (click !== undefined) request.click = click
-  if (waitMs !== undefined) request.waitMs = waitMs
-  if (maxAttempts !== undefined) request.maxAttempts = maxAttempts
-  if (timeoutMs !== undefined) request.timeoutMs = timeoutMs
-  Object.assign(request, frameSpread(params))
-  return request
-}
-
 // ---------------------------------------------------------------------------
 // The plugin.
 // ---------------------------------------------------------------------------
@@ -832,15 +794,14 @@ const BROWSER_TOOL_PARAMETERS: ParameterSchemaSpec = {
   limit: { type: 'integer', description: "'observe': how many of the newest requests to report" },
   filter: { type: 'string', description: "'observe': only requests whose URL contains this fragment" },
   stateAction: { type: 'string', description: "'action: state' only: save (default) | read | clear" },
-  // frames / mouse / challenge (the Cloudflare-facing half: frames, coordinates
-  // and a STRUCTURED verdict instead of an empty read)
+  // frames / mouse (the cross-origin half: read the BROWSER's frame tree and
+  // drive REAL pointer input at coordinates inside it)
   frameAction: { type: 'string', description: `'action: frames' only: ${FRAME_ACTIONS.join(' | ')} (default list)` },
-  frameId: { type: 'string', description: "the frame id `frames` reported (CDP-based); targets a frame on 'frames'/'mouse'/'challenge' and on 'snapshot'/'act'/'extract'/'wait'" },
+  frameId: { type: 'string', description: "the frame id `frames` reported (CDP-based); targets a frame on 'frames'/'mouse' and on 'snapshot'/'act'/'extract'/'wait'" },
   frameSelector: { type: 'string', description: 'alternative frame target: the CSS selector of the iframe/frame ELEMENT in its PARENT document' },
   frameUrl: { type: 'string', description: 'alternative frame target: the frame URL (matched exactly first, then as a substring)' },
   frameName: { type: 'string', description: "alternative frame target: the frame's `name` attribute" },
   name: { type: 'string', description: "'frames': alias of `frameName` (the frame's `name` attribute)" },
-  attempts: { type: 'integer', description: "'challenge': alias of `maxAttempts` (how many widget clicks at most, default 3)" },
   frameIndex: { type: 'integer', description: 'alternative frame target: the index in the frame tree (0 = the main frame)' },
   maxFrames: { type: 'integer', description: "'frames': cap the reported frames" },
   mouseAction: { type: 'string', description: `'action: mouse' only: ${MOUSE_ACTIONS.join(' | ')} (default click)` },
@@ -854,11 +815,6 @@ const BROWSER_TOOL_PARAMETERS: ParameterSchemaSpec = {
   clickCount: { type: 'integer', description: "'click'/'dblclick': how many clicks (default 1 / 2)" },
   steps: { type: 'integer', description: "'mouseAction: drag': intermediate move steps (default 10)" },
   relativeTo: { type: 'string', description: `where 'x'/'y' are measured: ${MOUSE_ORIGINS.join(' | ')} (default page = the same origin a screenshot uses; 'frame' adds the frame box offset)` },
-  challengeAction: { type: 'string', description: `'action: challenge' only: ${CHALLENGE_ACTIONS.join(' | ')} (default detect; 'classify' never touches the page)` },
-  kinds: { type: 'array', description: `'challenge': only these widget kinds (${CHALLENGE_KINDS.join(' | ')}; default all known)` },
-  click: { type: 'boolean', description: "'challenge solve': drive the mouse on the widget (default true)" },
-  waitMs: { type: 'integer', description: "'challenge solve': how long to wait for the token / `cf_clearance` after the click, in MILLISECONDS (default 15000)" },
-  maxAttempts: { type: 'integer', description: "'challenge': how many click attempts at most (default 3); alias: `attempts`" },
 }
 
 export function apply(ctx: PluginContext): void {
@@ -877,11 +833,7 @@ export function apply(ctx: PluginContext): void {
         '`observe` reports the requests and downloads the session saw, `state` saves/reads/clears the storage state, ' +
         '`frames` lists the FRAME (iframe) TREE of the page and selects the frame later calls act in (`frameAction`: ' + FRAME_ACTIONS.join(' | ') + '), ' +
         '`mouse` drives the REAL mouse at COORDINATES (`mouseAction`: ' + MOUSE_ACTIONS.join(' | ') + ' with `x`/`y`, `relativeTo`: ' + MOUSE_ORIGINS.join(' | ') + ') - ' +
-        'the only way into a cross-origin widget no selector can reach, ' +
-        '`challenge` detects/classifies/solves a Cloudflare Turnstile, hCaptcha or reCAPTCHA (' +
-        '`classification`: none | managed-pass | interactive | blocked-ip | unknown, `outcome`: solved | unsolvable-from-this-ip | ...) and answers the ' +
-        'STRUCTURED result (widget, token field, `cf_clearance` state, HTTP status and a body excerpt) - a hard IP-reputation block is REPORTED as ' +
-        '`blocked-ip` / `unsolvable-from-this-ip`, NEVER silently read as an empty page - ' +
+        'the only way into a cross-origin control no selector can reach, ' +
         '`sessions` lists the live sessions and `close` closes one. ' +
         '`schema` publishes the FULL per-action contract (parameter names, types, units - every duration is MILLISECONDS -, ' +
         'which are required, and the accepted aliases such as `text` for `value` on `act`, `milliseconds` for `ms` on `wait`, ' +
@@ -998,8 +950,6 @@ export function apply(ctx: PluginContext): void {
               return { ok: true, ...(await service.frames(requireSession(session, 'frames'), framesRequest(params), provider)) }
             case 'mouse':
               return { ok: true, ...(await service.mouse(requireSession(session, 'mouse'), mouseRequest(params), provider)) }
-            case 'challenge':
-              return { ok: true, ...(await service.challenge(requireSession(session, 'challenge'), challengeRequest(params), provider)) }
             default:
               return { ok: true, ...(await service.state(requireSession(session, 'state'), stateRequest(params), provider)) }
           }

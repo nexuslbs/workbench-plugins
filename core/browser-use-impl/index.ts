@@ -58,8 +58,6 @@ import {
   DEFAULT_SESSION_TIMEOUT_MS,
   EXTRACT_MODES,
   ACT_KINDS,
-  CHALLENGE_ACTIONS,
-  CHALLENGE_KINDS,
   FRAME_ACTIONS,
   MOUSE_ACTIONS,
   MOUSE_BUTTONS,
@@ -83,8 +81,6 @@ import {
 import type {
   BrowserActRequest,
   BrowserCapabilityReport,
-  BrowserChallengeAnswer,
-  BrowserChallengeRequest,
   BrowserEvaluateRequest,
   BrowserExtractAnswer,
   BrowserExtractRequest,
@@ -576,30 +572,6 @@ export function createBrowserUseService(
     return out
   }
 
-  /** Validates a `challenge` request: the action, the kinds and the budgets. */
-  const challengeRequest = (request: BrowserChallengeRequest = {}): BrowserChallengeRequest => {
-    rejectUnknown(
-      request,
-      ['challengeAction', 'action', 'kinds', 'kind', 'frame', 'selector', 'click', 'waitMs', 'maxAttempts', 'timeoutMs'],
-      'challenge',
-    )
-    const out: BrowserChallengeRequest = {
-      challengeAction: requireEnum(request.challengeAction ?? request.action, CHALLENGE_ACTIONS, 'challengeAction', 'detect'),
-    }
-    const kinds = request.kinds ?? request.kind
-    if (kinds !== undefined) {
-      const list = Array.isArray(kinds) ? kinds : [kinds]
-      out.kinds = list.map((kind) => requireEnum(kind, CHALLENGE_KINDS, 'kinds[]'))
-    }
-    if (request.frame !== undefined) out.frame = frameTargetParam(request.frame, 'frame')
-    if (request.selector !== undefined) out.selector = requireText(request.selector, 'selector', 4_096)
-    if (request.click !== undefined) out.click = request.click !== false
-    if (request.waitMs !== undefined) out.waitMs = requirePositiveInt(request.waitMs, 'waitMs', 600_000)
-    if (request.maxAttempts !== undefined) out.maxAttempts = requirePositiveInt(request.maxAttempts, 'maxAttempts', 10)
-    if (request.timeoutMs !== undefined) out.timeoutMs = requirePositiveInt(request.timeoutMs, 'timeoutMs', 600_000)
-    return out
-  }
-
   /** Validates an `act` request: the kind, the target and the per-kind payload. */
   const actRequest = (request: BrowserActRequest): BrowserActRequest => {
     if (!isRecord(request)) {
@@ -1007,20 +979,6 @@ export function createBrowserUseService(
       ])
     },
 
-    async challenge(
-      session: string,
-      request: BrowserChallengeRequest = {},
-      provider?: string,
-    ): Promise<BrowserChallengeAnswer> {
-      const selected = select(provider)
-      const id = sessionOf(session)
-      const input = challengeRequest(request)
-      return await invoke<BrowserChallengeAnswer>(selected, 'challenge', `challenge.${input.challengeAction ?? 'detect'}`, [
-        id,
-        input,
-        callOptions(),
-      ])
-    },
   }
 
   return service

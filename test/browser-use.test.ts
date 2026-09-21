@@ -60,7 +60,6 @@ import { createPlaywrightProvider } from '../core/browser-use-playwright/index.t
 import { resolveProviderConfig } from '../core/browser-use-playwright/config.ts'
 import * as browserTools from '../plugins/browser-use-tools/index.ts'
 import { validateArgs } from '../definitions/tools.ts'
-import { classifyChallengeDocument, isInvisibleWidgetUrl, kindOfFrameUrl } from '../core/browser-use-playwright/frames.ts'
 
 // ---------------------------------------------------------------------------
 // Harness: a fake `tools` service plus a structural cordis context.
@@ -221,7 +220,44 @@ function fakeProvider(options: FakeOptions = {}): {
       const info = requireLive(session)
       calls.push(`navigate:${request.url}`)
       live = { ...info, url: request.url, title: 'Fixture page' }
-      return { action: 'navigate', url: request.url, title: 'Fixture page', httpStatus: 200, durationMs: 1 }
+      // The RAW observation contract: a navigate answer carries the transport,
+      // the document, the frame tree and the navigations of the load it produced.
+      const load = {
+        transport: {
+          requestedUrl: request.url,
+          finalUrl: request.url,
+          httpStatus: 200,
+          statusText: 'OK',
+          responseHeaders: {},
+          redirects: [],
+        },
+        document: {
+          title: 'Fixture page',
+          bodyTextExcerpt: 'Fixture page',
+          htmlLength: 64,
+          formCount: 0,
+          textLength: 12,
+        },
+        resources: { total: 1, failed: [] },
+        cookiesSet: [],
+        timing: { startedAt: '1970-01-01T00:00:00.000Z', endedAt: '1970-01-01T00:00:00.001Z', durationMs: 1 },
+        browserInitiatedNavigations: [],
+        frames: [],
+      }
+      return {
+        action: 'navigate',
+        session,
+        url: request.url,
+        title: 'Fixture page',
+        httpStatus: 200,
+        durationMs: 1,
+        load,
+        navigations: [],
+        browserInitiatedNavigations: [],
+        actions: [],
+        startedAt: '1970-01-01T00:00:00.000Z',
+        endedAt: '1970-01-01T00:00:00.001Z',
+      }
     },
     async snapshot(session: string, request: BrowserSnapshotRequest): Promise<BrowserSnapshot> {
       const info = requireLive(session)
@@ -1189,213 +1225,12 @@ test('e2e seam: a stale ref is re-snapshotted and retried ONCE; an unrecoverable
 })
 
 // ---------------------------------------------------------------------------
-// FRAMES / MOUSE / CHALLENGE (task 2617): a REAL browser on a Cloudflare page
-// needs to be told WHICH frame and WHERE, and a refusal must be CLASSIFIED
-// instead of read as an empty page. The classification is pure (no browser).
+// FRAMES / MOUSE (task 2617, corrected 2026-09-21): a real page often hides
+// its interesting half in a CROSS-ORIGIN frame the page's own DOM does not even
+// admit exists, so the BROWSER's frame tree is the only honest source and the
+// REAL mouse is the only way in. Both are purely structural: nothing here
+// classifies a page, matches a keyword or names a vendor.
 // ---------------------------------------------------------------------------
-
-test('challenge classification: a HARD IP refusal wins over the "Just a moment..." markers (403, no widget)', () => {
-  const verdict = classifyChallengeDocument({
-    url: 'https://downdetector.com.br/en/status/deepseek/',
-    title: 'Just a moment...',
-    html:
-      '<html><head><title>Just a moment...</title></head><body><h1>Just a moment...</h1>' +
-      '<p>Unusual traffic patterns detected from your network. We detected non-human interaction from your device, ' +
-      'you have been temporarily blocked.</p></body></html>',
-    httpStatus: 403,
-    cfClearance: false,
-    tokenPresent: false,
-    challengeFrames: [],
-  })
-  assert.equal(verdict.classification, 'blocked-ip', 'the refusal is NOT a solvable challenge')
-  assert.equal(verdict.outcome, 'unsolvable-from-this-ip')
-  assert.equal(verdict.unsolvableFromThisIp, true)
-  assert.ok(
-    verdict.signals.some((entry) => entry.startsWith('hard-block:')),
-    `the hard markers are NAMED in the signals: ${JSON.stringify(verdict.signals)}`,
-  )
-  assert.match(verdict.reason, /IP\/edge reputation block/)
-  assert.match(verdict.reason, /403/)
-  assert.doesNotMatch(verdict.reason, /click its checkbox/, 'a block page says nothing about clicking a widget')
-})
-
-test('challenge classification: an on-screen widget is interactive/unsolved, a solved one carries the token, a passed managed challenge is managed-pass', () => {
-  const turnstile = {
-    frameId: 'F7',
-    url: 'https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/b/turnstile/if/ov2/av0/rcv/abc',
-    kind: 'turnstile' as const,
-  }
-  const widget = classifyChallengeDocument({
-    url: 'https://demo.test/turnstile',
-    title: 'Turnstile demo',
-    html: '<div class="cf-turnstile" data-sitekey="x"></div>',
-    cfClearance: false,
-    tokenPresent: false,
-    challengeFrames: [turnstile],
-  })
-  assert.equal(widget.classification, 'interactive')
-  assert.equal(widget.outcome, 'unsolved')
-  assert.equal(widget.unsolvableFromThisIp, false)
-  assert.ok(
-    widget.signals.some((entry) => entry.startsWith('challenge-frame:turnstile:')),
-    `the widget frame is in the signals: ${JSON.stringify(widget.signals)}`,
-  )
-  assert.match(widget.reason, /target its frame and click its checkbox/)
-
-  const solved = classifyChallengeDocument({
-    url: 'https://demo.test/turnstile',
-    title: 'Turnstile demo',
-    html: '<div class="cf-turnstile"></div>',
-    cfClearance: false,
-    tokenPresent: true,
-    tokenField: 'cf-turnstile-response',
-    challengeFrames: [turnstile],
-  })
-  assert.equal(solved.outcome, 'solved', `the token proves the widget was passed: ${JSON.stringify(solved)}`)
-
-  const managed = classifyChallengeDocument({
-    url: 'https://nowsecure.nl/',
-    title: 'nowsecure.nl',
-    html: '<html><body>the real page</body></html>',
-    cfClearance: true,
-    tokenPresent: false,
-    challengeFrames: [],
-  })
-  assert.equal(managed.classification, 'managed-pass', 'cf_clearance on an ordinary page = the managed challenge auto-passed')
-  assert.equal(managed.outcome, 'already-passed')
-  assert.equal(managed.unsolvableFromThisIp, false)
-
-  const interstitial = classifyChallengeDocument({
-    url: 'https://x.test/',
-    title: 'Just a moment...',
-    html: '<script src="/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1"></script>',
-    cfClearance: false,
-    tokenPresent: false,
-    challengeFrames: [],
-  })
-  assert.equal(interstitial.classification, 'interactive', 'a challenge document with no widget is still solvable (wait)')
-  assert.equal(interstitial.outcome, 'unsolved')
-
-  const plain = classifyChallengeDocument({
-    url: 'https://x.test/',
-    title: 'x',
-    html: '<html><body>hi</body></html>',
-    cfClearance: false,
-    tokenPresent: false,
-    challengeFrames: [],
-  })
-  assert.equal(plain.classification, 'none')
-  assert.equal(plain.outcome, 'no-challenge')
-})
-
-test('kindOfFrameUrl: the widget vocabularies map a frame URL to its kind', () => {
-  assert.equal(kindOfFrameUrl('https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/b/turnstile/if/ov2'), 'turnstile')
-  assert.equal(kindOfFrameUrl('https://newassets.hcaptcha.com/captcha/v1/x/frame'), 'hcaptcha')
-  assert.equal(kindOfFrameUrl('https://www.google.com/recaptcha/api2/anchor?k=x'), 'recaptcha')
-  assert.equal(kindOfFrameUrl('https://example.test/frame'), undefined)
-})
-
-test('challenge classification: an INTERACTION-FREE (invisible `/auto/`) widget does NOT make a passed page look unsolved', () => {
-  // Measured on https://nowsecure.nl (2026-09-20, task 2617): the REAL page
-  // rendered (HTTP 200, title `nowsecure.nl`, 1 MB screenshot) with
-  // `cf_clearance` present AND two `/auto/` turnstile frames left over from the
-  // managed challenge that had ALREADY been passed. Calling that
-  // `interactive/unsolved` is the false negative this rule removes: an invisible
-  // widget has nothing to click, and the clearance cookie proves the pass.
-  const autoFrame =
-    'https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/g/turnstile/f/av0/rch/su9sd/3x00000000000000000000FF/auto/fbE/new/normal?lang=auto'
-  const autoWidget = classifyChallengeDocument({
-    url: 'https://nowsecure.nl/',
-    title: 'nowsecure.nl',
-    html: '<html><body><h1>nowsecure</h1></body></html>',
-    httpStatus: 200,
-    cfClearance: true,
-    tokenPresent: false,
-    challengeFrames: [
-      { kind: 'turnstile', frameId: 'pw:2', url: autoFrame },
-      { kind: 'turnstile', frameId: 'pw:3', url: autoFrame.replace('su9sd', '2sjrq') },
-    ],
-  })
-  assert.equal(autoWidget.classification, 'managed-pass', `an invisible widget must not look interactive: ${JSON.stringify(autoWidget)}`)
-  assert.equal(autoWidget.outcome, 'already-passed')
-  assert.equal(autoWidget.unsolvableFromThisIp, false)
-  assert.equal(
-    autoWidget.signals.filter((entry) => entry.startsWith('invisible-widget:turnstile')).length,
-    2,
-    `both invisible frames are REPORTED: ${JSON.stringify(autoWidget.signals)}`,
-  )
-  assert.ok(
-    !autoWidget.signals.some((entry) => entry.startsWith('challenge-frame:')),
-    `an invisible frame is never a challenge frame: ${JSON.stringify(autoWidget.signals)}`,
-  )
-
-  // The same invisible frames with NO clearance cookie and NO challenge
-  // document: nothing to click, nothing that proves a pass - reported as
-  // nothing challenge-shaped, never as a pending interaction.
-  const noClearance = classifyChallengeDocument({
-    url: 'https://example.test/',
-    title: 'plain',
-    html: '<html><body>plain</body></html>',
-    httpStatus: 200,
-    cfClearance: false,
-    tokenPresent: false,
-    challengeFrames: [{ kind: 'turnstile', frameId: 'pw:1', url: autoFrame }],
-  })
-  assert.equal(noClearance.outcome, 'no-challenge', `nothing to click: ${JSON.stringify(noClearance)}`)
-  assert.ok(/interaction-free widget frame/.test(noClearance.reason), noClearance.reason)
-
-  // A VISIBLE widget stays interactive: the peet.ws demo of the SAME run.
-  const visible = classifyChallengeDocument({
-    url: 'https://peet.ws/turnstile-test/managed.html',
-    title: 'cloudflare turnstile',
-    html: '<div class="cf-turnstile"></div>',
-    httpStatus: 200,
-    cfClearance: false,
-    tokenPresent: false,
-    challengeFrames: [
-      {
-        kind: 'turnstile',
-        frameId: 'pw:1',
-        url: 'https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/g/turnstile/f/av0/rch/wvb8h/0x4AAAAAAABS7TtLxsNa7Z2e/light/fbE/new/normal?lang=auto',
-      },
-    ],
-  })
-  assert.equal(visible.classification, 'interactive')
-  assert.equal(visible.outcome, 'unsolved')
-
-  // The helper itself: `/auto/` and `size=invisible` are interaction-free, a
-  // `?lang=auto` query (the visible peet.ws widget) is NOT.
-  assert.equal(isInvisibleWidgetUrl(autoFrame), true)
-  assert.equal(isInvisibleWidgetUrl('https://challenges.cloudflare.com/x/if?size=invisible'), true)
-  assert.equal(
-    isInvisibleWidgetUrl('https://challenges.cloudflare.com/x/light/fbE/new/normal?lang=auto'),
-    false,
-    '`?lang=auto` is a language, not the interaction-free variant',
-  )
-
-  // The REFUSAL markers are matched against the VISIBLE TEXT as well: the HTML
-  // excerpt of a real block page is a script tag (measured on downdetector.com.br
-  // 2026-09-20, where "Unusual traffic patterns detected" lives in `innerText`
-  // and the HTML marker that matched was only `blocked-by-cloudflare`).
-  const textOnly = classifyChallengeDocument({
-    url: 'https://downdetector.com.br/en/status/deepseek/',
-    title: 'Just a moment...',
-    html: '<html><body><script>var gtm={a:1}</script></body></html>',
-    text: '(╯°□°)╯︵ ┻━┻ Unusual traffic patterns detected - any non-human interaction - you have been temporary blocked',
-    httpStatus: 403,
-    cfClearance: false,
-    tokenPresent: false,
-    challengeFrames: [],
-  })
-  assert.equal(textOnly.classification, 'blocked-ip', `the refusal TEXT must decide it: ${JSON.stringify(textOnly)}`)
-  assert.equal(textOnly.outcome, 'unsolvable-from-this-ip')
-  for (const id of ['unusual-traffic', 'non-human-interaction', 'temporarily-blocked']) {
-    assert.ok(
-      textOnly.signals.includes(`hard-block:${id}`),
-      `the refusal marker '${id}' is REPORTED: ${JSON.stringify(textOnly.signals)}`,
-    )
-  }
-})
 
 test('tool: frames/mouse/challenge are published (required params, aliases) and their parameters reach the surface', async () => {
   const { service } = serviceWithFake()
@@ -1408,7 +1243,7 @@ test('tool: frames/mouse/challenge are published (required params, aliases) and 
   }
   assert.equal(body.ok, true)
   const byAction = new Map((body.actions ?? []).map((entry) => [entry.action, entry]))
-  for (const action of ['frames', 'mouse', 'challenge']) {
+  for (const action of ['frames', 'mouse']) {
     const entry = byAction.get(action)
     assert.ok(entry !== undefined, `'${action}' is published, got ${[...byAction.keys()].join(', ')}`)
     assert.deepEqual([...(entry?.required ?? [])].sort(), ['session'], `'${action}' needs a session: ${JSON.stringify(entry)}`)
@@ -1417,27 +1252,24 @@ test('tool: frames/mouse/challenge are published (required params, aliases) and 
   assert.equal(byAction.get('frames')?.aliases.index, 'frameIndex')
   assert.equal(byAction.get('frames')?.aliases.name, 'frameName')
   assert.equal(byAction.get('mouse')?.aliases.timeout, 'timeoutMs')
-  assert.equal(byAction.get('challenge')?.aliases.attempts, 'maxAttempts')
+  assert.ok(!byAction.has('challenge'), 'the removed classifier action is NOT published')
   assert.ok(byAction.get('mouse')?.parameters.x !== undefined, 'the mouse action publishes its coordinates')
   assert.ok(byAction.get('mouse')?.parameters.steps !== undefined)
-  assert.ok(byAction.get('challenge')?.parameters.challengeAction !== undefined)
-  assert.ok(byAction.get('challenge')?.parameters.waitMs !== undefined)
   assert.ok(byAction.get('frames')?.parameters.frameId !== undefined)
   // The published tool surface accepts the canonical AND the aliased spellings.
   const spec = tool?.parameters as never
   assert.deepEqual(validateArgs(spec, { action: 'frames', session: 's1' }), [], '`frames` needs only a session')
   assert.deepEqual(
-    validateArgs(spec, { action: 'frames', session: 's1', frameAction: 'select', frameUrl: 'https://challenges.cloudflare.com/x' }),
+    validateArgs(spec, { action: 'frames', session: 's1', frameAction: 'select', frameUrl: 'https://widget.test/x' }),
     [],
     '`frameAction: select` + `frameUrl`',
   )
   assert.deepEqual(
-    validateArgs(spec, { action: 'frames', session: 's1', frameAction: 'select', url: 'https://challenges.cloudflare.com/x', index: 0, name: 'cf' }),
+    validateArgs(spec, { action: 'frames', session: 's1', frameAction: 'select', url: 'https://widget.test/x', index: 0, name: 'w' }),
     [],
     'the frames aliases (`url`/`index`/`name`) pass the surface',
   )
   assert.deepEqual(validateArgs(spec, { action: 'mouse', session: 's1', mouseAction: 'click', x: 100, y: 220 }), [], 'coordinate mouse')
-  assert.deepEqual(validateArgs(spec, { action: 'challenge', session: 's1', challengeAction: 'solve', kind: 'turnstile', attempts: 2 }), [], 'challenge + alias')
   assert.ok(validateArgs(spec, { action: 'mouse', session: 's1', x: 1 }).length > 0 === false, 'x without y stays a runtime check')
   unload()
 })
@@ -1454,13 +1286,9 @@ test('tool: a `frames` select WITHOUT a target is invalid-input, WITH an alias t
     'a select with no frame target is refused, never silently the main frame',
   )
   assert.equal(
-    toolReason(await tool?.handler({ action: 'frames', session: 'tf', frameAction: 'select', url: 'https://challenges.cloudflare.com/x' })),
+    toolReason(await tool?.handler({ action: 'frames', session: 'tf', frameAction: 'select', url: 'https://widget.test/x' })),
     'browser-use.not-implemented',
     'the `url` alias RESOLVED into a frame target and the call was forwarded (the fake provider has no frames)',
-  )
-  assert.equal(
-    toolReason(await tool?.handler({ action: 'challenge', session: 'tf', challengeAction: 'solve', kind: 'turnstile' })),
-    'browser-use.not-implemented',
   )
   assert.equal(
     toolReason(await tool?.handler({ action: 'mouse', session: 'tf', x: 10, y: 20 })),
@@ -1470,7 +1298,7 @@ test('tool: a `frames` select WITHOUT a target is invalid-input, WITH an alias t
   unload()
 })
 
-test('host: frames/mouse/challenge FORWARD to a provider that implements them (session + validated request round-trip)', async () => {
+test('host: frames/mouse FORWARD to a provider that implements them (session + validated request round-trip)', async () => {
   const { provider } = fakeProvider()
   const seen: { method: string; session: string; request: Record<string, unknown> }[] = []
   const patched = provider as unknown as Record<string, unknown>
@@ -1489,7 +1317,6 @@ test('host: frames/mouse/challenge FORWARD to a provider that implements them (s
     }
   }
   patched.mouse = async (session: string, request: Record<string, unknown>) => {
-    seen.push({ method: 'mouse', session, request })
     return {
       action: 'mouse',
       session,
@@ -1503,22 +1330,6 @@ test('host: frames/mouse/challenge FORWARD to a provider that implements them (s
       durationMs: 1,
     }
   }
-  patched.challenge = async (session: string, request: Record<string, unknown>) => {
-    seen.push({ method: 'challenge', session, request })
-    return {
-      action: 'challenge',
-      session,
-      challengeAction: (request.challengeAction as string) ?? 'detect',
-      url: 'https://demo.test/',
-      title: 'demo',
-      classification: 'none',
-      outcome: 'no-challenge',
-      unsolvableFromThisIp: false,
-      reason: 'no challenge widget, no challenge document and no clearance cookie',
-      signals: [],
-      elapsedMs: 1,
-    }
-  }
   const service = createBrowserUseService({} as never, { provider: 'fake' })
   service.register(provider)
   await service.open({ session: 'fw' })
@@ -1528,13 +1339,10 @@ test('host: frames/mouse/challenge FORWARD to a provider that implements them (s
   const mouse = await service.mouse('fw', { x: 12, y: 34 })
   assert.equal(mouse.x, 12)
   assert.equal(mouse.y, 34)
-  const challenge = await service.challenge('fw', { challengeAction: 'detect', kinds: ['turnstile'] })
-  assert.equal(challenge.outcome, 'no-challenge')
-  assert.deepEqual(seen.map((entry) => entry.method), ['frames', 'mouse', 'challenge'])
+  assert.deepEqual(seen.map((entry) => entry.method), ['frames', 'mouse'])
   assert.equal(seen[0]?.session, 'fw', 'the session is forwarded')
   assert.deepEqual(seen[0]?.request, { frameAction: 'list' }, `the validated request is forwarded verbatim: ${JSON.stringify(seen[0])}`)
   assert.equal(seen[1]?.request.mouseAction, 'click', `the mouse action defaults are applied before forwarding: ${JSON.stringify(seen[1])}`)
   assert.equal(seen[1]?.request.x, 12)
-  assert.deepEqual(seen[2]?.request, { challengeAction: 'detect', kinds: ['turnstile'] }, `the kinds are forwarded: ${JSON.stringify(seen[2])}`)
   await service.close('fw')
 })

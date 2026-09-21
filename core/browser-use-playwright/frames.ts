@@ -1,35 +1,28 @@
-// core/browser-use-playwright/frames - FRAMES, COORDINATE MOUSE and CHALLENGES.
+// core/browser-use-playwright/frames - THE FRAME TREE, MOUSE INPUT and the RAW
+// LOAD RECORDER.
 //
 // WHY THIS MODULE EXISTS (measured, not theoretical):
 //
-//   * The interesting half of a real page is often in a CROSS-ORIGIN IFRAME. A
-//     Turnstile widget (`challenges.cloudflare.com`), an hCaptcha box, an
-//     embedded payment form: `act { selector: 'iframe[src*=challenges...]' }`
-//     resolves the ELEMENT in the main document, but nothing inside it is
-//     reachable from there - the interaction has to happen INSIDE the frame.
-//   * A widget that has no addressable element at all still has PIXELS, so the
-//     only honest fallback is the real mouse at coordinates (`page.mouse`), which
-//     goes through the same input pipeline a human click uses.
-//   * A Cloudflare-protected page has three very different outcomes that a
-//     caller MUST be able to tell apart: a MANAGED challenge the browser passes
-//     on its own (`cf_clearance` appears, the caller gets the real page), an
-//     INTERACTIVE widget that needs a click, and a HARD IP-REPUTATION BLOCK
-//     (HTTP 403, "Just a moment...", "unusual traffic patterns detected ... you
-//     have been temporarily blocked") where there is NO challenge to solve and
-//     no amount of browser realism changes anything. The last one must be
-//     REPORTED, never turned into a silent empty read.
+//   * The interesting half of a real page often lives in a CROSS-ORIGIN IFRAME
+//     (an embedded payment form, a third-party editor, an offered control). A
+//     CSS selector of the main document can never reach inside it, the page's
+//     own DOM may not even admit that the frame exists, and a frame with no
+//     addressable element still HAS PIXELS. So this provider exposes two
+//     GENERIC things: the BROWSER's frame tree (`Page.getFrameTree` over CDP
+//     plus the real element geometry) and the REAL MOUSE at coordinates
+//     (`page.mouse`), which drives the same input pipeline a human click uses.
+//   * What a call OBSERVED is not a verdict. This module records the transport
+//     facts of every document load (status, headers verbatim, redirects, cookie
+//     NAMES), what the document contained, the frame tree, the navigations the
+//     browser performed ON ITS OWN and the actions this side drove. Nothing here
+//     matches a keyword, names a vendor, or decides what a page "means": the
+//     CALLER reads the observation and judges.
 //
-// HONESTY: the classification is derived from signals that are READ from the
-// live document (status, title, body markers, frame urls, the response token,
-// the `cf_clearance` cookie) and every signal is echoed in `signals`, so a
-// caller can audit the verdict. NO stealth fingerprint spoofing is used or
-// needed: this is a real Chromium driven through CDP.
-import type { CDPSession, ElementHandle, Frame, Locator, Page } from 'playwright-core'
+// HONESTY: no fingerprint spoofing is used or needed. This is a real Chromium
+// driven through CDP against real pages.
+import type { CDPSession, ElementHandle, Frame, Page, Response } from 'playwright-core'
 import {
   BrowserUseError,
-  CHALLENGE_ACTIONS,
-  CHALLENGE_KINDS,
-  CHALLENGE_TOKEN_FIELDS,
   MOUSE_ACTIONS,
   MOUSE_BUTTONS,
   MOUSE_ORIGINS,
@@ -37,258 +30,20 @@ import {
   requireNonNegativeInt,
   requirePositiveInt,
   requireText,
-  type BrowserChallengeAnswer,
-  type BrowserChallengeRequest,
-  type BrowserChallengeWidget,
+  type BrowserFrameBox,
+  type BrowserFrameFocusables,
   type BrowserFrameInfo,
   type BrowserFrameTarget,
   type BrowserMouseRequest,
-  type ChallengeClassification,
-  type ChallengeKind,
-  type ChallengeOutcome,
+  type BrowserRawCookie,
+  type BrowserRawDocument,
+  type BrowserRawLoad,
+  type BrowserRawNavigation,
+  type BrowserRawResources,
   type MouseAction,
   type MouseButton,
   type MouseOrigin,
 } from '../../definitions/browser-use.ts'
-
-// ---------------------------------------------------------------------------
-// The widget vocabulary: which frame URL belongs to which challenge.
-// ---------------------------------------------------------------------------
-
-/** The frame URL patterns of the known widgets (first match wins). */
-export const WIDGET_FRAME_PATTERNS: readonly { kind: ChallengeKind; pattern: RegExp }[] = [
-  { kind: 'turnstile', pattern: /challenges\.cloudflare\.com|challenge-platform|turnstile/i },
-  { kind: 'hcaptcha', pattern: /hcaptcha\.com|newassets\.hcaptcha\.com/i },
-  { kind: 'recaptcha', pattern: /google\.com\/recaptcha|gstatic\.com\/recaptcha|recaptcha\/api/i },
-]
-
-/** The kind of widget a frame URL belongs to (`unknown` when it is neither). */
-export function kindOfFrameUrl(url: string): ChallengeKind | undefined {
-  for (const entry of WIDGET_FRAME_PATTERNS) if (entry.pattern.test(url)) return entry.kind
-  return undefined
-}
-
-/**
- * True when a widget frame is INTERACTION-FREE (the `auto`/`invisible` variants).
- * Cloudflare renders those on a page that has ALREADY passed, so they are
- * reported but never make a document `interactive` - there is nothing to click.
- * Measured on https://nowsecure.nl: a rendered page (HTTP 200, real title),
- * `cf_clearance` present, two `/auto/...` turnstile frames. Classifying that page
- * `interactive/unsolved` was the false negative this helper fixes.
- */
-export function isInvisibleWidgetUrl(url: string): boolean {
-  return /\/auto\//i.test(url) || /(?:^|[?&])size=invisible/i.test(url) || /\/invisible\//i.test(url)
-}
-
-/**
- * The hard IP-reputation refusal. These markers mean "this address is refused";
- * there is NO widget to click, so the only honest answer is
- * `blocked-ip` / `unsolvable-from-this-ip`.
- */
-export const HARD_BLOCK_PATTERNS: readonly { id: string; pattern: RegExp }[] = [
-  { id: 'unusual-traffic', pattern: /unusual traffic patterns detected/i },
-  { id: 'non-human-interaction', pattern: /non-human interaction/i },
-  { id: 'temporarily-blocked', pattern: /you have been temporary(?:ily)? blocked/i },
-  { id: 'blocked-by-cloudflare', pattern: /(?:error\s*)?1020|access denied[^<]{0,40}cloudflare/i },
-  { id: 'ray-id-denied', pattern: /ray id[^<]{0,120}(?:blocked|denied|restricted)/i },
-]
-
-/** The markers of a challenge/interstitial DOCUMENT (no widget frame yet). */
-export const CHALLENGE_PAGE_PATTERNS: readonly { id: string; pattern: RegExp }[] = [
-  { id: 'just-a-moment', pattern: /just a moment/i },
-  { id: 'challenge-platform-script', pattern: /cdn-cgi\/challenge-platform/i },
-  { id: 'cf-chl', pattern: /cf-chl|cf_chl_/i },
-  { id: 'enable-js-cookies', pattern: /enable javascript and cookies to continue/i },
-  { id: 'checking-your-browser', pattern: /checking your browser/i },
-]
-
-/**
- * The elements tried INSIDE a widget frame, in order, to find the clickable
- * checkbox. The list is deliberately explicit: each entry was seen in a real
- * widget markup, and the last resort is a PIXEL click on the widget box (below)
- * when no element resolves at all.
- */
-export const WIDGET_CLICK_SELECTORS: readonly string[] = [
-  'input[type="checkbox"]',
-  'label.cb-lb',
-  '.cb-lb input',
-  '#cf-stage input[type="checkbox"]',
-  '[role="checkbox"]',
-  '#challenge-stage input',
-  '.ctp-checkbox-label',
-  '#anchor-state',
-  'div.cb-c',
-  '#cf-stage',
-]
-
-/** The offset of the checkbox inside a Turnstile widget box (its own layout). */
-const WIDGET_CHECKBOX_OFFSET = 30
-
-// ---------------------------------------------------------------------------
-// Classification (PURE: no browser, so it is unit-testable).
-// ---------------------------------------------------------------------------
-
-/** Everything the classifier reads from a live document. */
-export interface ChallengeDocument {
-  url: string
-  title: string
-  /** The main document's HTML, already bounded by the caller. */
-  html: string
-  /**
-   * The main document's VISIBLE text, already bounded by the caller. The refusal
-   * of a block page is often in the text while the HTML excerpt is a script
-   * (measured on downdetector.com.br: "Unusual traffic patterns detected" and
-   * "non-human interaction" live in `innerText`), so the markers are matched
-   * against HTML + text, never HTML alone.
-   */
-  text?: string
-  /** The HTTP status of the main document, when the engine reported one. */
-  httpStatus?: number
-  /** True when the `cf_clearance` cookie is present in the context. */
-  cfClearance: boolean
-  /** True when a response token is present and NON-EMPTY. */
-  tokenPresent: boolean
-  /** The field the token was found in, when one was. */
-  tokenField?: string
-  /** True when a widget frame reported its own solved state. */
-  widgetReportedSuccess?: boolean
-  /** The challenge frames currently in the page. */
-  challengeFrames: { frameId: string; url: string; kind: ChallengeKind }[]
-}
-
-/** The verdict of {@link classifyChallengeDocument}. */
-export interface ChallengeVerdict {
-  classification: ChallengeClassification
-  outcome: ChallengeOutcome
-  reason: string
-  signals: string[]
-  unsolvableFromThisIp: boolean
-}
-
-/**
- * Classifies a document from the signals it really carries. The ORDER of the
- * checks IS the design: a hard refusal is decided FIRST, because a block page
- * also says "Just a moment..." and would otherwise be mistaken for a solvable
- * challenge (that is exactly the misclassification this module exists to fix).
- */
-export function classifyChallengeDocument(document: ChallengeDocument): ChallengeVerdict {
-  const body = document.html
-  // Markers are matched against the HTML AND the visible text: a block page
-  // hides its refusal in the rendered text while the HTML excerpt is a script.
-  const corpus = document.text === undefined || document.text.length === 0 ? body : `${body}\n${document.text}`
-  const signals: string[] = [
-    `url=${document.url}`,
-    `title=${JSON.stringify(document.title)}`,
-    `httpStatus=${document.httpStatus === undefined ? 'unknown' : String(document.httpStatus)}`,
-    `challengeFrames=${String(document.challengeFrames.length)}`,
-    `cf_clearance=${document.cfClearance ? 'present' : 'absent'}`,
-    `token=${document.tokenPresent ? `present${document.tokenField === undefined ? '' : `:${document.tokenField}`}` : 'absent'}`,
-  ]
-
-  // 1. A HARD refusal: no challenge to solve, this address is refused.
-  const hard = HARD_BLOCK_PATTERNS.filter((entry) => entry.pattern.test(corpus))
-  if (hard.length > 0) {
-    for (const entry of hard) signals.push(`hard-block:${entry.id}`)
-    const status = document.httpStatus === undefined ? 'unknown' : String(document.httpStatus)
-    return {
-      classification: 'blocked-ip',
-      outcome: 'unsolvable-from-this-ip',
-      reason:
-        `the page refused this address (HTTP ${status}, title "${document.title}", no solvable challenge) - ` +
-        `the body names ${hard.map((entry) => entry.id).join(', ')}: this is an IP/edge reputation block, not a Turnstile widget, ` +
-        'so no browser interaction can pass it from this address',
-      signals,
-      unsolvableFromThisIp: true,
-    }
-  }
-
-  // 2. A VISIBLE widget is ON SCREEN: it needs an interaction (or it was
-  //    already solved). An invisible frame is reported as a signal and then the
-  //    classification continues on the OTHER signals: a page carrying only
-  //    interaction-free widgets has nothing to click (`managed-pass` when the
-  //    clearance cookie is present, `none` when there is nothing at all).
-  const frames = document.challengeFrames
-  const invisible = frames.filter((frame) => isInvisibleWidgetUrl(frame.url))
-  for (const frame of invisible) signals.push(`invisible-widget:${frame.kind}:${frame.url}`)
-  const visibleFrames = frames.filter((frame) => !isInvisibleWidgetUrl(frame.url))
-  if (visibleFrames.length > 0) {
-    for (const frame of visibleFrames) signals.push(`challenge-frame:${frame.kind}:${frame.url}`)
-    const solved = document.tokenPresent || document.widgetReportedSuccess === true
-    const kinds = [...new Set(visibleFrames.map((frame) => frame.kind))].join(', ')
-    if (document.widgetReportedSuccess === true) signals.push('widget-reported-success')
-    const suffix =
-      invisible.length === 0 ? '' : ` (the page also carries ${invisible.length} interaction-free widget frame(s))`
-    return {
-      classification: 'interactive',
-      outcome: solved ? 'solved' : 'unsolved',
-      reason:
-        (solved
-          ? `a ${kinds} widget is present and reports a solved state (token or success marker)`
-          : `a ${kinds} widget is present and needs a mouse interaction: target its frame and click its checkbox`) + suffix,
-      signals,
-      unsolvableFromThisIp: false,
-    }
-  }
-
-  // 3. A response token without any widget frame: an invisible/managed widget
-  //    already produced its token, the caller can use the page.
-  if (document.tokenPresent) {
-    signals.push('token-without-widget')
-    return {
-      classification: 'interactive',
-      outcome: 'solved',
-      reason: `no widget frame is left but the response token is present (${document.tokenField ?? 'unknown field'}): the challenge was passed`,
-      signals,
-      unsolvableFromThisIp: false,
-    }
-  }
-
-  // 4. A challenge DOCUMENT without a widget frame: a JS/interstitial challenge
-  //    (a real browser passes it by waiting); `cf_clearance` appears when it did.
-  const page = CHALLENGE_PAGE_PATTERNS.filter((entry) => entry.pattern.test(corpus))
-  if (page.length > 0) {
-    for (const entry of page) signals.push(`challenge-page:${entry.id}`)
-    return {
-      classification: document.cfClearance ? 'managed-pass' : 'interactive',
-      outcome: document.cfClearance ? 'already-passed' : 'unsolved',
-      reason: document.cfClearance
-        ? 'a challenge document was served and `cf_clearance` is present: the browser passed it'
-        : `the document is a challenge interstitial (${page.map((entry) => entry.id).join(', ')}) with no widget frame: ` +
-          'wait for it to clear (a real browser solves it without an interaction)',
-      signals,
-      unsolvableFromThisIp: false,
-    }
-  }
-
-  // 5. A CLEARANCE cookie on an otherwise normal page: the managed challenge
-  //    ran and was auto-passed by this browser.
-  if (document.cfClearance) {
-    signals.push('cf_clearance-without-challenge')
-    const hasWidgetMarkup = /cf-turnstile|turnstile|cf_clearance/i.test(body)
-    return {
-      classification: 'managed-pass',
-      outcome: 'already-passed',
-      reason:
-        'the page is not a challenge document and `cf_clearance` is present: a managed challenge was auto-passed by this browser' +
-        (hasWidgetMarkup ? ' (the page also carries challenge markup)' : ''),
-      signals,
-      unsolvableFromThisIp: false,
-    }
-  }
-
-  // 6. Nothing challenge-shaped at all.
-  return {
-    classification: 'none',
-    outcome: 'no-challenge',
-    reason:
-      'no challenge widget, no challenge document and no clearance cookie: this is an ordinary page' +
-      (invisible.length > 0
-        ? ` (it does carry ${invisible.length} interaction-free widget frame(s), which need no click)`
-        : ''),
-    signals,
-    unsolvableFromThisIp: false,
-  }
-}
 
 // ---------------------------------------------------------------------------
 // The frame tree.
@@ -372,6 +127,41 @@ async function selectorOfFrame(frame: Frame): Promise<string | undefined> {
   return tag
 }
 
+/** The focusable controls a frame's OWN document exposes (a structural count). */
+async function focusablesOf(frame: Frame): Promise<BrowserFrameFocusables> {
+  const selector = 'a[href], button, input, select, textarea, [role="button"], [role="checkbox"], [tabindex]'
+  return await frame
+    .evaluate((css) => {
+      const elements = Array.from(document.querySelectorAll(css))
+      const tags = Array.from(new Set(elements.map((element) => element.tagName.toLowerCase()))).sort()
+      return { tags, count: elements.length }
+    }, selector)
+    .catch(() => ({ tags: [] as string[], count: 0 }))
+}
+
+/**
+ * The frame element's box in MAIN-frame CSS pixels. The main frame answers the
+ * viewport; a frame whose element cannot be measured (detached, not rendered,
+ * hidden behind an unbuilt layout) answers `undefined` - an ABSENCE, never a
+ * fabricated zero, so a caller can tell "no box" from "box at 0,0".
+ */
+async function boxOf(page: Page, frame: Frame): Promise<BrowserFrameBox | undefined> {
+  if (frame === page.mainFrame()) {
+    const size = page.viewportSize()
+    return size === null ? undefined : { x: 0, y: 0, width: size.width, height: size.height }
+  }
+  let handle: ElementHandle<Element> | null = null
+  try {
+    handle = (await frame.frameElement()) as unknown as ElementHandle<Element> | null
+  } catch {
+    return undefined
+  }
+  if (handle === null) return undefined
+  const box = await handle.boundingBox().catch(() => null)
+  if (box === null) return undefined
+  return { x: box.x, y: box.y, width: box.width, height: box.height }
+}
+
 /**
  * Enumerates the frame tree of the page. The ids are the ENGINE's CDP frame
  * ids when they can be read (`frameIdSource: 'cdp'`), else positional ids
@@ -411,7 +201,8 @@ export async function enumerateFrames(
     const frameId = candidate?.frameId ?? `pw:${String(index)}`
     const selector = index === 0 ? undefined : await selectorOfFrame(frame)
     const frameOrigin = originOf(url)
-    const challenge = kindOfFrameUrl(url)
+    const box = await boxOf(page, frame)
+    const focusables = await focusablesOf(frame)
     frames.push({
       frameId,
       frameIdSource: candidate === undefined ? 'positional' : 'cdp',
@@ -422,7 +213,11 @@ export async function enumerateFrames(
       isMainFrame: frame === main,
       crossOrigin: mainOrigin !== undefined && frameOrigin !== undefined && mainOrigin !== frameOrigin,
       ...(selector === undefined ? {} : { selector }),
-      ...(challenge === undefined ? {} : { challenge }),
+      ...(frameOrigin === undefined ? {} : { origin: frameOrigin }),
+      sameOriginAsTop: frameOrigin !== undefined && mainOrigin !== undefined && frameOrigin === mainOrigin,
+      ...(box === undefined ? {} : { box }),
+      visible: box !== undefined && box.width > 0 && box.height > 0,
+      focusables,
     })
     bindings.set(frameId, { frameId, index, url, name })
   }
@@ -582,6 +377,8 @@ export interface MouseResult {
   relativeTo: MouseOrigin
   button: MouseButton
   frameId?: string
+  /** The frame URL the input was aimed through, when a frame was addressed. */
+  frameUrl?: string
 }
 
 /**
@@ -589,7 +386,7 @@ export interface MouseResult {
  * viewport - the SAME origin a screenshot uses; `relativeTo: 'frame'` measures
  * from the target frame's box, and the offset is added here so the browser
  * always receives main-frame coordinates (which is what makes a click inside a
- * cross-origin OOPIF land where the caller meant).
+ * cross-origin frame land where the caller meant).
  */
 export async function driveMouse(
   page: Page,
@@ -610,6 +407,7 @@ export async function driveMouse(
     relativeTo: base.origin,
     button,
     ...(base.frameId === undefined ? {} : { frameId: base.frameId }),
+    ...(base.origin === 'frame' && base.frame !== undefined ? { frameUrl: base.frame.url() } : {}),
   })
   if (action === 'wheel') {
     const deltaX = request.deltaX === undefined ? 0 : requireNumber(request.deltaX, 'deltaX', max)
@@ -658,605 +456,291 @@ export async function driveMouse(
 }
 
 // ---------------------------------------------------------------------------
-// Reading a document through the challenge lens.
+// The raw transcript: what the browser did on its own, and what it fetched.
+//
+// A page that reacts to an interaction by navigating ITSELF is the case this
+// recorder exists for: the caller must be able to see that the navigation came
+// from the browser, and to read the RAW load it landed on, without this side
+// ever issuing a navigation of its own (a self-issued re-navigation discards
+// the in-flight interaction state of the page - measured).
 // ---------------------------------------------------------------------------
 
-/** What a frame's own DOM reported (token / success / text). */
-interface FrameReport {
-  tokenField?: string
-  text: string
+/** One main-frame navigation the browser committed. */
+export interface RecordedNavigation {
+  at: string
+  url: string
+  /** `requested` when this side called `navigate`, `browser` when the page did it. */
+  kind: 'requested' | 'browser'
+  httpStatus?: number
+  statusText?: string
+  /** The document response, so the RAW load of this navigation can be captured. */
+  response?: Response
 }
 
-/** The selectors probed for a response token, main document first. */
-function tokenSelectors(): string[] {
-  return [...CHALLENGE_TOKEN_FIELDS, 'input[name$="response"]', 'textarea[name$="response"]', '[id$="_response"]']
+/** One response the page received (bounded: a summary, never a full log). */
+interface RecordedResponse {
+  at: string
+  url: string
+  status: number
 }
 
-/** Reads the token/success state of ONE frame (never throws). */
-async function probeFrame(frame: Frame): Promise<FrameReport> {
-  const selectors = tokenSelectors()
-  const report = await frame
-    .evaluate((fields: string[]) => {
-      let tokenField: string | undefined
-      for (const selector of fields) {
-        const element = document.querySelector(selector)
-        if (element === null) continue
-        const value = (element as HTMLInputElement | HTMLTextAreaElement).value
-        if (typeof value === 'string' && value.trim().length > 0) {
-          tokenField = selector
-          break
-        }
+/** The bounded transcript of a live page. */
+export class LoadRecorder {
+  /** The page this recorder is attached to (the provider re-attaches per page). */
+  readonly page: Page
+  private readonly limit: number
+  private readonly navs: RecordedNavigation[] = []
+  private readonly responses: RecordedResponse[] = []
+  private readonly detachers: (() => void)[] = []
+  private readonly waiters = new Set<() => void>()
+  private requestedUrl: string | undefined
+
+  constructor(page: Page, limit = 500) {
+    this.page = page
+    this.limit = Math.max(10, limit)
+  }
+
+  /** Starts recording (idempotent: a second call is a no-op). */
+  attach(): void {
+    if (this.detachers.length > 0) return
+    const onResponse = (response: Response): void => {
+      const request = response.request()
+      const isMainNavigation = request.isNavigationRequest() && response.frame() === this.page.mainFrame()
+      if (isMainNavigation) {
+        const kind: 'requested' | 'browser' = this.requestedUrl === undefined ? 'browser' : 'requested'
+        this.navs.push({
+          at: new Date().toISOString(),
+          url: request.url(),
+          kind,
+          httpStatus: response.status(),
+          statusText: response.statusText(),
+          response,
+        })
+        if (this.navs.length > this.limit) this.navs.splice(0, this.navs.length - this.limit)
+        for (const waiter of [...this.waiters]) waiter()
+      } else {
+        this.responses.push({ at: new Date().toISOString(), url: request.url(), status: response.status() })
+        if (this.responses.length > this.limit * 4) this.responses.splice(0, this.responses.length - this.limit * 4)
       }
-      return { ...(tokenField === undefined ? {} : { tokenField }), text: (document.body?.innerText ?? '').slice(0, 600) }
-    }, selectors)
-    .catch(() => undefined)
-  return report === undefined ? { text: '' } : report
-}
+    }
+    this.page.on('response', onResponse)
+    this.detachers.push(() => this.page.off('response', onResponse))
+  }
 
-/** The success markers a widget prints when it passed. */
-const SUCCESS_TEXT = /success|verified|verificado|voc(?:e|ê) (?:foi )?verificado|you are human|human verified/i
+  /** Marks the navigation THIS side is about to drive (so it is not billed to the page). */
+  beginRequested(url: string): void {
+    this.requestedUrl = url
+  }
 
-/** Everything one challenge reading needs (document + tree + verdict). */
-export interface ChallengeReading {
-  document: ChallengeDocument
-  verdict: ChallengeVerdict
-  frames: BrowserFrameInfo[]
-  bindings: Map<string, FrameBinding>
-  mainFrameId: string
-  /** frameId -> the frame's own report (token/success), for the widget frames. */
-  reports: Map<string, FrameReport>
-}
+  /** The requested navigation settled: from here on, navigations are the page's own. */
+  endRequested(): void {
+    this.requestedUrl = undefined
+  }
 
-/**
- * Reads the live page through the challenge lens: status, title, bounded HTML,
- * the `cf_clearance` cookie, the response token, the frame tree and the widget
- * frames. The document HTML is bounded HERE (never the whole page): what leaves
- * this module is a classification plus a bounded excerpt.
- */
-export async function readChallenge(
-  page: Page,
-  cdp: CDPSession | undefined,
-  options: { maxFrames: number; excerptChars: number },
-): Promise<ChallengeReading> {
-  const { frames, bindings, mainFrameId } = await enumerateFrames(page, cdp, options.maxFrames)
-  const info: { title: string; html: string; text: string; httpStatus?: number } = await page
-    .evaluate((limit: number) => {
-      let httpStatus: number | undefined
-      try {
-        const entries = performance.getEntriesByType('navigation') as PerformanceNavigationTiming[]
-        const status = entries[0]?.responseStatus
-        if (typeof status === 'number' && status > 0) httpStatus = status
-      } catch {
-        httpStatus = undefined
+  /** Every navigation recorded so far, oldest first. */
+  navigations(): RecordedNavigation[] {
+    return [...this.navs]
+  }
+
+  /** The navigations the PAGE initiated (never the caller's own request). */
+  browserInitiated(): RecordedNavigation[] {
+    return this.navs.filter((navigation) => navigation.kind === 'browser')
+  }
+
+  /** The count of navigations recorded so far (the window marker). */
+  mark(): number {
+    return this.navs.length
+  }
+
+  /** The navigations recorded after a {@link mark}. */
+  since(marker: number): RecordedNavigation[] {
+    return this.navs.slice(marker)
+  }
+
+  /** The page-initiated navigations recorded after a {@link mark}. */
+  browserSince(marker: number): RecordedNavigation[] {
+    return this.navs.slice(marker).filter((navigation) => navigation.kind === 'browser')
+  }
+
+  /** The response index a load starts at (the resource summary window). */
+  responseMark(): number {
+    return this.responses.length
+  }
+
+  /** The resources observed after a {@link responseMark} (bounded, counts only). */
+  resourcesSince(marker: number, maxFailed = 50): BrowserRawResources {
+    const window = this.responses.slice(marker)
+    const failed: string[] = []
+    for (const response of window) {
+      if (response.status >= 400 && failed.length < maxFailed) failed.push(response.url)
+    }
+    return { total: window.length, failed }
+  }
+
+  /**
+   * Waits (bounded) until the page commits a navigation after `mark`. Event
+   * driven, never a poll loop: the recorder notifies on every recorded
+   * navigation. Answers `true` when one arrived inside the budget.
+   */
+  async waitForNavigation(mark: number, timeoutMs: number): Promise<boolean> {
+    if (this.navs.length > mark) return true
+    return await new Promise<boolean>((resolve) => {
+      let settled = false
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const finish = (value: boolean): void => {
+        if (settled) return
+        settled = true
+        if (timer !== undefined) clearTimeout(timer)
+        this.waiters.delete(waiter)
+        resolve(value)
       }
+      const waiter = (): void => {
+        if (this.navs.length > mark) finish(true)
+      }
+      this.waiters.add(waiter)
+      timer = setTimeout(() => finish(false), Math.max(0, timeoutMs))
+    })
+  }
+
+  /** Stops recording and releases the page listeners. */
+  dispose(): void {
+    for (const detach of this.detachers.splice(0)) detach()
+    this.waiters.clear()
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Capturing a RAW load.
+// ---------------------------------------------------------------------------
+
+/** The document facts a load reports (a bounded excerpt, counts, no verdict). */
+async function documentFacts(page: Page, excerptChars: number): Promise<BrowserRawDocument> {
+  const facts = await page
+    .evaluate((max) => {
+      const body = document.body
+      const text = body === null ? '' : body.innerText
       return {
         title: document.title,
-        html: document.documentElement === null ? '' : document.documentElement.outerHTML.slice(0, limit),
-        text: (document.body === null || document.body === undefined ? '' : document.body.innerText ?? '').slice(0, 8000),
-        ...(httpStatus === undefined ? {} : { httpStatus }),
+        bodyTextExcerpt: text.slice(0, max),
+        htmlLength: document.documentElement === null ? 0 : document.documentElement.outerHTML.length,
+        formCount: document.querySelectorAll('form').length,
+        textLength: text.length,
       }
-    }, Math.max(20_000, options.excerptChars * 40))
-    .catch(() => ({ title: '', html: '', text: '' }))
-  const cookies = await page.context().cookies().catch(() => [])
-  const clearance = cookies.find((cookie) => cookie.name === 'cf_clearance')
-  const mainReport = await probeFrame(page.mainFrame())
-  let tokenPresent = mainReport.tokenField !== undefined
-  let tokenField = mainReport.tokenField
-  let widgetReportedSuccess = mainReport.tokenField !== undefined
-  const reports = new Map<string, FrameReport>()
-  const challengeFrames: ChallengeDocument['challengeFrames'] = []
-  for (const frame of frames) {
-    if (frame.isMainFrame) continue
-    const kind = kindOfFrameUrl(frame.url)
-    if (kind === undefined) continue
-    challengeFrames.push({ frameId: frame.frameId, url: frame.url, kind })
-    const live = page.frames().find((candidate) => candidate.url() === frame.url && candidate.name() === (frame.name ?? ''))
-    if (live === undefined) continue
-    const report = await probeFrame(live)
-    reports.set(frame.frameId, report)
-    if (!tokenPresent && report.tokenField !== undefined) {
-      tokenPresent = true
-      tokenField = report.tokenField
+    }, excerptChars)
+    .catch(() => ({ title: '', bodyTextExcerpt: '', htmlLength: 0, formCount: 0, textLength: 0 }))
+  return facts
+}
+
+/**
+ * The cookies ONE response asked the browser to store: the NAME and the
+ * attributes, never the value. The value is dropped at the first `;` of the
+ * header, so a session cookie can never leak through an observation.
+ */
+export function cookiesFromSetCookie(headers: { name: string; value: string }[], max = 50): BrowserRawCookie[] {
+  const cookies: BrowserRawCookie[] = []
+  for (const header of headers) {
+    if (header.name.toLowerCase() !== 'set-cookie') continue
+    const parts = header.value.split(';')
+    const name = (parts[0] ?? '').split('=')[0]?.trim()
+    if (name === undefined || name.length === 0) continue
+    const cookie: BrowserRawCookie = { name }
+    for (const attribute of parts.slice(1)) {
+      const [rawKey, ...rest] = attribute.trim().split('=')
+      const key = (rawKey ?? '').toLowerCase()
+      const value = rest.join('=').trim()
+      if (key === 'domain' && value.length > 0) cookie.domain = value
+      else if (key === 'path' && value.length > 0) cookie.path = value
+      else if (key === 'httponly') cookie.httpOnly = true
+      else if (key === 'secure') cookie.secure = true
+      else if (key === 'samesite' && value.length > 0) cookie.sameSite = value
+      else if (key === 'max-age' && value.length > 0) {
+        const seconds = Number(value)
+        if (Number.isFinite(seconds)) cookie.expires = Math.floor(Date.now() / 1000) + seconds
+      } else if (key === 'expires' && value.length > 0) {
+        const at = Date.parse(value)
+        if (Number.isFinite(at)) cookie.expires = Math.floor(at / 1000)
+      }
     }
-    if (SUCCESS_TEXT.test(report.text)) widgetReportedSuccess = true
+    cookies.push(cookie)
+    if (cookies.length >= max) break
   }
-  const doc: ChallengeDocument = {
-    url: page.url(),
-    title: info.title === '' ? await page.title().catch(() => '') : info.title,
-    html: info.html,
-    text: info.text,
-    ...(info.httpStatus === undefined ? {} : { httpStatus: info.httpStatus }),
-    cfClearance: clearance !== undefined,
-    tokenPresent,
-    ...(tokenField === undefined ? {} : { tokenField }),
-    widgetReportedSuccess,
-    challengeFrames,
+  return cookies
+}
+
+/** Everything {@link captureRawLoad} needs (all of it observed, none of it judged). */
+export interface RawLoadInput {
+  /** The URL this side asked for, when this side asked for one. */
+  requestedUrl?: string
+  /** The document response the browser observed, when one was observed. */
+  response?: Response
+  /** The recorder this load was observed with. */
+  recorder: LoadRecorder
+  /** The resource window marker (`LoadRecorder.responseMark()` at load start). */
+  responseMark: number
+  /** The frame tree to report (already enumerated). */
+  frames: BrowserFrameInfo[]
+  /** How many frames exist beyond the reported set (never a silent truncation). */
+  framesOverflow?: number
+  /** The navigations this load covers. */
+  navigations: RecordedNavigation[]
+  /** When the load started (ms since the epoch). */
+  startedAtMs: number
+  /** The maximum document excerpt in characters. */
+  excerptChars: number
+  /** A screenshot of the landed page, when one was taken. */
+  screenshot?: { path: string; width: number; height: number }
+}
+
+/** Captures ONE load: transport, document, resources, cookies, frames, timing. */
+export async function captureRawLoad(page: Page, input: RawLoadInput): Promise<BrowserRawLoad> {
+  const response = input.response
+  const responseHeaders: Record<string, string> = {}
+  let cookiesSet: BrowserRawCookie[] = []
+  if (response !== undefined) {
+    const headers = await response.allHeaders().catch(() => ({}))
+    for (const [name, value] of Object.entries(headers)) responseHeaders[name.toLowerCase()] = value
+    const raw = await response.headersArray().catch(() => [])
+    cookiesSet = cookiesFromSetCookie(raw)
   }
+  const redirects: string[] = []
+  if (response !== undefined) {
+    let hop = response.request().redirectedFrom()
+    while (hop !== null) {
+      redirects.unshift(hop.url())
+      hop = hop.redirectedFrom()
+    }
+  }
+  const document = await documentFacts(page, input.excerptChars)
+  const startedAt = new Date(input.startedAtMs).toISOString()
+  const endedAtMs = Date.now()
   return {
-    document: doc,
-    verdict: classifyChallengeDocument(doc),
-    frames,
-    bindings,
-    mainFrameId,
-    reports,
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Solving: frame targeting + coordinate mouse, then WAIT for the evidence.
-// ---------------------------------------------------------------------------
-
-/** Options a solve needs from the seam. */
-export interface ChallengeSolveOptions {
-  timeoutMs: number
-  maxTextChars: number
-  /** The frame the caller pointed at (`challenge { frame }`), preferred for the widget. */
-  preferFrameUrl?: string
-}
-
-/** The `cf_clearance` cookie view (never a value). */
-function cookieView(cookies: { name: string; domain: string; expires: number }[]): {
-  name: string
-  present: boolean
-  domain?: string
-  expires?: number
-} {
-  const clearance = cookies.find((cookie) => cookie.name === 'cf_clearance')
-  if (clearance === undefined) return { name: 'cf_clearance', present: false }
-  return {
-    name: 'cf_clearance',
-    present: true,
-    domain: clearance.domain,
-    ...(clearance.expires === undefined || clearance.expires <= 0 ? {} : { expires: Math.round(clearance.expires * 1000) }),
-  }
-}
-
-/** The token/cookie state used while waiting for a solve. */
-async function pollPassed(page: Page): Promise<{ passed: boolean; tokenField?: string; cfClearance: boolean; widgetReportedSuccess: boolean; challengeFrames: number }> {
-  const cookies = await page.context().cookies().catch(() => [])
-  const cfClearance = cookies.some((cookie) => cookie.name === 'cf_clearance')
-  const main = await probeFrame(page.mainFrame())
-  let tokenField = main.tokenField
-  let success = main.tokenField !== undefined
-  let challengeFrames = 0
-  for (const frame of page.frames()) {
-    if (frame === page.mainFrame()) continue
-    if (kindOfFrameUrl(frame.url()) === undefined) continue
-    challengeFrames += 1
-    const report = await probeFrame(frame)
-    if (tokenField === undefined && report.tokenField !== undefined) tokenField = report.tokenField
-    if (SUCCESS_TEXT.test(report.text)) success = true
-  }
-  return {
-    passed: tokenField !== undefined || cfClearance || success || (challengeFrames === 0 && success),
-    ...(tokenField === undefined ? {} : { tokenField }),
-    cfClearance,
-    widgetReportedSuccess: success,
-    challengeFrames,
-  }
-}
-
-/**
- * An interstitial/refusal marker a document carries, matched against the title,
- * the HTML AND the visible text. Exported so a caller (or a test) can assert the
- * marker without copying the list.
- */
-export const INTERSTITIAL_MARKERS = [
-  'just a moment',
-  'checking your browser',
-  'unusual traffic',
-  'non-human interaction',
-  'verify you are human',
-  'enable javascript and cookies to continue',
-  'attention required',
-  'cf-chl',
-] as const
-
-/** The first interstitial/refusal marker the document carries, when any. */
-export function interstitialMarker(title: string, html: string, text?: string): string | undefined {
-  const haystack = `${title}\n${html}\n${text ?? ''}`.toLowerCase()
-  return INTERSTITIAL_MARKERS.find((marker) => haystack.includes(marker))
-}
-
-/**
- * What the ORIGIN answered AFTER the validator accepted: the post-solve
- * re-navigation. A challenge the validator accepts while the origin keeps
- * serving the interstitial is a FAILED navigation - this record is what tells
- * the two apart, so `solved` is never claimed off a token alone.
- */
-export interface ChallengeRecheck {
-  /** The URL that was re-navigated (the page the challenge was found on). */
-  url: string
-  /** The HTTP status of the re-navigation, when the engine exposed one. */
-  httpStatus?: number
-  /** The document title AFTER the re-navigation. */
-  title: string
-  /** The classification of the RE-NAVIGATED document. */
-  classification: ChallengeClassification
-  /** The interstitial/refusal marker the re-navigated body still carries. */
-  interstitialMarker?: string
-  /** The navigation error, when the re-navigation itself failed. */
-  navigationError?: string
-}
-
-/** One line describing a recheck (never invents a status the engine did not give). */
-function statusText(recheck: ChallengeRecheck): string {
-  const status = recheck.httpStatus === undefined ? 'unknown' : String(recheck.httpStatus)
-  return `HTTP ${status}, title ${JSON.stringify(recheck.title)}, classification ${recheck.classification}`
-}
-
-/**
- * True when the RE-NAVIGATED document is still a challenge/refusal page. A
- * clearance cookie on an otherwise ordinary page (`managed-pass`) and `none` both
- * mean the origin served the real page; a marker, a hard refusal or a challenge
- * DOCUMENT mean it did not.
- */
-export function stillInterstitial(reading: ChallengeReading, marker: string | undefined): boolean {
-  if (marker !== undefined) return true
-  if (reading.verdict.classification === 'blocked-ip') return true
-  const corpus = `${reading.document.html}\n${reading.document.text ?? ''}`
-  return reading.verdict.classification !== 'none' && CHALLENGE_PAGE_PATTERNS.some((entry) => entry.pattern.test(corpus))
-}
-
-/**
- * RE-NAVIGATES the URL the challenge was found on, gives a managed challenge the
- * chance to clear by waiting (bounded), and reads what the ORIGIN served. This is
- * the check that turns "the widget accepted me" into an answer about the PAGE,
- * and the only thing that can report `validator_passed_origin_blocked`.
- */
-async function recheckOrigin(
-  page: Page,
-  cdp: CDPSession | undefined,
-  url: string,
-  timeoutMs: number,
-  log: string[],
-): Promise<{ recheck: ChallengeRecheck; reading: ChallengeReading }> {
-  let navigationError: string | undefined
-  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs }).catch((error: unknown) => {
-    navigationError = error instanceof Error ? error.message : String(error)
-  })
-  await page.waitForTimeout(Math.min(5_000, timeoutMs)).catch(() => undefined)
-  const reading = await readChallenge(page, cdp, { maxFrames: 200, excerptChars: 4_000 })
-  const marker = interstitialMarker(reading.document.title, reading.document.html, reading.document.text)
-  log.push(
-    `recheck ${url} -> ${statusText({
-      url,
-      ...(reading.document.httpStatus === undefined ? {} : { httpStatus: reading.document.httpStatus }),
-      title: reading.document.title,
-      classification: reading.verdict.classification,
-    })}` +
-      (marker === undefined ? '' : `, interstitial marker ${JSON.stringify(marker)}`) +
-      (navigationError === undefined ? '' : `, navigation error ${navigationError}`),
-  )
-  return {
-    recheck: {
-      url,
-      ...(reading.document.httpStatus === undefined ? {} : { httpStatus: reading.document.httpStatus }),
-      title: reading.document.title,
-      classification: reading.verdict.classification,
-      ...(marker === undefined ? {} : { interstitialMarker: marker }),
-      ...(navigationError === undefined ? {} : { navigationError }),
+    transport: {
+      requestedUrl: input.requestedUrl ?? page.url(),
+      finalUrl: page.url(),
+      ...(response === undefined ? {} : { httpStatus: response.status(), statusText: response.statusText() }),
+      responseHeaders,
+      redirects,
     },
-    reading,
-  }
+    document,
+    resources: input.recorder.resourcesSince(input.responseMark),
+    cookiesSet,
+    timing: { startedAt, endedAt: new Date(endedAtMs).toISOString(), durationMs: endedAtMs - input.startedAtMs },
+    browserInitiatedNavigations: input.navigations
+      .filter((navigation) => navigation.kind === 'browser')
+      .map((navigation) => rawNavigation(navigation)),
+    ...(input.framesOverflow === undefined ? {} : { framesOverflow: input.framesOverflow }),
+    frames: input.frames,
+    ...(input.screenshot === undefined ? {} : { screenshot: input.screenshot }),
+  } as BrowserRawLoad & { framesOverflow?: number }
 }
 
-/**
- * Solves an INTERACTIVE challenge: locate the widget frame, find its checkbox
- * (or fall back to the widget box's checkbox offset), click it with the REAL
- * mouse and WAIT for the evidence (token / `cf_clearance` / the widget's own
- * success marker). Every attempt is logged into the returned widget report, so
- * a failure says WHAT was tried instead of "not solved".
- */
-export async function solveChallenge(
-  page: Page,
-  cdp: CDPSession | undefined,
-  sessionId: string,
-  request: BrowserChallengeRequest,
-  options: ChallengeSolveOptions,
-): Promise<BrowserChallengeAnswer> {
-  const started = Date.now()
-  const action = requireEnum(request.challengeAction ?? 'detect', CHALLENGE_ACTIONS, 'challengeAction', 'detect')
-  const waitMs = request.waitMs === undefined ? 15_000 : requirePositiveInt(request.waitMs, 'waitMs', 120_000)
-  const maxAttempts = request.maxAttempts === undefined ? 3 : requirePositiveInt(request.maxAttempts, 'maxAttempts', 10)
-  const kinds = Array.isArray(request.kinds) && request.kinds.length > 0 ? request.kinds.map((kind) => requireEnum(kind, CHALLENGE_KINDS, 'kinds[]')) : undefined
-  const explicitSelector = request.selector === undefined ? undefined : requireText(request.selector, 'selector', 4_096)
-  const wantClick = request.click !== false && action === 'solve'
-  const log: string[] = []
-  let reading = await readChallenge(page, cdp, { maxFrames: 200, excerptChars: 4_000 })
-  const cookieByPage = await page.context().cookies().catch(() => [])
-  let widget = widgetOf(reading, kinds, log, options.preferFrameUrl)
-  // The URL the challenge was found on: the post-solve re-navigation targets it
-  // (Cloudflare serves its interstitial ON the requested URL).
-  const targetUrl = readerUrl(page, reading)
-  const recheckTimeoutMs = Math.min(30_000, Math.max(10_000, waitMs))
-
-  if (action !== 'solve') {
-    return {
-      action: 'challenge',
-      session: sessionId,
-      challengeAction: action,
-      url: reading.document.url,
-      title: reading.document.title,
-      classification: reading.verdict.classification,
-      outcome: reading.verdict.outcome,
-      unsolvableFromThisIp: reading.verdict.unsolvableFromThisIp,
-      reason: reading.verdict.reason,
-      signals: reading.verdict.signals,
-      ...(reading.document.httpStatus === undefined ? {} : { httpStatus: reading.document.httpStatus }),
-      ...excerptOf(reading),
-      ...(widget.found ? { widget } : {}),
-      cookie: cookieView(cookieByPage),
-      elapsedMs: Date.now() - started,
-    }
-  }
-
-  if (reading.verdict.classification !== 'interactive' || !widget.found) {
-    // Nothing to click: a hard block, a page that already passed, or an
-    // interstitial that a real browser clears by waiting. The answer is the
-    // STRUCTURED verdict - never a silent "empty read".
-    // A verdict that CLAIMS a pass (`already-passed`) is never taken on faith:
-    // the caller is owed the ORIGIN's answer, so the page is re-navigated exactly
-    // like the widget path. A headless launch reports a clearance cookie and still
-    // gets the interstitial back - that is `validator_passed_origin_blocked`.
-    if (reading.verdict.outcome === 'already-passed') {
-      const rechecked = await recheckOrigin(page, cdp, targetUrl, recheckTimeoutMs, log)
-      const blocked = stillInterstitial(rechecked.reading, rechecked.recheck.interstitialMarker)
-      const claimed: ChallengeOutcome = blocked ? 'validator_passed_origin_blocked' : 'already-passed'
-      const marker = rechecked.recheck.interstitialMarker
-      return {
-        action: 'challenge',
-        session: sessionId,
-        challengeAction: action,
-        url: rechecked.recheck.url,
-        title: rechecked.recheck.title,
-        classification: rechecked.recheck.classification,
-        outcome: claimed,
-        unsolvableFromThisIp: rechecked.reading.verdict.unsolvableFromThisIp,
-        reason: blocked
-          ? `${reading.verdict.reason} - BUT the post-solve re-navigation still served a challenge/refusal document ` +
-            `(${statusText(rechecked.recheck)}${marker === undefined ? '' : `, marker ${JSON.stringify(marker)}`}): ` +
-            'the page is NOT readable through this browser (a headless launch or an IP/edge refusal), so this is a FAILED navigation, not a pass'
-          : `${reading.verdict.reason} - the post-solve re-navigation got the same ordinary page back (${statusText(rechecked.recheck)})`,
-        signals: [...reading.verdict.signals, ...log],
-        ...(rechecked.recheck.httpStatus === undefined ? {} : { httpStatus: rechecked.recheck.httpStatus }),
-        ...excerptOf(rechecked.reading),
-        ...(widget.found ? { widget } : {}),
-        cookie: cookieView(await page.context().cookies().catch(() => cookieByPage)),
-        recheck: rechecked.recheck,
-        elapsedMs: Date.now() - started,
-      }
-    }
-    const outcome: ChallengeOutcome =
-      reading.verdict.outcome === 'unsolved' ? (reading.verdict.unsolvableFromThisIp ? 'unsolvable-from-this-ip' : 'unsolved') : reading.verdict.outcome
-    return {
-      action: 'challenge',
-      session: sessionId,
-      challengeAction: action,
-      url: reading.document.url,
-      title: reading.document.title,
-      classification: reading.verdict.classification,
-      outcome,
-      unsolvableFromThisIp: reading.verdict.unsolvableFromThisIp,
-      reason:
-        reading.verdict.classification === 'blocked-ip'
-          ? reading.verdict.reason
-          : `${reading.verdict.reason} - there is no widget to interact with, so no click was driven`,
-      signals: reading.verdict.signals,
-      ...(reading.document.httpStatus === undefined ? {} : { httpStatus: reading.document.httpStatus }),
-      ...excerptOf(reading),
-      ...(widget.found ? { widget } : {}),
-      cookie: cookieView(cookieByPage),
-      elapsedMs: Date.now() - started,
-    }
-  }
-
-  const passed = await solveWidget(page, reading, widget, { wantClick, waitMs, maxAttempts, explicitSelector, log })
-  reading = passed.reading
-  widget = passed.widget
-  const cookies = await page.context().cookies().catch(() => [])
-  const validatorPassed = widget.tokenPresent || widget.widgetReportedSuccess === true || cookies.some((cookie) => cookie.name === 'cf_clearance')
-  // THE VALIDATOR IS NOT THE ORIGIN. When the validator accepted, the page the
-  // challenge was found on is re-navigated and the ORIGIN's answer decides: a
-  // token plus an interstitial is `validator_passed_origin_blocked`, never
-  // `solved` (production failure of thread 2691: cf_clearance present, 403 for
-  // ever, `outcome: solved` reported).
-  let recheck: ChallengeRecheck | undefined
-  let outcome: ChallengeOutcome
-  if (validatorPassed) {
-    const rechecked = await recheckOrigin(page, cdp, targetUrl, recheckTimeoutMs, log)
-    recheck = rechecked.recheck
-    reading = rechecked.reading
-    outcome = stillInterstitial(reading, recheck.interstitialMarker) ? 'validator_passed_origin_blocked' : 'solved'
-  } else if (reading.verdict.unsolvableFromThisIp) outcome = 'unsolvable-from-this-ip'
-  else outcome = 'unsolved'
-  const evidence = [
-    widget.tokenPresent ? `token in '${widget.tokenField ?? 'unknown'}'` : '',
-    widget.widgetReportedSuccess === true ? 'widget reported success' : '',
-    cookies.some((cookie) => cookie.name === 'cf_clearance') ? 'cf_clearance present' : '',
-  ]
-    .filter((part) => part.length > 0)
-    .join(', ')
+/** One recorded navigation, as the contract reports it (raw facts only). */
+export function rawNavigation(navigation: RecordedNavigation): BrowserRawNavigation {
   return {
-    action: 'challenge',
-    session: sessionId,
-    challengeAction: action,
-    url: readerUrl(page, reading),
-    title: reading.document.title,
-    classification: reading.verdict.classification,
-    outcome,
-    unsolvableFromThisIp: reading.verdict.unsolvableFromThisIp,
-    reason:
-      outcome === 'solved'
-        ? `the ${widget.kind} widget was completed (${evidence}) and the post-solve re-navigation got the real page back (${recheck === undefined ? 'no recheck' : statusText(recheck)})`
-        : outcome === 'validator_passed_origin_blocked'
-          ? `the validator ACCEPTED the challenge (${evidence === '' ? 'no token/cookie evidence' : evidence}) but the post-solve re-navigation to ${recheck?.url ?? targetUrl} still served a challenge/refusal document ` +
-            `(${recheck === undefined ? 'no recheck' : statusText(recheck)}${recheck?.interstitialMarker === undefined ? '' : `, marker ${JSON.stringify(recheck.interstitialMarker)}`}): ` +
-            'the page is NOT readable through this browser (typically a headless launch or an IP/edge refusal) - a FAILED navigation, not a solve'
-          : `${reading.verdict.reason} - ${String(widget.attempts)} interaction(s) were driven and the token/clearance did not appear within ${String(waitMs)} ms`,
-    signals: [...reading.verdict.signals, ...widget.log],
-    ...(reading.document.httpStatus === undefined ? {} : { httpStatus: reading.document.httpStatus }),
-    ...excerptOf(reading),
-    widget,
-    cookie: cookieView(cookies),
-    ...(recheck === undefined ? {} : { recheck }),
-    elapsedMs: Date.now() - started,
+    at: navigation.at,
+    url: navigation.url,
+    kind: navigation.kind,
+    ...(navigation.httpStatus === undefined ? {} : { httpStatus: navigation.httpStatus }),
+    ...(navigation.statusText === undefined ? {} : { statusText: navigation.statusText }),
   }
 }
-
-/** The final URL of the call (`page.url()` re-read: a solve can navigate). */
-function readerUrl(page: Page, reading: ChallengeReading): string {
-  const live = page.url()
-  return live.length === 0 ? reading.document.url : live
-}
-
-/** The bounded body excerpt of a reading (only when the page is a refusal). */
-function excerptOf(reading: ChallengeReading): { bodyExcerpt?: string } {
-  if (!reading.verdict.unsolvableFromThisIp) return {}
-  const text = reading.document.html
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-  return { bodyExcerpt: text.slice(0, 600) }
-}
-
-/** Builds the widget report from a reading (called before and after clicking). */
-function widgetOf(
-  reading: ChallengeReading,
-  kinds: ChallengeKind[] | undefined,
-  log: string[],
-  preferFrameUrl?: string,
-): BrowserChallengeWidget {
-  const candidates = reading.frames
-    .filter((frame) => !frame.isMainFrame)
-    .filter((frame) => kindOfFrameUrl(frame.url) !== undefined)
-    .filter((frame) => kinds === undefined || kinds.length === 0 || kinds.includes(kindOfFrameUrl(frame.url) ?? 'unknown'))
-  const preferred = preferFrameUrl === undefined ? undefined : candidates.find((candidate) => candidate.url === preferFrameUrl)
-  const frame = preferred ?? candidates.find((candidate) => candidate.challenge !== undefined) ?? candidates[0]
-  const report = frame === undefined ? undefined : reading.reports.get(frame.frameId)
-  if (frame === undefined) {
-    log.push('no challenge widget frame in the page')
-    return { found: false, kind: 'unknown', clicked: false, attempts: 0, tokenPresent: false, log }
-  }
-  const kind = frame.challenge ?? kindOfFrameUrl(frame.url) ?? 'unknown'
-  log.push(`widget frame ${kind} ${frame.url} (${frame.frameId}, source ${frame.frameIdSource})`)
-  return {
-    found: true,
-    kind,
-    frameId: frame.frameId,
-    frameUrl: frame.url,
-    ...(frame.selector === undefined ? {} : { frameSelector: frame.selector }),
-    clicked: false,
-    attempts: 0,
-    tokenPresent: report?.tokenField !== undefined,
-    ...(report?.tokenField === undefined ? {} : { tokenField: report.tokenField }),
-    ...(reading.document.widgetReportedSuccess ? { widgetReportedSuccess: true } : {}),
-    log,
-  }
-}
-
-/** Where a click inside the widget landed. */
-interface ClickPoint {
-  x: number
-  y: number
-  selector?: string
-}
-
-/**
- * Finds the point to click for a widget: an element inside the frame when one
- * resolves, else the widget box's own checkbox offset (the pixel fallback).
- */
-async function clickPointFor(page: Page, widget: BrowserChallengeWidget, frame: Frame, explicitSelector: string | undefined, log: string[]): Promise<ClickPoint | undefined> {
-  const selectors = explicitSelector === undefined ? WIDGET_CLICK_SELECTORS : [explicitSelector, ...WIDGET_CLICK_SELECTORS]
-  for (const selector of selectors) {
-    const locator: Locator = frame.locator(selector)
-    const count = await locator.count().catch(() => 0)
-    if (count === 0) continue
-    const first = locator.first()
-    const visible = await first.isVisible().catch(() => false)
-    if (!visible) continue
-    const box = await first.boundingBox().catch(() => null)
-    if (box === null || box.width === 0 || box.height === 0) continue
-    log.push(`clickable element '${selector}' in the widget frame at (${String(Math.round(box.x + box.width / 2))},${String(Math.round(box.y + box.height / 2))})`)
-    return { x: box.x + box.width / 2, y: box.y + box.height / 2, selector }
-  }
-  const handle = await frame.frameElement().catch(() => null)
-  const box = handle === null ? null : await handle.boundingBox().catch(() => null)
-  if (box === null) {
-    log.push('no clickable element and no widget box: nothing to click')
-    return undefined
-  }
-  const x = box.x + Math.min(WIDGET_CHECKBOX_OFFSET, Math.max(4, box.width / 2))
-  const y = box.y + box.height / 2
-  log.push(`no clickable element inside the widget: clicking the widget box checkbox offset (${String(Math.round(x))},${String(Math.round(y))})`)
-  return { x, y }
-}
-
-/** Drives the clicks and waits for the evidence. */
-async function solveWidget(
-  page: Page,
-  reading: ChallengeReading,
-  initial: BrowserChallengeWidget,
-  options: { wantClick: boolean; waitMs: number; maxAttempts: number; explicitSelector: string | undefined; log: string[] },
-): Promise<{ reading: ChallengeReading; widget: BrowserChallengeWidget }> {
-  const widget = initial
-  let current = reading
-  for (let attempt = 1; attempt <= (options.wantClick ? options.maxAttempts : 1); attempt += 1) {
-    const frame = await frameForWidget(page, current, widget, options.log)
-    if (frame === undefined) break
-    const point = await clickPointFor(page, widget, frame, options.explicitSelector, options.log)
-    if (point === undefined) break
-    if (options.wantClick) {
-      await page.mouse.move(point.x, point.y)
-      await page.mouse.click(point.x, point.y, { button: 'left' })
-      widget.clicked = true
-      widget.attempts = attempt
-      widget.coordinates = { x: Math.round(point.x), y: Math.round(point.y) }
-      if (point.selector !== undefined) widget.clickedSelector = point.selector
-      options.log.push(`clicked at (${String(Math.round(point.x))},${String(Math.round(point.y))}) attempt ${String(attempt)}`)
-    }
-    const deadline = Date.now() + options.waitMs
-    for (;;) {
-      const poll = await pollPassed(page)
-      if (poll.tokenField !== undefined) {
-        widget.tokenPresent = true
-        widget.tokenField = poll.tokenField
-      }
-      if (poll.widgetReportedSuccess) widget.widgetReportedSuccess = true
-      if (poll.passed || Date.now() >= deadline) break
-      await new Promise((resolve) => setTimeout(resolve, 500))
-    }
-    current = await readChallenge(page, undefined, { maxFrames: 200, excerptChars: 4_000 })
-    if (widget.tokenPresent || widget.widgetReportedSuccess === true) break
-    if (current.document.challengeFrames.length === 0) {
-      options.log.push('the widget frame is gone after the interaction (the challenge was cleared or the page navigated)')
-      break
-    }
-  }
-  if (options.wantClick && widget.attempts === 0) widget.attempts = 0
-  return { reading: current, widget }
-}
-
-/** The live Frame of the widget the report points at. */
-async function frameForWidget(page: Page, reading: ChallengeReading, widget: BrowserChallengeWidget, log: string[]): Promise<Frame | undefined> {
-  const frames = page.frames().filter((frame) => kindOfFrameUrl(frame.url()) !== undefined)
-  const byUrl = widget.frameUrl === undefined ? undefined : frames.find((frame) => frame.url() === widget.frameUrl)
-  const target = byUrl ?? frames[0]
-  if (target === undefined) {
-    log.push('the widget frame disappeared before the click')
-    return undefined
-  }
-  void reading
-  return target
-}
-
-/** The main-document token read (used by tests through the provider's answer). */
-export async function tokenState(page: Page): Promise<{ tokenPresent: boolean; tokenField?: string }> {
-  const report = await probeFrame(page.mainFrame())
-  return { tokenPresent: report.tokenField !== undefined, ...(report.tokenField === undefined ? {} : { tokenField: report.tokenField }) }
-}
-
-/** Re-exported for the unit tests: the classification of a bare document. */
-export type { ChallengeClassification }

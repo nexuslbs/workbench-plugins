@@ -59,8 +59,6 @@ import {
   slugOf,
   type BrowserActAnswer,
   type BrowserActRequest,
-  type BrowserChallengeAnswer,
-  type BrowserChallengeRequest,
   type BrowserEngineInfo,
   type BrowserEvaluateAnswer,
   type BrowserEvaluateRequest,
@@ -77,6 +75,9 @@ import {
   type BrowserObserveAnswer,
   type BrowserObserveRequest,
   type BrowserProviderCapabilities,
+  type BrowserRawAction,
+  type BrowserRawLoad,
+  type BrowserRawObservation,
   type BrowserRefRetry,
   type BrowserScreenshotAnswer,
   type BrowserScreenshotRequest,
@@ -112,12 +113,12 @@ import {
 } from './config.ts'
 import { DEFAULT_ATTRIBUTES, extractInPage, snapshotInPage, type ExtractPayload } from './extract.ts'
 import {
+  LoadRecorder,
+  captureRawLoad,
   driveMouse,
   enumerateFrames,
-  kindOfFrameUrl,
-  readChallenge,
+  rawNavigation,
   resolveFrameTarget,
-  solveChallenge,
   type FrameBinding,
 } from './frames.ts'
 
@@ -174,8 +175,10 @@ interface LiveSession {
   frameBindings: Map<string, FrameBinding>
   /** The frame every call targets by default (`undefined` = the main frame). */
   selectedFrameId?: string
-  /** The page-level CDP session (created lazily: only frames/challenges need it). */
+  /** The page-level CDP session (created lazily: only the frame tree needs it). */
   cdp?: CDPSession
+  /** The raw-transcript recorder of the ACTIVE page (created lazily per page). */
+  recorder?: LoadRecorder
   /** The last title read (the `sessions()` report is synchronous). */
   lastTitle: string
   openedAt: number
@@ -435,11 +438,12 @@ export class PlaywrightProvider implements BrowserUseProvider {
       storageState: true,
       // The seam never serves these: a caller sees the gap instead of assuming it.
       unsupported: ['pdf-export', 'proxy-rotation', 'ai-vision-loop'],
-      // The REAL-browser halves: an iframe widget is reachable (frame targeting +
-      // coordinate mouse) and a challenge/block is CLASSIFIED instead of guessed.
+      // The REAL-browser halves: the BROWSER's own frame tree (cross-origin
+      // frames included), the real mouse at coordinates, and a RAW observation
+      // of every load (transport, document, frames, the browser's own moves).
       frames: true,
       mouse: true,
-      challenge: true,
+      rawObservation: true,
     }
   }
 
@@ -573,30 +577,47 @@ export class PlaywrightProvider implements BrowserUseProvider {
     const page = this.activePage(live)
     const waitUntil = request.waitUntil ?? 'load'
     const timeout = request.timeoutMs ?? options.navigationTimeoutMs
-    const started = Date.now()
+    const startedAt = Date.now()
+    const recorder = this.recorderOf(live, page)
+    const navMark = recorder.mark()
+    const responseMark = recorder.responseMark()
     // Refs of the page we are leaving are stale from here on (honest, not a guess).
     this.invalidateRefs(live, page)
     let response: Awaited<ReturnType<Page['goto']>>
+    recorder.beginRequested(request.url)
     try {
       response = await page.goto(request.url, { waitUntil, timeout })
     } catch (error) {
       throw mapError(error, `navigate ${request.url}`, 'browser-use.navigation-failed', { url: request.url, waitUntil })
+    } finally {
+      recorder.endRequested()
     }
-    const status = response?.status()
+    const load = await this.captureLoad(live, page, {
+      recorder,
+      responseMark,
+      navMark,
+      requestedUrl: request.url,
+      startedAt,
+      response,
+    })
+    const status = load.transport.httpStatus
     if (status !== undefined && status >= 400 && request.allowHttpError !== true) {
+      // A refusal is REPORTED, never hidden: the whole raw observation travels in
+      // the error details, so a caller can read exactly what the origin sent.
       throw new BrowserUseError('browser-use.http-status', `the page answered HTTP ${status} (pass allowHttpError: true to accept it)`, {
         stage: 'navigate',
-        details: { url: page.url(), httpStatus: status, allowHttpError: false },
+        details: { url: load.transport.finalUrl, httpStatus: status, allowHttpError: false, raw: load },
       })
     }
-    live.lastTitle = await page.title().catch(() => '')
+    live.lastTitle = load.document.title
     await this.touch(live)
     return {
+      ...this.observationOf(recorder, navMark, load, startedAt, [{ kind: 'navigate', navigationsAdded: 0 }]),
       action: 'navigate',
-      url: page.url(),
-      title: live.lastTitle,
+      session: live.id,
+      url: load.transport.finalUrl,
+      title: load.document.title,
       ...(status === undefined ? {} : { httpStatus: status }),
-      durationMs: Date.now() - started,
     }
   }
 
@@ -1041,7 +1062,7 @@ export class PlaywrightProvider implements BrowserUseProvider {
   }
 
   /**
-   * The page-level CDP session (created LAZILY: only frames and challenges need
+   * The page-level CDP session (created LAZILY: only the frame tree needs it).
    * it). It is detached by the session disposers, so an unload leaves no CDP
    * connection behind.
    */
@@ -1823,8 +1844,8 @@ export class PlaywrightProvider implements BrowserUseProvider {
   }
 
   // -------------------------------------------------------------------------
-  // FRAMES, MOUSE and CHALLENGES: the halves that make this a REAL browser on a
-  // Cloudflare-protected page (a cross-origin widget is unreachable otherwise).
+  // FRAMES and MOUSE: the two GENERIC doors that make this a real browser on a
+  // page whose interesting half sits in a cross-origin frame.
   // -------------------------------------------------------------------------
 
   /** Enumerates the frame tree and selects/clears the session's default frame. */
@@ -1863,11 +1884,14 @@ export class PlaywrightProvider implements BrowserUseProvider {
     }
   }
 
-  /** Drives the REAL mouse at COORDINATES (the only door into a widget). */
+  /** Drives the REAL mouse at COORDINATES (the door into a control no selector addresses). */
   async mouse(session: string, request: BrowserMouseRequest, options: BrowserUseCallOptions): Promise<BrowserMouseAnswer> {
     const live = this.requireSession(session)
     const page = this.activePage(live)
-    const started = Date.now()
+    const startedAt = Date.now()
+    const recorder = this.recorderOf(live, page)
+    const navMark = recorder.mark()
+    const responseMark = recorder.responseMark()
     const cdp = await this.cdpFor(live, page)
     const { bindings } = await enumerateFrames(page, cdp, 200)
     live.frameBindings = bindings
@@ -1883,6 +1907,23 @@ export class PlaywrightProvider implements BrowserUseProvider {
       if (isBrowserUseError(error)) throw error
       throw mapError(error, 'mouse', 'browser-use.provider-failed', { mouseAction: request.mouseAction ?? 'click' })
     }
+    // A page that ANSWERS an input with a navigation is waited for (bounded): the
+    // browser keeps driving, this side only listens and then reads the landing.
+    const budget = options.navigationTimeoutMs
+    const waitBudget = Math.min(typeof budget === 'number' && budget > 0 ? budget : 30_000, 30_000)
+    const moved = await recorder.waitForNavigation(navMark, waitBudget)
+    const navigationsAdded = recorder.browserSince(navMark).length
+    let resultingLoad: BrowserRawLoad | undefined
+    if (moved) {
+      await page.waitForLoadState('domcontentloaded', { timeout: 5_000 }).catch(() => undefined)
+      resultingLoad = await this.captureLoad(live, page, {
+        recorder,
+        responseMark,
+        navMark,
+        startedAt: Date.now(),
+        response: null,
+      })
+    }
     live.lastTitle = await page.title().catch(() => live.lastTitle)
     await this.touch(live)
     return {
@@ -1896,37 +1937,80 @@ export class PlaywrightProvider implements BrowserUseProvider {
       relativeTo: result.relativeTo,
       button: result.button,
       ...(result.frameId === undefined ? {} : { frameId: result.frameId }),
+      navigationsAdded,
+      ...(resultingLoad === undefined ? {} : { resultingLoad }),
       url: page.url(),
       title: live.lastTitle,
-      durationMs: Date.now() - started,
+      durationMs: Date.now() - startedAt,
     }
   }
 
   /**
-   * Detects, classifies and (for `solve`) completes a challenge. The answer is
-   * ALWAYS structured: a hard IP-reputation refusal is reported as `blocked-ip`
-   * / `unsolvable-from-this-ip` with the raw HTTP status and a body excerpt,
-   * never as a silent empty read.
+   * The raw-transcript recorder of the page a call is driving. One recorder per
+   * PAGE (a session switches tabs), attached lazily and detached with the
+   * session, so no listener ever outlives its context.
    */
-  async challenge(session: string, request: BrowserChallengeRequest, options: BrowserUseCallOptions): Promise<BrowserChallengeAnswer> {
-    const live = this.requireSession(session)
-    const page = this.activePage(live)
-    const cdp = await this.cdpFor(live, page)
-    const started = Date.now()
-    let preferFrameUrl: string | undefined
-    if (request.frame !== undefined) {
-      const bindings = live.frameBindings.size > 0 ? live.frameBindings : (await enumerateFrames(page, cdp, 200)).bindings
-      live.frameBindings = bindings
-      preferFrameUrl = (await resolveFrameTarget(page, request.frame, bindings)).url()
-    }
-    const answer = await solveChallenge(page, cdp, live.id, request, {
-      timeoutMs: options.timeoutMs,
-      maxTextChars: options.maxTextChars,
-      ...(preferFrameUrl === undefined ? {} : { preferFrameUrl }),
+  private recorderOf(live: LiveSession, page: Page): LoadRecorder {
+    const existing = live.recorder
+    if (existing !== undefined && existing.page === page) return existing
+    existing?.dispose()
+    const recorder = new LoadRecorder(page, Math.max(50, this.config.observeLimit))
+    recorder.attach()
+    live.recorder = recorder
+    live.disposers.push(() => recorder.dispose())
+    return recorder
+  }
+
+  /**
+   * Captures ONE raw load: the transport facts, the document, the resources, the
+   * cookies the load stored and the BROWSER's frame tree (never the page DOM).
+   */
+  private async captureLoad(
+    live: LiveSession,
+    page: Page,
+    input: {
+      recorder: LoadRecorder
+      responseMark: number
+      navMark: number
+      requestedUrl?: string
+      startedAt: number
+      response: Awaited<ReturnType<Page['goto']>>
+    },
+  ): Promise<BrowserRawLoad> {
+    const cdp = await this.cdpFor(live, page).catch(() => undefined)
+    const { frames, bindings } = await enumerateFrames(page, cdp, 200)
+    live.frameBindings = bindings
+    return await captureRawLoad(page, {
+      ...(input.requestedUrl === undefined ? {} : { requestedUrl: input.requestedUrl }),
+      ...(input.response === null ? {} : { response: input.response }),
+      recorder: input.recorder,
+      responseMark: input.responseMark,
+      frames,
+      framesOverflow: Math.max(0, page.frames().length - frames.length),
+      navigations: input.recorder.since(input.navMark),
+      startedAtMs: input.startedAt,
+      excerptChars: 600,
     })
-    live.lastTitle = await page.title().catch(() => live.lastTitle)
-    await this.touch(live)
-    return { ...answer, elapsedMs: Date.now() - started }
+  }
+
+  /** The observation envelope `navigate` and `mouse` answer with (raw facts only). */
+  private observationOf(
+    recorder: LoadRecorder,
+    navMark: number,
+    load: BrowserRawLoad,
+    startedAt: number,
+    actions: BrowserRawAction[],
+  ): BrowserRawObservation {
+    const navigations = recorder.since(navMark).map((navigation) => rawNavigation(navigation))
+    return {
+      load,
+      navigations,
+      browserInitiatedNavigations: navigations.filter((navigation) => navigation.kind === 'browser'),
+      actions,
+      startedAt: new Date(startedAt).toISOString(),
+      endedAt: new Date().toISOString(),
+      durationMs: Date.now() - startedAt,
+    }
   }
 
   /**

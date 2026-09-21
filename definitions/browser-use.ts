@@ -151,16 +151,15 @@ export const STATE_MODES = ['reuse', 'fresh', 'inline'] as const
 export type StateMode = (typeof STATE_MODES)[number]
 
 // ---------------------------------------------------------------------------
-// Frames, mouse and challenges.
+// Frames and mouse.
 //
-// These three vocabularies exist because the interesting half of a real page
-// often lives in a CROSS-ORIGIN iframe (a Cloudflare Turnstile widget, an
-// embedded payment form, a third-party editor): a CSS selector of the main
-// document can never reach it, so a caller needs (1) the FRAME TREE with a
-// target it can name, (2) MOUSE-LEVEL input at coordinates for the pixels no
-// selector can address, and (3) a structured answer to "is this page a
-// challenge I can pass, or does it refuse this address?" - the difference
-// between a page that a real browser passes and a hard IP-reputation block.
+// These two vocabularies exist because the interesting half of a real page
+// often lives in a CROSS-ORIGIN iframe (an embedded payment form, a
+// third-party editor, an offered control): a CSS selector of the main document
+// can never reach inside it, so a caller needs (1) the FRAME TREE with a target
+// it can name and the geometry of every frame, and (2) MOUSE-LEVEL input at
+// coordinates for the pixels no selector addresses. Neither one judges
+// anything: they report what the browser saw and what the input did.
 // ---------------------------------------------------------------------------
 
 /** What `frames` does with the frame tree of the active page. */
@@ -187,64 +186,6 @@ export type MouseButton = (typeof MOUSE_BUTTONS)[number]
 export const MOUSE_ORIGINS = ['page', 'frame'] as const
 /** One coordinate origin. */
 export type MouseOrigin = (typeof MOUSE_ORIGINS)[number]
-
-/** What `challenge` does: read the page, or try to pass it. */
-export const CHALLENGE_ACTIONS = ['detect', 'solve', 'classify'] as const
-/** One challenge action (`classify` is `detect` without touching the page). */
-export type ChallengeAction = (typeof CHALLENGE_ACTIONS)[number]
-
-/** The challenge widgets this contract knows by name. */
-export const CHALLENGE_KINDS = ['turnstile', 'hcaptcha', 'recaptcha', 'unknown'] as const
-/** One widget kind. */
-export type ChallengeKind = (typeof CHALLENGE_KINDS)[number]
-
-/** The token field names a solved widget writes (checked in the page). */
-export const CHALLENGE_TOKEN_FIELDS = [
-  'input[name="cf-turnstile-response"]',
-  'textarea[name="g-recaptcha-response"]',
-  'textarea[name="h-captcha-response"]',
-] as const
-
-/**
- * How a document classifies. It is the honest discriminator a caller branches
- * on:
- *   * `none`        - an ordinary page, no challenge in sight;
- *   * `managed-pass`- a Cloudflare-style MANAGED challenge was auto-solved by a
- *                     real browser (the `cf_clearance` cookie proves it), the
- *                     caller got the real page and did not interact;
- *   * `interactive` - a widget is ON SCREEN (Turnstile checkbox / hCaptcha /
- *                     reCAPTCHA): it needs a mouse interaction to be passed;
- *   * `blocked-ip`  - a hard refusal with NO solvable challenge (HTTP 403
- *                     `Just a moment...` + "unusual traffic patterns" + "you
- *                     have been temporarily blocked"): this address is refused,
- *                     no amount of browser realism changes it;
- *   * `unknown`     - a challenge-shaped document the reader cannot classify.
- */
-export const CHALLENGE_CLASSIFICATIONS = ['none', 'managed-pass', 'interactive', 'blocked-ip', 'unknown'] as const
-/** One classification. */
-export type ChallengeClassification = (typeof CHALLENGE_CLASSIFICATIONS)[number]
-
-/** What `challenge` really achieved (never inferred from a hope). */
-export const CHALLENGE_OUTCOMES = [
-  'no-challenge',
-  'already-passed',
-  'solved',
-  /**
-   * The VALIDATOR accepted the challenge (token and/or `cf_clearance` present)
-   * but the ORIGIN still answers the interstitial/block page on the post-solve
-   * re-navigation: typically a headless launch, or an IP-reputation refusal that
-   * no amount of browser realism on this side can clear. NEVER reported as
-   * `solved` - a challenge the validator accepts while the origin keeps the door
-   * shut is a FAILED navigation, and it is named separately so a caller can tell
-   * "I solved a widget" from "the page is now readable".
-   */
-  'validator_passed_origin_blocked',
-  'unsolved',
-  'unsolvable-from-this-ip',
-  'unknown',
-] as const
-/** One outcome. */
-export type ChallengeOutcome = (typeof CHALLENGE_OUTCOMES)[number]
 
 /**
  * How a frame is named. ONE of these is enough; they are tried in the order
@@ -281,8 +222,32 @@ export interface BrowserFrameInfo {
   crossOrigin: boolean
   /** A selector for the frame element in the parent, when one can be built. */
   selector?: string
-  /** The challenge widget detected in this frame, when one was. */
-  challenge?: ChallengeKind
+  /** The frame's origin, when its URL parses. */
+  origin?: string
+  /** True when this frame's origin equals the TOP frame's origin. */
+  sameOriginAsTop: boolean
+  /** The frame element's viewport box in MAIN-frame coordinates. */
+  box?: BrowserFrameBox
+  /** True when the frame element occupies a non-empty, on-screen box. */
+  visible: boolean
+  /** The focusable controls the frame's own document exposes (structural count). */
+  focusables: BrowserFrameFocusables
+}
+
+/** A rectangle in MAIN-frame CSS pixels. */
+export interface BrowserFrameBox {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+/** The focusable elements a frame's OWN document reports (never a verdict). */
+export interface BrowserFrameFocusables {
+  /** The distinct tag names counted (`a`, `button`, `input`, ...). */
+  tags: string[]
+  /** How many focusable elements the frame's document exposes. */
+  count: number
 }
 
 /** `frames`: list the tree, select a frame, or clear the selection. */
@@ -316,7 +281,7 @@ export interface BrowserFramesAnswer {
   durationMs: number
 }
 
-/** `mouse`: drive the real mouse at COORDINATES (the only way into a widget). */
+/** `mouse`: drive the real mouse at COORDINATES (the way into a control no selector addresses). */
 export interface BrowserMouseRequest {
   /** `click` (default), `dblclick`, `move`, `down`, `up`, `hover`, `drag`, `wheel`. */
   mouseAction?: MouseAction
@@ -360,115 +325,147 @@ export interface BrowserMouseAnswer {
   button: MouseButton
   /** The frame the input landed in, when it was addressed through one. */
   frameId?: string
+  /**
+   * How many BROWSER-INITIATED main-frame navigations this gesture produced. A
+   * click the page answers with a navigation reports it here, so the caller
+   * never has to guess whether the input did anything.
+   */
+  navigationsAdded: number
+  /** The load the browser landed on because of this gesture, when it moved. */
+  resultingLoad?: BrowserRawLoad
   url: string
   title: string
   durationMs: number
 }
 
-/** `challenge`: detect, classify or try to pass a challenge. */
-export interface BrowserChallengeRequest {
-  /** `detect` (default), `solve` (detect + interact), `classify` (read only). */
-  challengeAction?: ChallengeAction
-  /** Alias of `challengeAction`. */
-  action?: ChallengeAction
-  /** Only look for these widget kinds (default: all known ones). */
-  kinds?: ChallengeKind[]
-  /** Alias of `kinds` for a SINGLE widget kind. */
-  kind?: ChallengeKind | ChallengeKind[]
-  /** Scope the widget search to a frame, e.g. the widget's iframe. */
-  frame?: BrowserFrameTarget
-  /** A selector of the clickable widget part, when the caller knows it. */
-  selector?: string
-  /** `solve`: click the widget (default true). */
-  click?: boolean
-  /** `solve`: how long to wait for the token/cookie after a click (default 15000). */
-  waitMs?: number
-  /** How many click attempts at most (default 3). */
-  maxAttempts?: number
-  /** Whole-call budget in ms (default from the seam bounds). */
-  timeoutMs?: number
+// ---------------------------------------------------------------------------
+// THE RAW OBSERVATION: what the browser really saw and did.
+//
+// This capability reports OBSERVABLES, never a verdict. A navigation (or an
+// interaction that made the page navigate on its own) answers the transport
+// facts (status, headers verbatim, redirects), what the document contained, the
+// BROWSER's frame tree, every navigation the page initiated itself, and the
+// actions this side drove. Deciding what any of it MEANS belongs to the caller:
+// there is no keyword table, no classification and no vendor-specific path
+// anywhere in this seam.
+// ---------------------------------------------------------------------------
+
+/** One cookie the response asked the browser to store (NEVER its value). */
+export interface BrowserRawCookie {
+  name: string
+  domain?: string
+  path?: string
+  httpOnly?: boolean
+  secure?: boolean
+  sameSite?: string
+  /** Expiry in seconds since the epoch (a session cookie has none). */
+  expires?: number
 }
 
-/** What was found and done about ONE widget. */
-export interface BrowserChallengeWidget {
-  /** True when a widget frame was found at all. */
-  found: boolean
-  kind: ChallengeKind
-  frameId?: string
-  frameUrl?: string
-  /** The frame element selector in the parent document, when one was built. */
-  frameSelector?: string
-  /** True when a mouse interaction was really driven. */
-  clicked: boolean
-  /** How many interactions were driven. */
-  attempts: number
-  /** The MAIN-frame coordinates the mouse was driven to, when it was. */
-  coordinates?: { x: number; y: number }
-  /** The selector that was clicked inside the widget, when one resolved. */
-  clickedSelector?: string
-  /** True when the response token is present and non-empty. */
-  tokenPresent: boolean
-  /** Which field carried the token. */
-  tokenField?: string
-  /** True when the widget's own frame reported the solved state. */
-  widgetReportedSuccess?: boolean
-  /** One line per attempt (so a failure is diagnosable, never a shrug). */
-  log: string[]
-}
-
-/** `challenge` answers a STRUCTURED classification, never an empty read. */
-export interface BrowserChallengeAnswer {
-  action: 'challenge'
-  session: string
-  challengeAction: ChallengeAction
-  url: string
-  title: string
-  classification: ChallengeClassification
-  outcome: ChallengeOutcome
-  /** True when NO interaction can pass this page from this address. */
-  unsolvableFromThisIp: boolean
-  /** One precise sentence (carried into the caller's report). */
-  reason: string
-  /** The signals the classification rests on. */
-  signals: string[]
-  /** The HTTP status of the main document when it could be read. */
+/** The transport facts of ONE document load. */
+export interface BrowserRawTransport {
+  /** The URL the caller asked for. */
+  requestedUrl: string
+  /** The URL the document really ended on. */
+  finalUrl: string
+  /** The document response status, verbatim (absent when none was observed). */
   httpStatus?: number
-  /** A bounded excerpt of the body on a block page (the raw evidence). */
-  bodyExcerpt?: string
-  /** The widget report when one was found. */
-  widget?: BrowserChallengeWidget
-  /** The `cf_clearance` cookie state (never its value). */
-  cookie?: { name: string; present: boolean; domain?: string; expires?: number }
-  /**
-   * The POST-SOLVE re-navigation, when the validator had something to pass. THE
-   * ORIGIN decides, not the validator: `outcome: 'solved'` is only reported when
-   * this record shows the origin served the real page, and a validator that was
-   * accepted while the origin kept the interstitial is reported as
-   * `validator_passed_origin_blocked` (a FAILED navigation).
-   */
-  recheck?: BrowserChallengeRecheck
-  /** How long the call took. */
-  elapsedMs: number
+  /** The document response status text, verbatim. */
+  statusText?: string
+  /** EVERY response header, verbatim (lower-cased names, as sent). */
+  responseHeaders: Record<string, string>
+  /** The redirect hops, in order. */
+  redirects: string[]
+}
+
+/** What the loaded document contained (counts and a bounded excerpt). */
+export interface BrowserRawDocument {
+  title: string
+  /** A bounded excerpt of the rendered text (the first `documentExcerptChars`). */
+  bodyTextExcerpt: string
+  /** `document.documentElement.outerHTML.length`. */
+  htmlLength: number
+  /** How many `form` elements the document has. */
+  formCount: number
+  /** `document.body.innerText.length`. */
+  textLength: number
+}
+
+/** One main-frame navigation the browser performed. */
+export interface BrowserRawNavigation {
+  /** When the browser committed the navigation (ISO 8601). */
+  at: string
+  url: string
+  /** `requested` when this side called `navigate`; `browser` when the page did it. */
+  kind: 'requested' | 'browser'
+  /** The document response status of that navigation, when one was observed. */
+  httpStatus?: number
+  statusText?: string
+}
+
+/** One interaction this side drove. */
+export interface BrowserRawAction {
+  /** The action name (`mouse.click`, `act.click`, ...). */
+  kind: string
+  target?: BrowserRawActionTarget
+  /** How many browser-initiated main-frame navigations this action produced. */
+  navigationsAdded: number
+  /** The load the browser landed on because of this action, when it moved. */
+  resultingLoad?: BrowserRawLoad
+}
+
+/** What an action was aimed at. */
+export interface BrowserRawActionTarget {
+  /** The frame the input landed in, when it was addressed through one. */
+  frameId?: string
+  /** The frame's URL. */
+  frameUrl?: string
+  /** The MAIN-frame point the real pointer was driven to. */
+  point?: { x: number; y: number }
+  /** The selector, when the action was selector-based. */
+  selector?: string
+}
+
+/** The resources observed while ONE document was loading. */
+export interface BrowserRawResources {
+  total: number
+  /** The URLs that came back with a status >= 400 (no verdict, just the facts). */
+  failed: string[]
+}
+
+/** One raw load: the transport, the document and what it pulled in. */
+export interface BrowserRawLoad {
+  transport: BrowserRawTransport
+  document: BrowserRawDocument
+  resources: BrowserRawResources
+  /** The cookies this load caused the browser to store (names + attributes only). */
+  cookiesSet: BrowserRawCookie[]
+  /** How long the load took, measured on this side. */
+  timing: { startedAt: string; endedAt: string; durationMs: number }
+  /** The navigations the browser performed (never the caller's own request). */
+  browserInitiatedNavigations: BrowserRawNavigation[]
+  /** The full frame tree of the loaded document (cross-origin frames included). */
+  frames: BrowserFrameInfo[]
+  /** A screenshot of the landed page, when one was taken. */
+  screenshot?: { path: string; width: number; height: number }
 }
 
 /**
- * The POST-SOLVE re-navigation of a challenge: what the ORIGIN served once the
- * validator accepted. It is the evidence that separates "the widget accepted me"
- * from "the page is readable".
+ * WHAT A CALL OBSERVED. `load` is the document the call ended on;
+ * `navigations` is every main-frame navigation seen while the call ran, with the
+ * browser's own ones called out. Both the navigation the caller asked for and the
+ * one the browser performed itself are reported: an interaction that the page
+ * answers with a navigation is exactly the case a caller must be able to see.
  */
-export interface BrowserChallengeRecheck {
-  /** The URL that was re-navigated (the page the challenge was found on). */
-  url: string
-  /** The HTTP status of the re-navigation, when the engine exposed one. */
-  httpStatus?: number
-  /** The document title AFTER the re-navigation. */
-  title: string
-  /** The classification of the RE-NAVIGATED document. */
-  classification: ChallengeClassification
-  /** The interstitial/refusal marker the re-navigated body still carries. */
-  interstitialMarker?: string
-  /** The navigation error, when the re-navigation itself failed. */
-  navigationError?: string
+export interface BrowserRawObservation {
+  load: BrowserRawLoad
+  navigations: BrowserRawNavigation[]
+  browserInitiatedNavigations: BrowserRawNavigation[]
+  /** Every interaction this side drove while the call ran. */
+  actions: BrowserRawAction[]
+  startedAt: string
+  endedAt: string
+  durationMs: number
 }
 
 // ---------------------------------------------------------------------------
@@ -660,10 +657,8 @@ export interface BrowserProviderCapabilities {
   frames?: boolean
   /** True when mouse-level input at coordinates is served. */
   mouse?: boolean
-  /** True when challenge detection/completion is served. */
-  challenge?: boolean
-  /** The widget kinds the challenge reader knows by name. */
-  challengeKinds?: ChallengeKind[]
+  /** True when a navigation answers the RAW observation set. */
+  rawObservation?: boolean
   /** Everything the provider does NOT serve, so a caller sees the gaps. */
   unsupported: string[]
 }
@@ -794,14 +789,24 @@ export interface BrowserNavigateRequest {
   allowHttpError?: boolean
 }
 
-/** `navigate` answers the page that was really reached. */
-export interface BrowserNavigateAnswer {
+/**
+ * `navigate` answers the RAW observation of the load it produced: the transport
+ * facts of the document, the document itself, the cookies the load stored, the
+ * BROWSER's frame tree, every navigation the page performed on its own, and the
+ * actions this side drove. It carries no verdict - the caller reads the
+ * observation and decides.
+ *
+ * `url`/`title`/`httpStatus` are conveniences over `load` (the final URL, the
+ * document title and the document response status, VERBATIM); the full set
+ * stays in `load`.
+ */
+export interface BrowserNavigateAnswer extends BrowserRawObservation {
   action: 'navigate'
+  session: string
   url: string
   title: string
-  /** The HTTP status of the main response, when the engine reports one. */
+  /** The document response status, verbatim (absent when none was observed). */
   httpStatus?: number
-  /** Wall-clock duration of the navigation in ms. */
   durationMs: number
 }
 
@@ -818,8 +823,8 @@ export interface BrowserSnapshotRequest {
   maxNodes?: number
   /**
    * Read INSIDE a frame instead of the main document (default: the main frame).
-   * This is what makes a CROSS-ORIGIN widget readable at all: its DOM belongs to
-   * another origin, so no selector of the main document can reach it.
+   * This is what makes a CROSS-ORIGIN control readable at all: its DOM belongs
+   * to another origin, so no selector of the main document can reach it.
    */
   frame?: BrowserFrameTarget
 }
@@ -1207,8 +1212,6 @@ export interface BrowserUseProvider {
   frames?(session: string, request: BrowserFramesRequest, options: BrowserUseCallOptions): Promise<BrowserFramesAnswer>
   /** Mouse-level input at coordinates (optional half, see above). */
   mouse?(session: string, request: BrowserMouseRequest, options: BrowserUseCallOptions): Promise<BrowserMouseAnswer>
-  /** Challenge detection/completion with a structured classification (optional half). */
-  challenge?(session: string, request: BrowserChallengeRequest, options: BrowserUseCallOptions): Promise<BrowserChallengeAnswer>
   /** The live sessions of this provider (diagnostics; never a secret). */
   sessions(): BrowserSessionInfo[]
   /** Release every browser resource this provider owns (plugin unload). */
@@ -1248,16 +1251,13 @@ export interface BrowserUseService {
    * answers the typed `browser-use.not-implemented`.
    */
   frames(session: string, request?: BrowserFramesRequest, provider?: string): Promise<BrowserFramesAnswer>
-  /** Real mouse input at coordinates - the only way into a cross-origin widget. */
-  mouse(session: string, request: BrowserMouseRequest, provider?: string): Promise<BrowserMouseAnswer>
   /**
-   * Detects and classifies a challenge, and (with `challengeAction: 'solve'`)
-   * tries to complete it: it drives the widget through frame targeting +
-   * coordinates and reports a STRUCTURED result. A hard IP-reputation block is
-   * reported as `blocked-ip` / `unsolvable-from-this-ip` with the raw status and
-   * a body excerpt - NEVER a silent empty read.
+   * Real mouse input at coordinates - the door into a cross-origin control that
+   * offers no addressable element. `relativeTo: 'frame'` measures from the
+   * target frame's OWN box, so a point read off the frame tree lands where the
+   * caller means even when the frame is off-origin.
    */
-  challenge(session: string, request?: BrowserChallengeRequest, provider?: string): Promise<BrowserChallengeAnswer>
+  mouse(session: string, request: BrowserMouseRequest, provider?: string): Promise<BrowserMouseAnswer>
 }
 
 /** One registered backend, as the seam reports it. */
