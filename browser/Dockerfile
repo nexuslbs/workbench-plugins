@@ -35,11 +35,11 @@ ENV BROWSER_WINDOW_SIZE=1440,1000
 
 # THE LIVE VIEW: the operator watches and drives THE SAME chromium the agent uses
 # (telegram 2026-09-21, thread 2785), i.e. chromium -> X display :99 -> x11vnc ->
-# websockify + noVNC -> a tunnel (cloudflared) -> a phone browser. It is OFF by
+# websockify + noVNC -> a tunnel -> a phone browser. It is OFF by
 # default (`BROWSER_VNC=0`): a deployment that does not opt in runs exactly the
 # processes it ran before. See browser/README.md for the full env contract and the
 # security note (noVNC = full remote control of this container, so the published
-# hostname needs Cloudflare Access or an unguessable path on top of the password).
+# hostname needs the tunnel's own access policy, or an unguessable path).
 ENV BROWSER_VNC=0
 ENV BROWSER_VNC_PORT=5900
 ENV BROWSER_NOVNC_PORT=8080
@@ -102,7 +102,7 @@ RUN printf '%s\n' \
 
 # 9222 = CDP (what the workbench provider attaches to);
 # 8080 = the noVNC page, ON THE CONTAINER NETWORK ONLY. A deployment publishes it
-#        through its tunnel (cloudflared reaches `browser:8080` by service name);
+#        through its own tunnel (which reaches `browser:8080` by service name);
 #        never publish it to the open internet directly.
 EXPOSE 9222 8080
 ENTRYPOINT ["/usr/local/bin/start-browser"]

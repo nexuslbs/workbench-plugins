@@ -56,7 +56,7 @@ FORWARDER="${BROWSER_FORWARDER:-/usr/local/bin/cdp-forward.js}"
 #
 #   chromium on $DISPLAY_NAME -> x11vnc 127.0.0.1:$VNC_PORT (RFB, loopback, NO password)
 #                             -> websockify 0.0.0.0:$NOVNC_PORT (noVNC + WebSocket)
-#                             -> a tunnel (cloudflared) -> the operator's phone
+#                             -> a tunnel -> the operator's phone
 #
 # so whatever the agent opens appears in the live view, and whatever the human
 # clicks / types / scrolls happens in the agent's browser.
@@ -70,7 +70,7 @@ FORWARDER="${BROWSER_FORWARDER:-/usr/local/bin/cdp-forward.js}"
 #                            - vnc-start / vnc-stop still work at runtime.
 #
 # NO PASSWORD OF OUR OWN (operator correction, telegram 2786): x11vnc runs `-nopw`. The
-# access-control boundary is the operator's Cloudflare tunnel + Cloudflare Access OTP in
+# access-control boundary is the operator's tunnel and its own access policy (OTP), in
 # front of the published hostname; the RFB port therefore stays on LOOPBACK and 8080 is
 # never published on the host - websockify is the ONLY thing listening on the container
 # network. noVNC is full remote control of this container (and of whatever session the
@@ -480,7 +480,7 @@ vnc_is_up() {
 }
 
 # Start x11vnc (attached to $DISPLAY_NAME, LOOPBACK only, NO PASSWORD: `-nopw`, because
-# the access-control boundary is the tunnel + Cloudflare Access OTP, see
+# the access-control boundary is the tunnel and its own access policy (OTP), see
 # browser/README.md) and websockify (the WebSocket bridge serving noVNC on the container
 # network). 0 = both endpoints answer; 1 = failed, nothing left running, $VNC_ERR says why.
 start_vnc() {
@@ -604,7 +604,7 @@ rm -f "$VNC_REQ" "$VNC_RSP" "$VNC_RSP.tmp.$$"
 
 if [ -n "$VNC_ENABLED" ]; then
   if start_vnc; then
-    echo "start-browser: live view on 0.0.0.0:$NOVNC_PORT (noVNC) -> 127.0.0.1:$VNC_PORT (x11vnc on $DISPLAY_NAME, -nopw, loopback only; the tunnel + Cloudflare Access OTP is the access boundary)"
+    echo "start-browser: live view on 0.0.0.0:$NOVNC_PORT (noVNC) -> 127.0.0.1:$VNC_PORT (x11vnc on $DISPLAY_NAME, -nopw, loopback only; the operator's tunnel and its own access policy are the boundary)"
   else
     fail_loudly "$VNC_ERR"
   fi

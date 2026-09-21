@@ -46,7 +46,7 @@ services:
       # no human is needed:
       #   docker exec <container> start-browser vnc-start|vnc-stop|vnc-status
       # NO password of ours: x11vnc runs `-nopw` and the access boundary is the
-      # Cloudflare tunnel hostname sitting behind a Cloudflare Access (OTP) policy.
+      # a tunnel hostname sitting behind the tunnel's own access policy (an OTP gate).
       BROWSER_VNC: ${BROWSER_VNC:-0}
       BROWSER_VNC_PORT: ${BROWSER_VNC_PORT:-5900}
       BROWSER_NOVNC_PORT: ${BROWSER_NOVNC_PORT:-8080}
@@ -55,8 +55,8 @@ services:
       # service is a privileged capability, expose it deliberately.
       - "127.0.0.1:${BROWSER_CDP_PORT:-9222}:9222"
       # The noVNC page stays INSIDE the container network on purpose: a deployment
-      # publishes it through its own tunnel (cloudflared reaches `browser:8080` by
-      # service name) and protects that hostname with a Cloudflare Access (OTP)
+      # publishes it through its own tunnel (which reaches `browser:8080` by
+      # service name) and protects that hostname with its own access policy (OTP)
       # policy, because noVNC is full remote control of this container and the image
       # runs x11vnc with NO password of its own.
       # Uncomment only for a deliberate, local access:
