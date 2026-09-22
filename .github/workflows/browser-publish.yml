@@ -12,9 +12,14 @@
 # workbench code and NO workbench dependency, only chromium + the `start-browser`
 # entrypoint (see browser/README.md). The core image stays browser-free.
 #
-# The image is built ONCE, smoke-tested (the CDP endpoint must answer, the live
-# view must serve noVNC when BROWSER_VNC=1 and must REFUSE to start without a
-# password), and only then pushed - the pushed image is the tested one.
+# The image is built ONCE, smoke-tested, and only then pushed - the pushed image is
+# the tested one. The smoke steps assert the ACTUAL live-view contract of the
+# passwordless, on-demand design: the CDP endpoint answers /json/version; with
+# BROWSER_VNC unset the live view must NOT be listening on 8080 (OFF by default);
+# the entrypoint must contain `-nopw` and must NOT read BROWSER_VNC_PASSWORD;
+# `start-browser vnc-start` must serve /vnc.html with 200 and `vnc-stop` must close
+# the listeners again (no stack recreate, no password); and a container started with
+# BROWSER_VNC=1 serves /vnc.html at boot through the same code path.
 #
 # Auth: GHCR only via the workflow's own GITHUB_TOKEN (`packages: write`).
 # No PAT, no app key, no secret is referenced or committed anywhere here.

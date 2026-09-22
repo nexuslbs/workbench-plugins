@@ -220,6 +220,15 @@ reconnects after a mobile network stall. Nothing else is asked: the VNC server r
 without a password of ours (`-nopw`), because the tunnel hostname sits behind the
 Cloudflare Access policy.
 
+**Quality and compression are deliberately left at the noVNC client's own defaults**:
+the landing page passes only `autoconnect`, `resize=scale` and `reconnect`, never
+`quality=` or `compression=`. Those client defaults are the mobile-data stance: they
+already trade image fidelity against bandwidth, while forcing a high quality level is
+what makes a phone connection struggle on a 1440x1000 framebuffer. Both are ordinary
+noVNC URL parameters, so a human on wifi can raise the quality for one session by
+appending them to the page URL (e.g. `&quality=8`); nothing here needs a rebuild or a
+stack recreate.
+
 A deployment that shares a network with `cloudflared` publishes this as a Public
 Hostname route in the Cloudflare Zero Trust dashboard, e.g.
 
@@ -249,10 +258,13 @@ curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/vnc.html   # 200
 docker exec <browser-container> start-browser vnc-stop
 ```
 
-Measured on the built image (throwaway project, thread 2785, 2026-09-21):
-`/vnc.html` -> 200, `/` -> 200, `/vnc_lite.html` -> 200; a handshake with a wrong
-password -> `authentication failed` / `password check failed`, with the right one ->
-`security_result: 0` and `ServerInit` reporting `1440x1000`, desktop name
-`<container-id>:99` (i.e. the SAME display the agent's chromium draws on); a page opened
-over CDP was visible in the captured framebuffer, and a click + key injected through the
-VNC session changed that page (`document.title` became `click 710,403` / `keydown t`).
+Measured on the built image (throwaway compose projects, threads 2791 and 2795,
+2026-09-21): `/vnc.html` -> 200, `/` -> 200, `/vnc_lite.html` -> 200; the RFB
+handshake (`RFB 003.008`) offers exactly ONE security type (`security_types [1]`),
+the client chooses `1 (None)` and **no password is sent at all** (`security_result_raw
+00 00 00 00`, success without authentication), so there is nothing to type and nothing
+to leak; `ServerInit` reports `1440x1000` with desktop name `<container-id>:99` (i.e.
+the SAME display the agent's chromium draws on); a page opened over CDP was visible in
+the captured framebuffer (`frame-before-click.png`), and a click + key injected through
+the VNC session changed that page (`frame-after-click.png`; `document.title` became
+`click 710,403` / `keydown t`).

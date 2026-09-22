@@ -84,8 +84,12 @@ RUN command -v x11vnc >/dev/null 2>&1 \
 # "Connect" prompt), resize=scale (the 1440x1000 screen FITS the phone viewport
 # instead of forcing the human to pan a desktop-sized framebuffer), and a view-only
 # default of OFF (the point is to be able to solve a captcha). `/` therefore lands
-# on the same client with those parameters already set; the password is still typed
-# by the human and never appears in this page or in any file.
+# on the same client with those parameters already set. There is NO password of ours
+# (x11vnc runs `-nopw`), so the page asks for none: the Cloudflare Access policy in
+# front of the tunnel hostname is the boundary, not an RFB password. `quality=` and
+# `compression=` are deliberately NOT set either (see browser/README.md): the noVNC
+# client's own defaults are the mobile-data stance, and a human can still raise the
+# quality for one session through the URL.
 RUN printf '%s\n' \
     '<!doctype html>' \
     '<html lang="en"><head><meta charset="utf-8">' \
