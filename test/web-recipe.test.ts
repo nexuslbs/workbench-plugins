@@ -12,15 +12,12 @@ import type { WebRecipeService } from '../plugins/web-recipe/index.ts'
 import { apply as applyPage } from '../plugins/web-page/index.ts'
 import { buildRecipe, recipeUsable, validatePatch } from '../plugins/web-recipe/schema.ts'
 import { RecipeError, RecipeStore, recipeFileName } from '../plugins/web-recipe/store.ts'
+import type { ToolDefinition } from '../definitions/tools.ts'
 
 type Ctx = Parameters<typeof apply>[0]
 type Handler = (params: Record<string, unknown>) => Promise<Record<string, unknown>>
 
-interface ToolDef {
-  name: string
-  parameters?: Record<string, unknown>
-  handler: Handler
-}
+type ToolDef = ToolDefinition
 
 function tmpDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix))
@@ -32,7 +29,7 @@ function fakeCtx(): { ctx: Ctx; tools: Map<string, ToolDef>; services: Map<strin
   const services = new Map<string, unknown>()
   const ctx = {
     tools: {
-      registerTool: (def: ToolDef) => {
+      register: (def: ToolDefinition) => {
         tools.set(def.name, def)
         return () => {
           tools.delete(def.name)
@@ -152,10 +149,10 @@ test('tools: recipe save/get/list/delete over the registered surface', async () 
   assert.deepEqual([...tools.keys()].sort(), ['recipe delete', 'recipe get', 'recipe list', 'recipe save', 'recipe verify'])
   assert.ok(serviceOf(services).contract === 'web-recipe@1')
 
-  const save = tools.get('recipe save')!.handler
-  const get = tools.get('recipe get')!.handler
-  const list = tools.get('recipe list')!.handler
-  const remove = tools.get('recipe delete')!.handler
+  const save = tools.get('recipe save')!.execute as (args: Record<string, unknown>) => Promise<Record<string, unknown>>
+  const get = tools.get('recipe get')!.execute as (args: Record<string, unknown>) => Promise<Record<string, unknown>>
+  const list = tools.get('recipe list')!.execute as (args: Record<string, unknown>) => Promise<Record<string, unknown>>
+  const remove = tools.get('recipe delete')!.execute as (args: Record<string, unknown>) => Promise<Record<string, unknown>>
 
   const saved = await save({ domain: 'github.com', readPath: { kind: 'render', url: 'https://github.com/{owner}/{repo}', selectors: ['main'] }, quirks: 'JS repo page' })
   assert.equal(saved.status, 'ok')
@@ -179,8 +176,7 @@ test('tools: recipe save/get/list/delete over the registered surface', async () 
   assert.equal((await get({ domain: 'github.com' })).recipe !== undefined, true, 'a parked recipe keeps its file')
   assert.equal(((await get({ domain: 'github.com' })).recipe as { disabled?: boolean }).disabled, true)
 
-  assert.equal((await get({})).status, 'invalid', 'a missing domain is a structured violation, not a crash')
-  assert.ok(((await get({})).violations as string[]).length > 0)
+  await assert.rejects(get({}), /domain: missing required parameter/, 'a missing domain is a structured violation, not a crash')
   assert.equal((await get({ domain: 'nope.example' })).status, 'not_found')
   assert.equal((await get({ domain: 'github.com' })).status, 'ok', 'the server keeps serving after the errors')
 })
@@ -209,7 +205,7 @@ test('service: lookup gates on existence, policy and the disabled marker; a disc
   assert.equal(second.status, 'skipped', 'a discovery never overwrites curated knowledge')
   assert.equal((await service.get('example.com'))?.readPath?.kind, 'render')
 
-  await tools.get('recipe delete')!.handler({ domain: 'example.com' })
+  await tools.get('recipe delete')!.execute({ domain: 'example.com' })
   const parked = await service.lookup('https://example.com/other')
   assert.equal(parked?.usable, false)
   assert.equal(parked?.reason, 'disabled')
@@ -260,10 +256,10 @@ test('service: no secret VALUE can reach a stored recipe (the schema refuses it)
   const dir = tmpDir('web-recipe-secret-')
   const { ctx, tools } = fakeCtx()
   apply(ctx, { dir })
-  const refused = await tools.get('recipe save')!.handler({
+  const refused = (await tools.get('recipe save')!.execute({
     domain: 'example.com',
     loginFlow: { url: 'https://example.com/login', fields: [{ name: 'password', form: 'css', selector: '#pw', credential: 'hunter2' }] },
-  })
+  })) as Record<string, unknown>
   assert.equal(refused.status, 'invalid')
   assert.equal(fs.existsSync(path.join(dir, 'example.com.json')), false, 'nothing was written')
   assert.equal(JSON.stringify(refused).includes('hunter2'), false, 'the refusal does not echo the value back either')
@@ -300,7 +296,7 @@ test('web-page read-through: a broken recipe is reported and demoted, and the re
   applyPage(
     {
       tools: {
-        registerTool: (def: ToolDef) => {
+        register: (def: ToolDefinition) => {
           pageTools.set(def.name, def)
           return () => undefined
         },
@@ -318,7 +314,7 @@ test('web-page read-through: a broken recipe is reported and demoted, and the re
     { renderer: renderer as never, fetchImpl: failingFetch },
   )
 
-  const read = await pageTools.get('page read')!.handler({ url: 'https://broken.example/page', max_chars: 4000 })
+  const read = (await pageTools.get('page read')!.execute({ url: 'https://broken.example/page', max_chars: 4000 })) as Record<string, unknown>
   assert.match(String(read.markdown), /rendered body text of the fallback read/, 'the render path still answers')
   assert.equal(renders.length, 1, 'the browser path ran exactly once')
   const note = read.recipe as { domain: string; via: string; status: string; fallback: string; detail: string }
@@ -360,7 +356,7 @@ test('web-page read-through: an API recipe answers in ONE call with no browser a
   applyPage(
     {
       tools: {
-        registerTool: (def: ToolDef) => {
+        register: (def: ToolDefinition) => {
           pageTools.set(def.name, def)
           return () => undefined
         },
@@ -378,7 +374,7 @@ test('web-page read-through: an API recipe answers in ONE call with no browser a
     { renderer: renderer as never, fetchImpl: okFetch },
   )
 
-  const read = await pageTools.get('page read')!.handler({ url: 'https://api.example.com/page', max_chars: 4000 })
+  const read = (await pageTools.get('page read')!.execute({ url: 'https://api.example.com/page', max_chars: 4000 })) as Record<string, unknown>
   assert.equal(read.status, 'recipe', 'the answer names the recipe path')
   assert.equal(renders.length, 0, 'no browser render at all')
   assert.match(String(read.markdown), /"id":7/, 'the API payload was returned')
@@ -424,7 +420,7 @@ test('web-page read-through: an UNRESOLVABLE credential does not block the API r
   applyPage(
     {
       tools: {
-        registerTool: (def: ToolDef) => {
+        register: (def: ToolDefinition) => {
           pageTools.set(def.name, def)
           return () => undefined
         },
@@ -440,7 +436,7 @@ test('web-page read-through: an UNRESOLVABLE credential does not block the API r
     { renderer: renderer as never, fetchImpl: credFetch },
   )
 
-  const read = await pageTools.get('page read')!.handler({ url: 'https://creds.example/page', max_chars: 4000 })
+  const read = (await pageTools.get('page read')!.execute({ url: 'https://creds.example/page', max_chars: 4000 })) as Record<string, unknown>
   assert.equal(read.status, 'recipe', 'the recipe path still answers')
   assert.equal(read.via, 'api')
   assert.equal(renders.length, 0, 'no browser ran')
@@ -490,7 +486,7 @@ test('web-page read-through: a broken recipe must not poison the read with its O
   applyPage(
     {
       tools: {
-        registerTool: (def: ToolDef) => {
+        register: (def: ToolDefinition) => {
           pageTools.set(def.name, def)
           return () => undefined
         },
@@ -506,7 +502,7 @@ test('web-page read-through: a broken recipe must not poison the read with its O
     { renderer: renderer as never, fetchImpl: goneFetch },
   )
 
-  const read = await pageTools.get('page read')!.handler({ url: 'https://poison.example/page', max_chars: 4000 })
+  const read = (await pageTools.get('page read')!.execute({ url: 'https://poison.example/page', max_chars: 4000 })) as Record<string, unknown>
   assert.match(String(read.markdown), /plain body text of the poisoned read/, 'the read still answers')
   assert.equal(renders.length, 1, 'the browser ran exactly once')
   assert.equal(renders[0], undefined, 'the failed recipe selectors were dropped for the fallback')

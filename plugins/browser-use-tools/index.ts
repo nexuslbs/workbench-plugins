@@ -86,6 +86,7 @@ import type {
   WaitUntil,
 } from '../../definitions/browser-use.ts'
 import type { ParameterSchemaSpec } from '../../definitions/tools.ts'
+import { defineTool, renderValue, type ToolDefinition } from '../../definitions/tools.ts'
 
 export const name = 'browser-use-tools'
 
@@ -96,12 +97,7 @@ type ToolParameters = ParameterSchemaSpec
 type BrowserService = BrowserUseService
 
 interface ToolsLike {
-  registerTool(def: {
-    name: string
-    description?: string
-    parameters?: ToolParameters
-    handler: (params: Record<string, unknown>) => unknown | Promise<unknown>
-  }): () => void
+  register(def: ToolDefinition): () => void
 }
 
 interface PluginContext {
@@ -819,7 +815,7 @@ const BROWSER_TOOL_PARAMETERS: ParameterSchemaSpec = {
 
 export function apply(ctx: PluginContext): void {
   ctx.effect?.(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: BROWSER_USE_TOOL_NAME,
       description:
         'Drives a real browser through the configured browser-use@1 provider. `action: providers` lists the providers and the selection, ' +
@@ -843,7 +839,7 @@ export function apply(ctx: PluginContext): void {
         'Every failure is a TYPED answer (`browser-use.no-browser`, `.stale-ref`, `.timeout`, `.navigation-failed`, ...) with the exact ' +
         'prerequisite - never a fabricated result and never a silent fallback. Pass `provider` to force one provider.',
       parameters: BROWSER_TOOL_PARAMETERS,
-      handler: async (params) => {
+      execute: async (params) => {
         const service = serviceOf(ctx)
         if (!isService(service)) return service
         // EVERYTHING runs inside the try: a parameter violation is a TYPED answer,
@@ -957,7 +953,8 @@ export function apply(ctx: PluginContext): void {
           return failureBody(error, BROWSER_USE_CONFIG_ROW)
         }
       },
-    }),
+      output: { schema: {}, render: renderValue },
+    })),
   )
 }
 

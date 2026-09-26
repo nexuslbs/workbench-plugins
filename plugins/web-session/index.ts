@@ -23,6 +23,7 @@
 // so the two plugins never fight over chromium), and no per-site knowledge is
 // hardcoded here - a site is config (and, later, the recipe store).
 import { loggerOf, type LoggerHandle, type LoggerServiceLike } from '../../definitions/logger.ts'
+import { defineTool, renderValue, type ToolDefinition } from '../../definitions/tools.ts'
 import { resolveConfig } from './config.ts'
 import type { WebSessionConfig } from './config.ts'
 import type { SessionDriver } from './driver.ts'
@@ -45,12 +46,7 @@ interface ToolParameter {
 type ToolParameters = Record<string, ToolParameter>
 
 interface ToolsLike {
-  registerTool(def: {
-    name: string
-    description?: string
-    parameters?: ToolParameters
-    handler: (params: Record<string, unknown>) => unknown | Promise<unknown>
-  }): () => void
+  register(def: ToolDefinition): () => void
 }
 
 interface CredentialsLike {
@@ -146,12 +142,12 @@ export function apply(ctx: PluginContext, config: WebSessionConfig = {}, deps: W
   }
   const log = loggerOf(ctx, name)
   const manager = new SessionManager(resolved, resolveCredential, { ...deps, logger: deps.logger ?? log })
-  const unregister = ctx.tools.registerTool({
+  const unregister = ctx.tools.register(defineTool({
     name: 'session',
     description:
       'browser session by site label: one action enum (open|act|read|close) with persisted logins, change DELTAS after act, selector-scoped reads (CSS/XPath/role+name) and direct JSON endpoint calls (read {api:"list"})',
     parameters: SESSION_PARAMETERS,
-    handler: async (params: Record<string, unknown>): Promise<unknown> => {
+    execute: async (params: Record<string, unknown>): Promise<unknown> => {
       try {
         return await manager.execute(params)
       } catch (error) {
@@ -166,7 +162,8 @@ export function apply(ctx: PluginContext, config: WebSessionConfig = {}, deps: W
         return envelopeOf(error, resolved.redact)
       }
     },
-  })
+    output: { schema: {}, render: renderValue },
+  }))
   ctx.effect(() => () => {
     unregister()
     void manager.dispose()

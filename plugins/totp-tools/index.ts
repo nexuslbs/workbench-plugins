@@ -16,6 +16,8 @@
 // what `npm run check:seam` in the core repository enforces. This plugin names
 // no key handling anywhere: it never sees a secret, only the generated code.
 
+import { defineTool, renderValue, type ToolDefinition } from '../../definitions/tools.ts'
+
 /** One declared tool parameter (the property map the core publishes). */
 interface ToolParameter {
   type: 'string' | 'number' | 'integer' | 'boolean' | 'array' | 'object' | 'json'
@@ -59,12 +61,7 @@ interface TotpLike {
 }
 
 interface ToolsLike {
-  registerTool(def: {
-    name: string
-    description?: string
-    parameters?: ToolParameters
-    handler: (params: Record<string, unknown>) => unknown | Promise<unknown>
-  }): () => void
+  register(def: ToolDefinition): () => void
 }
 
 interface PluginContext {
@@ -87,16 +84,17 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
   // never part of this answer because it is never part of the capability's
   // `entries()` either - the contract is metadata only.
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'totp list',
       description:
         'lists the configured TOTP entries: label, issuer, account, digits, period, algorithm and whether a key is configured; never a secret',
       parameters: {},
-      handler: async () => {
+      execute: async () => {
         const entries = await ctx.totp.entries()
         return { count: entries.length, entries }
       },
-    }),
+      output: { schema: {}, render: renderValue },
+    })),
   )
 
   // 2) The operator's headline use case: the CURRENT code of a named entry.
@@ -104,7 +102,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
   // the capability answers for exactly that second and reports how long the code
   // stays valid (`remainingSeconds`).
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'totp code',
       description:
         'generates the current code of the named TOTP entry (label, optional unix-second `at`) and reports digits, period, algorithm, generatedAt and remainingSeconds',
@@ -115,7 +113,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
           description: 'unix SECONDS to generate for (default: now); useful for deterministic and boundary checks',
         },
       },
-      handler: async (params) => {
+      execute: async (params) => {
         const label = str(params.label)
         if (label === undefined) throw new Error("totp code: the 'label' parameter must be a non-empty entry label")
         const at = int(params.at)
@@ -138,7 +136,8 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
               }),
         }
       },
-    }),
+      output: { schema: {}, render: renderValue },
+    })),
   )
 }
 

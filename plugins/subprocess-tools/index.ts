@@ -28,6 +28,7 @@
 import { subprocessOf, SubprocessError } from '../../definitions/subprocess.ts'
 import type { SubprocessService } from '../../definitions/subprocess.ts'
 import type { ParameterSchemaSpec } from '../../definitions/tools.ts'
+import { defineTool, renderValue, type ToolDefinition } from '../../definitions/tools.ts'
 
 export const name = 'subprocess-tools'
 
@@ -38,12 +39,7 @@ type ToolParameter = ParameterSchemaSpec[string]
 type ToolParameters = ParameterSchemaSpec
 
 interface ToolsLike {
-  registerTool(def: {
-    name: string
-    description?: string
-    parameters?: ToolParameters
-    handler: (params: Record<string, unknown>) => unknown | Promise<unknown>
-  }): () => void
+  register(def: ToolDefinition): () => void
 }
 
 interface PluginContext {
@@ -189,12 +185,12 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
   }
 
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'subprocess run',
       description:
         'Runs a bounded LOCAL command on the workbench host: argv-based (no shell unless shell:true), with cwd, env/envRefs, stdin, a deadline that kills the whole process group and an inline output cap whose overflow is written to a spill file; exit code, stdout, stderr, byte counts, duration and the spill reference come back as a STRUCTURED result, and a NON-ZERO exit is a normal result, not an error',
       parameters: COMMAND_PARAMETERS,
-      handler: async (params) => {
+      execute: async (params) => {
         const input = {
           ...(optionalStringArray(params, 'argv') !== undefined ? { argv: optionalStringArray(params, 'argv')! } : {}),
           ...(optionalString(params, 'command') !== undefined ? { command: optionalString(params, 'command')! } : {}),
@@ -215,17 +211,21 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
         }
         return subprocess().run(input)
       },
-    }),
+      output: { schema: {}, render: renderValue },
+    })),
+
   )
 
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'subprocess policy',
       description:
         'Reports the policy of the loaded subprocess@1 provider (default and maximum deadline, default inline cap, overflow bytes, kill grace, whether shell execution is allowed, default cwd) - never a secret',
       parameters: {},
-      handler: () => subprocess().policy(),
-    }),
+      execute: () => subprocess().policy(),
+      output: { schema: {}, render: renderValue },
+    })),
+
   )
 }
 

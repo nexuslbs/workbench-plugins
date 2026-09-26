@@ -86,31 +86,17 @@ sources:
 # A config written for the old scan-and-load semantics must therefore list every
 # plugin it wants loaded (see README.md, "The plugin roster").
 plugins:
-  credentials-basic:
-    # The credentials@1 PROVIDER (a plugin, since the core ships none): `file` is
-    # the file backend, `env` the direct process environment. The path is
-    # operator-provided and gitignored, OUTSIDE both repositories (see
-    # .env.example). An absent file = "not found": the private source then reports
-    # a clear auth error and every OTHER source still loads.
-    file:
-      path: /opt/workspace/workbench-secrets/credentials.yml
   hello-world:
     message: Hello World
   hello-otherworld:
     message: Hello Otherworld
 
   # The TOOL consumer: registers the by-name tool `hello greet` through
-  # `ctx.tools.registerTool` (the tools@1 service, plugins repo docs), so
+  # `ctx.tools.register(defineTool(...))` (the tools@1 service, plugins repo docs), so
   # the dev service answers GET /api/tools, POST /api/tools/hello%20greet and
   # POST /api/tool/call (the shape the omniagent `workbench` MCP plugin sends).
   hello-tool: {}
 
-  # THE TOOLS PROVIDER (tools@1, provider `registry`): it owns the named-tool
-  # registry, the /api/tools* HTTP seams on the web seam and the `workbench
-  # tools` / `workbench tool <name>` CLI commands. The CORE ships NO tool module
-  # at all since v0.0.4 (definitions/tools.ts + this provider live in THIS
-  # repository): a consumer registers through `ctx.tools`.
-  tools-impl: {}
 
 
   # THE LOGGER SINKS (`logger@1`, plugins repo docs/LOGGING.md). The core hosts
@@ -171,24 +157,13 @@ plugins:
   web-impl:
     host: 0.0.0.0
     port: 8080
-  # credentials-stub: the dev credential provider plugin (the stub vault the docs
-  # use to show the Provider -> Definition <- Consumer seam end to end).
-  credentials-stub: {}
-  # THE github-app GIT AUTH STRATEGY (moved out of the core in v0.0.4): it turns
-  # the App PRIVATE KEY that a credentials PROVIDER resolved for
-  # `auth.credential` into a short-lived installation token and hands the core
-  # the `git -c ...` arguments. It declares the `credentials` capability WITHOUT a
-  # provider id - that declaration is what loads it in the core's credentials
-  # phase, BEFORE any gated source is resolved - because the VALUE comes from the
-  # providers above and this plugin only mints from it.
-  credentials-github-app: {}
   # The WEB-PAGE reader: ONE-call JS-aware read of a page that needs JavaScript.
   # The plugin renders through playwright-core chromium (the browser is provided
   # by the deployment: `PLAYWRIGHT_BROWSERS_PATH` here points at the browser
   # installed for local runs, config `executablePath` overrides it), distils the
   # page to compact markdown IN CODE, caps the result with spill to a file and
   # caches it by URL + content hash. Two CONSUMER tools through
-  # `ctx.tools.registerTool`: 'page read' and 'page map'. It holds no
+  # `ctx.tools.register(defineTool(...))`: 'page read' and 'page map'. It holds no
   # credential of its own - the optional `proxy.credential` is a NAME resolved
   # through ctx.credentials and never written or logged.
   web-page:
@@ -399,6 +374,18 @@ plugins:
   # `executablePath` is therefore DELIBERATELY ABSENT: in attach mode it is dead
   # config, and keeping it would let a local chromium hide a stopped service.
   browser-use-playwright:
+    # WHERE the browser runs is a CONFIG decision (the plugin is location-
+    # agnostic, exactly like the himalaya impl plugin): `backend` selects
+    # `container` (a compose browser service, CDP attach - the deployed default
+    # below), `local` (a chromium launched by the provider), `ssh` /
+    # `ssh+container` (a browser on a remote machine) or `http` (a remote CDP
+    # endpoint). Every non-local backend reaches the browser through the
+    # `general-service@1` seam (the `browserService.generalService` instance),
+    # so the transport is config, never a hard-wired docker/ssh/http call.
+    # Omitted, `backend` is inferred (`browserService` -> `container`, a bare
+    # `wsEndpoint` -> `http`, otherwise `local`), so the old shape keeps working
+    # unchanged.
+    backend: container
     # HEADFUL is the DEPLOYED default. `headless` is a LAUNCH-time setting, and in
     # this attach deployment the browser service image owns the launch: it runs a
     # REAL headful chromium on its own Xvfb display (browser/start-browser.sh),

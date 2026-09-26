@@ -40,17 +40,13 @@ import {
   validateSearxngConfig,
 } from '../core/web-search-searxng/index.ts'
 import * as webSearchTools from '../plugins/web-search-tools/index.ts'
+import type { ToolDefinition } from '../definitions/tools.ts'
 
 // ---------------------------------------------------------------------------
 // Harness: a fake `tools` service plus a structural cordis context.
 // ---------------------------------------------------------------------------
 
-interface ToolDef {
-  name: string
-  description?: string
-  parameters?: Record<string, unknown>
-  handler: (params: Record<string, unknown>) => unknown
-}
+type ToolDef = ToolDefinition
 
 function harness(services: Record<string, unknown> = {}): {
   ctx: unknown
@@ -65,7 +61,7 @@ function harness(services: Record<string, unknown> = {}): {
     ...services,
     get: (name: string) => services[name],
     tools: {
-      registerTool: (def: ToolDef): (() => void) => {
+      register: (def: ToolDefinition): (() => void) => {
         tools.set(def.name, def)
         return () => tools.delete(def.name)
       },
@@ -528,7 +524,7 @@ test('web-search-tools: `web search` answers the normalized results of the stub 
   const { ctx, tools } = harness({ [WEB_SEARCH]: service })
   webSearchTools.apply(ctx as never)
 
-  const answer = (await tools.get('web search')?.handler({ query: 'web search seam', count: 2 })) as Record<string, unknown>
+  const answer = (await tools.get('web search')?.execute({ query: 'web search seam', count: 2 })) as Record<string, unknown>
   assert.equal(answer.ok, true)
   assert.equal(answer.engine, 'stub')
   assert.equal(answer.provider, 'stub')
@@ -544,7 +540,7 @@ test('web-search-tools: `web search` answers the normalized results of the stub 
 test('web-search-tools: `web search` returns the TYPED failure, never an empty list', async () => {
   const withService = harness({ [WEB_SEARCH]: createWebSearchService({ provider: 'stub' }) })
   webSearchTools.apply(withService.ctx as never)
-  const unknownEngine = (await withService.tools.get('web search')?.handler({ query: 'q', engine: 'ghost' })) as Record<string, unknown>
+  const unknownEngine = (await withService.tools.get('web search')?.execute({ query: 'q', engine: 'ghost' })) as Record<string, unknown>
   assert.equal(unknownEngine.ok, false)
   const typed = unknownEngine.error as Record<string, unknown>
   assert.equal(typed.reason, 'web-search.provider-unknown')
@@ -552,14 +548,14 @@ test('web-search-tools: `web search` returns the TYPED failure, never an empty l
   assert.ok(String(typed.hint).includes(SEARCH_CONFIG_ROW))
 
   // the parameter guard of the tool itself
-  const badCount = (await withService.tools.get('web search')?.handler({ query: 'q', count: -3 })) as Record<string, unknown>
+  const badCount = (await withService.tools.get('web search')?.execute({ query: 'q', count: -3 })) as Record<string, unknown>
   assert.equal((badCount.error as Record<string, unknown>).reason, 'web-search.invalid-input')
   assert.equal(((badCount.error as Record<string, unknown>).details as Record<string, unknown>).parameter, 'count')
 
   // no capability loaded at all: the answer names the missing row
   const bare = harness({})
   webSearchTools.apply(bare.ctx as never)
-  const missing = (await bare.tools.get('web search')?.handler({ query: 'q' })) as Record<string, unknown>
+  const missing = (await bare.tools.get('web search')?.execute({ query: 'q' })) as Record<string, unknown>
   assert.equal(missing.ok, false)
   const gap = missing.error as Record<string, unknown>
   assert.equal(gap.reason, 'web-search.missing-service')
@@ -574,7 +570,7 @@ test('web-search-tools: `web search providers` tells a configuration gap from a 
   const { ctx, tools } = harness({ [WEB_SEARCH]: service })
   webSearchTools.apply(ctx as never)
 
-  const answer = (await tools.get('web search providers')?.handler({})) as Record<string, unknown>
+  const answer = (await tools.get('web search providers')?.execute({})) as Record<string, unknown>
   assert.equal(answer.ok, true)
   assert.deepEqual(answer.usable, ['stub'])
   // `providers` (and therefore `configured`) is id-SORTED, never registration or

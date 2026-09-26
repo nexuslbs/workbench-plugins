@@ -17,6 +17,7 @@ import { extractMain, outlineOf, renderOutline, sliceByQuery } from '../plugins/
 import { apply } from '../plugins/web-page/index.ts'
 import type { RenderRequest, RenderResult, RenderStats, Renderer } from '../plugins/web-page/render.ts'
 import { capText, readSpill } from '../plugins/web-page/spill.ts'
+import type { ToolDefinition } from '../definitions/tools.ts'
 
 const URL_UNDER_TEST = 'https://example.test/docs/install'
 
@@ -264,12 +265,7 @@ interface ToolParameter {
   items?: ToolParameter
 }
 
-interface RegisteredTool {
-  name: string
-  description?: string
-  parameters?: Record<string, ToolParameter>
-  handler: (params: Record<string, unknown>) => unknown
-}
+type RegisteredTool = ToolDefinition
 
 /** A renderer whose HTML can be swapped, so "the page changed" is observable. */
 class FakeRenderer implements Renderer {
@@ -307,7 +303,7 @@ interface FakeCtx {
   // The tools@1 service (Definition in definitions/tools.ts, provided by the
   // external `tools-impl` plugin): a consumer registers through `ctx.tools`.
   // `registered` is the tool list this test double records.
-  tools: { registerTool(def: RegisteredTool): () => void }
+  tools: { register(def: RegisteredTool): () => void }
   effect(callback: () => () => void): void
   registered: RegisteredTool[]
 }
@@ -316,7 +312,7 @@ function makeCtx(): FakeCtx {
   const registered: RegisteredTool[] = []
   return {
     tools: {
-      registerTool: (def) => {
+      register: (def) => {
         registered.push(def)
         return () => {
           const index = registered.indexOf(def)
@@ -370,22 +366,22 @@ test('tools: both tools register with real schemas and the owning plugin name', 
   const { ctx, tool } = boot(new FakeRenderer(FIXTURE_HTML))
   assert.deepEqual(ctx.registered.map((entry) => entry.name), ['page read', 'page map'])
   const read = tool('page read')
-  assert.equal(read.parameters?.url?.required, true)
-  assert.equal(read.parameters?.url?.type, 'string')
-  assert.equal(read.parameters?.selectors?.type, 'array')
-  assert.equal(read.parameters?.selectors?.items?.type, 'string')
-  assert.deepEqual(read.parameters?.freshness?.enum, ['cache', 'revalidate', 'force'])
-  assert.equal(read.parameters?.max_chars?.type, 'integer')
+  assert.equal(read.parameters?.required?.includes('url'), true)
+  assert.equal(read.parameters?.properties?.url?.type, 'string')
+  assert.equal(read.parameters?.properties?.selectors?.type, 'array')
+  assert.equal(read.parameters?.properties?.selectors?.items?.type, 'string')
+  assert.deepEqual(read.parameters?.properties?.freshness?.enum, ['cache', 'revalidate', 'force'])
+  assert.equal(read.parameters?.properties?.max_chars?.type, 'integer')
   const map = tool('page map')
-  assert.equal(map.parameters?.url?.required, true)
-  assert.equal(map.parameters?.max_chars?.type, 'integer')
+  assert.equal(map.parameters?.required?.includes('url'), true)
+  assert.equal(map.parameters?.properties?.max_chars?.type, 'integer')
   assert.match(read.description ?? '', /JavaScript|chromium/)
 })
 
 test('page read: one call renders, extracts and returns markdown; the same call a second time answers "unchanged"', async () => {
   const renderer = new FakeRenderer(FIXTURE_HTML)
   const { tool } = boot(renderer)
-  const first = (await tool('page read').handler({ url: URL_UNDER_TEST })) as Record<string, unknown>
+  const first = (await tool('page read').execute({ url: URL_UNDER_TEST })) as Record<string, unknown>
   assert.equal(first.status, 'rendered')
   assert.equal(renderer.calls.length, 1)
   assert.match(String(first.markdown), /# Installing Widget/)
@@ -394,7 +390,7 @@ test('page read: one call renders, extracts and returns markdown; the same call 
   assert.equal((first.cache as { state: string }).state, 'render')
   assert.equal(typeof first.hash, 'string')
 
-  const second = (await tool('page read').handler({ url: URL_UNDER_TEST })) as Record<string, unknown>
+  const second = (await tool('page read').execute({ url: URL_UNDER_TEST })) as Record<string, unknown>
   assert.equal(second.status, 'unchanged')
   assert.equal(second.message, `unchanged since ${String(first.hash)}`)
   assert.equal(renderer.calls.length, 1, 'the second call is served from the cache')
@@ -403,13 +399,13 @@ test('page read: one call renders, extracts and returns markdown; the same call 
   // A page that changed on the origin is seen through `revalidate` (a live
   // check) even while the entry is still inside the TTL.
   renderer.html = FIXTURE_HTML.replace('Run npm install widget to get started.', 'Run npm install widget@2 to get started.')
-  const third = (await tool('page read').handler({ url: URL_UNDER_TEST, freshness: 'revalidate' })) as Record<string, unknown>
+  const third = (await tool('page read').execute({ url: URL_UNDER_TEST, freshness: 'revalidate' })) as Record<string, unknown>
   assert.equal(third.status, 'rendered')
   assert.equal(renderer.calls.length, 2)
   assert.notEqual(third.hash, first.hash)
   assert.match(String(third.markdown), /widget@2/)
 
-  const fourth = (await tool('page read').handler({ url: URL_UNDER_TEST })) as Record<string, unknown>
+  const fourth = (await tool('page read').execute({ url: URL_UNDER_TEST })) as Record<string, unknown>
   assert.equal(fourth.status, 'unchanged')
   assert.equal(fourth.message, `unchanged since ${String(third.hash)}`)
 })
@@ -417,14 +413,14 @@ test('page read: one call renders, extracts and returns markdown; the same call 
 test('page read: freshness force re-renders an unchanged page; selectors scope the read and the cache key', async () => {
   const renderer = new FakeRenderer(FIXTURE_HTML)
   const { tool } = boot(renderer)
-  await tool('page read').handler({ url: URL_UNDER_TEST })
-  await tool('page read').handler({ url: URL_UNDER_TEST })
+  await tool('page read').execute({ url: URL_UNDER_TEST })
+  await tool('page read').execute({ url: URL_UNDER_TEST })
   assert.equal(renderer.calls.length, 1)
-  const forced = (await tool('page read').handler({ url: URL_UNDER_TEST, freshness: 'force' })) as Record<string, unknown>
+  const forced = (await tool('page read').execute({ url: URL_UNDER_TEST, freshness: 'force' })) as Record<string, unknown>
   assert.equal(forced.status, 'rendered')
   assert.equal(renderer.calls.length, 2)
 
-  const scoped = (await tool('page read').handler({ url: URL_UNDER_TEST, selectors: ['main'] })) as Record<string, unknown>
+  const scoped = (await tool('page read').execute({ url: URL_UNDER_TEST, selectors: ['main'] })) as Record<string, unknown>
   assert.equal(scoped.status, 'rendered')
   assert.equal(renderer.calls.length, 3, 'a scoped read is NOT the whole-page cache entry')
   assert.doesNotMatch(String(scoped.markdown), /We use cookies/)
@@ -432,14 +428,14 @@ test('page read: freshness force re-renders an unchanged page; selectors scope t
 
 test('page read: query slices BEFORE the cap, and a small max_chars spills the full text to a file', async () => {
   const { tool } = boot(new FakeRenderer(FIXTURE_HTML))
-  const sliced = (await tool('page read').handler({ url: URL_UNDER_TEST, query: 'requirements', freshness: 'force' })) as Record<string, unknown>
+  const sliced = (await tool('page read').execute({ url: URL_UNDER_TEST, query: 'requirements', freshness: 'force' })) as Record<string, unknown>
   const query = sliced.query as { terms: string[]; blocks: number; matchedChars: number }
   assert.deepEqual(query.terms, ['requirements'])
   assert.ok(query.blocks >= 1)
   assert.match(String(sliced.markdown), /Node 22 or newer/)
   assert.doesNotMatch(String(sliced.markdown), /npm install widget/)
 
-  const capped = (await tool('page read').handler({ url: URL_UNDER_TEST, max_chars: 200, freshness: 'force' })) as Record<string, unknown>
+  const capped = (await tool('page read').execute({ url: URL_UNDER_TEST, max_chars: 200, freshness: 'force' })) as Record<string, unknown>
   const truncation = capped.truncation as { capped: boolean; shownChars: number; totalChars: number; spillFile: string }
   assert.equal(truncation.capped, true)
   assert.ok(truncation.totalChars > 200)
@@ -452,8 +448,8 @@ test('page read: query slices BEFORE the cap, and a small max_chars spills the f
 test('page map: the outline only, cache-shared with page read', async () => {
   const renderer = new FakeRenderer(FIXTURE_HTML)
   const { tool } = boot(renderer)
-  await tool('page read').handler({ url: URL_UNDER_TEST })
-  const map = (await tool('page map').handler({ url: URL_UNDER_TEST })) as Record<string, unknown>
+  await tool('page read').execute({ url: URL_UNDER_TEST })
+  const map = (await tool('page map').execute({ url: URL_UNDER_TEST })) as Record<string, unknown>
   const counts = map.counts as { headings: number; links: number; sections: number }
   assert.equal(map.status, 'map')
   assert.ok(counts.headings >= 2)
@@ -462,7 +458,7 @@ test('page map: the outline only, cache-shared with page read', async () => {
   assert.doesNotMatch(String(map.markdown), /We use cookies|Copyright 2026/)
   assert.equal(renderer.calls.length, 1, 'page map reuses the page read entry')
 
-  const capped = (await tool('page map').handler({ url: URL_UNDER_TEST, max_chars: 200 })) as Record<string, unknown>
+  const capped = (await tool('page map').execute({ url: URL_UNDER_TEST, max_chars: 200 })) as Record<string, unknown>
   const truncation = capped.truncation as { capped: boolean; spillFile: string } | undefined
   assert.ok(truncation !== undefined && truncation.capped)
   assert.ok(fs.existsSync(truncation.spillFile))
@@ -472,17 +468,13 @@ test('failure envelope: a bad URL or a failed render names the failure and the T
   const renderer = new FakeRenderer(FIXTURE_HTML)
   const { tool } = boot(renderer)
 
-  const missing = await rejection(tool('page read').handler({}))
-  assert.ok(missing instanceof PageError)
-  assert.equal(missing.code, 'invalid_input')
+  await assert.rejects(async () => await tool('page read').execute({}), /url: missing required parameter/)
 
-  const notHttp = await rejection(tool('page read').handler({ url: 'file:///etc/passwd' }))
+  const notHttp = await rejection(tool('page read').execute({ url: 'file:///etc/passwd' }))
   assert.ok(notHttp instanceof PageError)
   assert.equal(notHttp.code, 'invalid_input')
 
-  const badSelectors = await rejection(tool('page read').handler({ url: URL_UNDER_TEST, selectors: 'main' }))
-  assert.ok(badSelectors instanceof PageError)
-  assert.equal(badSelectors.code, 'invalid_input')
+  await assert.rejects(async () => await tool('page read').execute({ url: URL_UNDER_TEST, selectors: 'main' }), /selectors: expected an array/)
 
   const failing: Renderer = {
     render: () => Promise.reject(new PageError('timeout', 'the page did not finish loading within 20000ms', { url: URL_UNDER_TEST, retryable: true })),
@@ -490,16 +482,16 @@ test('failure envelope: a bad URL or a failed render names the failure and the T
     stats: () => ({ launches: 0, renders: 0, contextReuses: 0, contextsOpen: 0 }),
   }
   const broken = boot(failing)
-  const timeout = await rejection(broken.tool('page read').handler({ url: URL_UNDER_TEST }))
+  const timeout = await rejection(broken.tool('page read').execute({ url: URL_UNDER_TEST }))
   assert.ok(timeout instanceof PageError)
   assert.equal(timeout.code, 'timeout')
   assert.equal(timeout.retryable, true)
 
-  const recovered = (await tool('page read').handler({ url: URL_UNDER_TEST })) as Record<string, unknown>
+  const recovered = (await tool('page read').execute({ url: URL_UNDER_TEST })) as Record<string, unknown>
   assert.equal(recovered.status, 'rendered', 'another tool call still works after a failure')
 
   const empty = boot(new FakeRenderer('<html><body><nav>only chrome</nav></body></html>'))
-  const emptyError = await rejection(empty.tool('page read').handler({ url: URL_UNDER_TEST }))
+  const emptyError = await rejection(empty.tool('page read').execute({ url: URL_UNDER_TEST }))
   assert.ok(emptyError instanceof PageError)
   assert.equal(emptyError.code, 'extract_empty')
 })
@@ -513,14 +505,14 @@ test('cache: a repeat `{url, query}` read is served from a FRESH entry - no brow
   const { tool } = boot(renderer)
 
   // First call with a query: nothing cached yet, so exactly one render.
-  const first = (await tool('page read').handler({ url: URL_UNDER_TEST, query: 'requirements', freshness: 'force' })) as Record<string, unknown>
+  const first = (await tool('page read').execute({ url: URL_UNDER_TEST, query: 'requirements', freshness: 'force' })) as Record<string, unknown>
   assert.equal(first.status, 'rendered')
   assert.equal(renderer.calls.length, 1)
 
   // Second call, same query, entry fresh: the slice comes OUT OF THE CACHE. A
   // `query` must not re-render a page the plugin already has (freshness decides
   // cache use), and the reported state must say so.
-  const second = (await tool('page read').handler({ url: URL_UNDER_TEST, query: 'requirements' })) as Record<string, unknown>
+  const second = (await tool('page read').execute({ url: URL_UNDER_TEST, query: 'requirements' })) as Record<string, unknown>
   assert.equal(renderer.calls.length, 1, 'a fresh entry answers a query slice without launching a browser')
   assert.equal((second.cache as { state: string }).state, 'hit')
   assert.equal(second.hash, first.hash)
@@ -530,7 +522,7 @@ test('cache: a repeat `{url, query}` read is served from a FRESH entry - no brow
   assert.equal(second.render, undefined, 'a cache-served answer carries no render stats')
 
   // ...and the plain re-read of the same entry is still the ~20 token answer.
-  const third = (await tool('page read').handler({ url: URL_UNDER_TEST })) as Record<string, unknown>
+  const third = (await tool('page read').execute({ url: URL_UNDER_TEST })) as Record<string, unknown>
   assert.equal(third.status, 'unchanged')
   assert.equal((third.cache as { state: string }).state, 'hit')
   assert.equal(renderer.calls.length, 1)
@@ -551,7 +543,7 @@ test('redact: configured strings are scrubbed from message/url/detail of a failu
     stats: () => ({ launches: 0, renders: 0, contextReuses: 0, contextsOpen: 0 }),
   }
 
-  const redacted = await rejection(boot(failing, { redact: [secret] }).tool('page read').handler({ url: URL_UNDER_TEST }))
+  const redacted = await rejection(boot(failing, { redact: [secret] }).tool('page read').execute({ url: URL_UNDER_TEST }))
   assert.ok(redacted instanceof PageError)
   assert.equal(redacted.code, 'connection')
   assert.ok(!redacted.message.includes(secret), 'the configured string is gone from the message')
@@ -561,13 +553,13 @@ test('redact: configured strings are scrubbed from message/url/detail of a failu
 
   // Without the `redact` row the very same failure is left untouched: the knob
   // is the ONLY difference.
-  const plain = await rejection(boot(failing).tool('page read').handler({ url: URL_UNDER_TEST }))
+  const plain = await rejection(boot(failing).tool('page read').execute({ url: URL_UNDER_TEST }))
   assert.ok(plain instanceof PageError)
   assert.ok(plain.message.includes(secret))
 
   // A redacted failure does not take the plugin down: another call still answers.
   const healthy = boot(new FakeRenderer(FIXTURE_HTML), { redact: [secret] })
-  const answer = (await healthy.tool('page read').handler({ url: URL_UNDER_TEST })) as Record<string, unknown>
+  const answer = (await healthy.tool('page read').execute({ url: URL_UNDER_TEST })) as Record<string, unknown>
   assert.equal(answer.status, 'rendered')
 })
 

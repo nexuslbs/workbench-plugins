@@ -1,7 +1,7 @@
 // plugins/email-tools - the `email@1` CONSUMER (EmailConsumer).
 //
 // It exposes the generic email capability as TOOLS for an agent or a human,
-// through the tools seam `ctx.tools.registerTool` (tools@1 API
+// through the tools seam `ctx.tools.register(defineTool(...))` (tools@1 API
 // `POST /api/tools/<name>` / `POST /api/tool/call {"tool","params"}` or the
 // CLI). It imports the DEFINITION and the shared helpers only:
 //
@@ -31,6 +31,7 @@ import {
   type EmailSummary,
 } from '../../definitions/email.ts'
 import { ServiceError, messageOf, type ServiceContext } from '../../definitions/support.ts'
+import { defineTool, renderValue, type ToolDefinition } from '../../definitions/tools.ts'
 
 export const name = 'email-tools'
 
@@ -45,12 +46,7 @@ interface ToolParameter {
 type ToolParameters = Record<string, ToolParameter>
 
 interface ToolsLike {
-  registerTool(def: {
-    name: string
-    description?: string
-    parameters?: ToolParameters
-    handler: (params: Record<string, unknown>) => unknown | Promise<unknown>
-  }): () => void
+  register(def: ToolDefinition): () => void
 }
 
 export interface Config {
@@ -398,12 +394,13 @@ export function apply(ctx: EmailToolsContext, config: Config = {}): void {
   const registered = tools(config, ctx)
   const install = (): (() => void) => {
     const disposers = Object.entries(registered).map(([toolName, tool]) =>
-      ctx.tools.registerTool({
+      ctx.tools.register(defineTool({
         name: toolName,
         description: tool.description,
         parameters: tool.parameters,
-        handler: tool.handler,
-      }),
+        execute: tool.handler,
+        output: { schema: {}, render: renderValue },
+      })),
     )
     return () => {
       for (const dispose of disposers) dispose()

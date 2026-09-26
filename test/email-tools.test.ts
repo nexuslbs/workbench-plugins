@@ -8,6 +8,7 @@ import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { apply, name } from '../plugins/email-tools/index.ts'
+import type { ToolDefinition } from '../definitions/tools.ts'
 
 const PLUGIN_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'plugins', 'email-tools')
 
@@ -18,12 +19,7 @@ interface ToolParam {
   enum?: readonly (string | number | boolean)[]
 }
 
-interface ToolDef {
-  name: string
-  description?: string
-  parameters?: Record<string, ToolParam>
-  handler: (params: Record<string, unknown>) => unknown
-}
+type ToolDef = ToolDefinition
 
 interface Call {
   method: string
@@ -95,7 +91,7 @@ function makeContext(email: Record<string, unknown>): { ctx: unknown; tools: Map
       return name === 'email' ? email : undefined
     },
     tools: {
-      registerTool(def: ToolDef): () => void {
+      register(def: ToolDefinition): () => void {
         tools.set(def.name, def)
         return () => tools.delete(def.name)
       },
@@ -122,33 +118,33 @@ test('the consumer registers the five email tools with typed parameter schemas',
     assert.ok(tool.description && tool.description.length > 20, `${tool.name} documents itself`)
   }
   const list = tools.get('email list')
-  assert.equal(list?.parameters?.account?.type, 'string')
-  assert.equal(list?.parameters?.limit?.type, 'integer')
-  assert.equal(list?.parameters?.unreadOnly?.type, 'boolean')
-  assert.equal(list?.parameters?.since?.type, 'string')
-  assert.equal(list?.parameters?.folder?.type, 'string')
+  assert.equal(list?.parameters?.properties?.account?.type, 'string')
+  assert.equal(list?.parameters?.properties?.limit?.type, 'integer')
+  assert.equal(list?.parameters?.properties?.unreadOnly?.type, 'boolean')
+  assert.equal(list?.parameters?.properties?.since?.type, 'string')
+  assert.equal(list?.parameters?.properties?.folder?.type, 'string')
   // One required parameter, with the enum constraint: real, enforced schema.
   const get = tools.get('email get')
-  assert.equal(get?.parameters?.id?.required, true)
-  assert.deepEqual(get?.parameters?.format?.enum, ['text', 'markdown', 'raw'])
-  assert.equal(tools.get('email accounts')?.parameters?.format?.enum?.join(','), 'labels,full')
-  assert.equal(tools.get('email code')?.parameters?.maxAgeSeconds?.type, 'integer')
+  assert.equal(get?.parameters?.required?.includes('id'), true)
+  assert.deepEqual(get?.parameters?.properties?.format?.enum, ['text', 'markdown', 'raw'])
+  assert.equal(tools.get('email accounts')?.parameters?.properties?.format?.enum?.join(','), 'labels,full')
+  assert.equal(tools.get('email code')?.parameters?.properties?.maxAgeSeconds?.type, 'integer')
 })
 
 test('email accounts reports the labels and the default account (never a secret)', async () => {
   const tools = boot(fakeEmail('alpha').service)
-  const labels = (await tools.get('email accounts')?.handler({})) as { count: number; default?: string; accounts: unknown[] }
+  const labels = (await tools.get('email accounts')?.execute({})) as { count: number; default?: string; accounts: unknown[] }
   assert.deepEqual(labels, { count: 2, default: 'personal', accounts: ['personal', 'work'] })
-  const full = (await tools.get('email accounts')?.handler({ format: 'full' })) as { accounts: { label: string; address?: string }[] }
+  const full = (await tools.get('email accounts')?.execute({ format: 'full' })) as { accounts: { label: string; address?: string }[] }
   assert.equal(full.accounts[1]?.address, 'me@work.example')
 })
 
 test('an omitted account is the DEFAULT account: the consumer forwards no reference and the provider decides', async () => {
   const fake = fakeEmail('alpha')
   const tools = boot(fake.service)
-  await tools.get('email list')?.handler({})
+  await tools.get('email list')?.execute({})
   assert.equal(fake.calls[0]?.ref, undefined, 'no reference: the configured default account answers')
-  await tools.get('email list')?.handler({ account: 'work', limit: 3, unreadOnly: true, since: '2026-09-01T00:00:00Z', folder: 'INBOX' })
+  await tools.get('email list')?.execute({ account: 'work', limit: 3, unreadOnly: true, since: '2026-09-01T00:00:00Z', folder: 'INBOX' })
   assert.deepEqual(fake.calls[1]?.ref, { label: 'work' })
   assert.deepEqual(fake.calls[1]?.options, { pageSize: 3, folder: 'INBOX', unreadOnly: true })
 })
@@ -156,7 +152,7 @@ test('an omitted account is the DEFAULT account: the consumer forwards no refere
 test('email list caps the page size and reports the account the caller asked for', async () => {
   const fake = fakeEmail('alpha')
   const tools = boot(fake.service)
-  const result = (await tools.get('email list')?.handler({ account: 'work', limit: 500 })) as {
+  const result = (await tools.get('email list')?.execute({ account: 'work', limit: 500 })) as {
     account: string
     count: number
     messages: { id: string; subject: string }[]
@@ -170,20 +166,20 @@ test('email list caps the page size and reports the account the caller asked for
 test('email get forwards the id and the format, and returns the body plus attachment metadata', async () => {
   const fake = fakeEmail('alpha')
   const tools = boot(fake.service)
-  const text = (await tools.get('email get')?.handler({ id: '42' })) as { body: string; format: string; attachments: { filename: string }[] }
+  const text = (await tools.get('email get')?.execute({ id: '42' })) as { body: string; format: string; attachments: { filename: string }[] }
   assert.deepEqual(fake.calls[0], { method: 'get', ref: undefined, options: { format: 'text' }, id: '42' })
   assert.equal(text.body, 'text body from alpha')
   assert.equal(text.attachments[0]?.filename, 'code.txt')
-  const markdown = (await tools.get('email get')?.handler({ id: '42', format: 'markdown' })) as { body: string }
+  const markdown = (await tools.get('email get')?.execute({ id: '42', format: 'markdown' })) as { body: string }
   assert.equal(markdown.body, 'markdown body from alpha')
-  const raw = (await tools.get('email get')?.handler({ id: '42', format: 'raw' })) as { body: string }
+  const raw = (await tools.get('email get')?.execute({ id: '42', format: 'raw' })) as { body: string }
   assert.equal(raw.body, 'raw body from alpha')
 })
 
 test('email code forwards the query and applies maxAgeSeconds client-side', async () => {
   const fake = fakeEmail('alpha')
   const tools = boot(fake.service)
-  const found = (await tools.get('email code')?.handler({ account: 'work', query: 'acme' })) as {
+  const found = (await tools.get('email code')?.execute({ account: 'work', query: 'acme' })) as {
     code: string
     messageId: string
     subject: string
@@ -192,9 +188,9 @@ test('email code forwards the query and applies maxAgeSeconds client-side', asyn
   assert.deepEqual(fake.calls[0]?.ref, { label: 'work' })
   assert.equal(found.code, '123456')
   assert.equal(found.messageId, '42')
-  const stale = (await tools.get('email code')?.handler({ account: 'work', maxAgeSeconds: 1 })) as { found: boolean }
+  const stale = (await tools.get('email code')?.execute({ account: 'work', maxAgeSeconds: 1 })) as { found: boolean }
   assert.equal(stale.found, false, 'the age filter is applied client side, so the old message is not eligible')
-  const byId = (await tools.get('email code')?.handler({ id: '42', pattern: 'text body from (\\w+)' })) as { code: string }
+  const byId = (await tools.get('email code')?.execute({ id: '42', pattern: 'text body from (\\w+)' })) as { code: string }
   assert.equal(byId.code, 'alpha', "the caller's pattern wins over the built-in ones")
   assert.deepEqual(fake.calls[2], { method: 'get', ref: undefined, options: { format: 'text' }, id: '42' })
 })
@@ -210,8 +206,8 @@ test('the consumer is provider agnostic: swapping ctx.email leaves every tool un
     toolsBeta.get('email get')?.parameters,
     'the tool contract does not depend on the provider',
   )
-  const fromAlpha = (await toolsAlpha.get('email code')?.handler({})) as { code: string }
-  const fromBeta = (await toolsBeta.get('email code')?.handler({})) as { code: string }
+  const fromAlpha = (await toolsAlpha.get('email code')?.execute({})) as { code: string }
+  const fromBeta = (await toolsBeta.get('email code')?.execute({})) as { code: string }
   assert.equal(fromAlpha.code, '123456')
   assert.equal(fromBeta.code, '654321')
 })

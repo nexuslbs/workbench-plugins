@@ -8,6 +8,7 @@ import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { apply, name } from '../plugins/totp-tools/index.ts'
+import type { ToolDefinition } from '../definitions/tools.ts'
 
 const PLUGIN_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'plugins', 'totp-tools')
 
@@ -18,12 +19,7 @@ interface ToolParam {
   enum?: readonly (string | number | boolean)[]
 }
 
-interface ToolDef {
-  name: string
-  description?: string
-  parameters?: Record<string, ToolParam>
-  handler: (params: Record<string, unknown>) => unknown
-}
+type ToolDef = ToolDefinition
 
 interface Call {
   label: string
@@ -61,7 +57,7 @@ function makeContext(totp: Record<string, unknown>): { ctx: unknown; tools: Map<
   const ctx = {
     totp,
     tools: {
-      registerTool(def: ToolDef): () => void {
+      register(def: ToolDefinition): () => void {
         tools.set(def.name, def)
         return () => tools.delete(def.name)
       },
@@ -88,17 +84,17 @@ test('the consumer registers the two totp tools with typed parameter schemas', (
     assert.ok(tool.description && tool.description.length > 20, `${tool.name} documents itself`)
   }
   // `totp list` takes NO parameter (the task's "no params" case).
-  assert.deepEqual(tools.get('totp list')?.parameters, {})
+  assert.deepEqual(tools.get('totp list')?.parameters?.properties ?? {}, {})
   // `totp code` has one REQUIRED string and one optional integer.
   const code = tools.get('totp code')
-  assert.equal(code?.parameters?.label?.type, 'string')
-  assert.equal(code?.parameters?.label?.required, true)
-  assert.equal(code?.parameters?.at?.type, 'integer')
+  assert.equal(code?.parameters?.properties?.label?.type, 'string')
+  assert.equal(code?.parameters?.required?.includes('label'), true)
+  assert.equal(code?.parameters?.properties?.at?.type, 'integer')
 })
 
 test('totp list reports the labels and the entry metadata, never a secret', async () => {
   const tools = boot(fakeTotp('alpha').service)
-  const result = (await tools.get('totp list')?.handler({})) as { count: number; entries: Record<string, unknown>[] }
+  const result = (await tools.get('totp list')?.execute({})) as { count: number; entries: Record<string, unknown>[] }
   assert.equal(result.count, 2)
   assert.deepEqual(
     result.entries.map((entry) => entry.label),
@@ -114,7 +110,7 @@ test('totp list reports the labels and the entry metadata, never a secret', asyn
 test('totp code forwards the label and `at`, and returns the capability code object', async () => {
   const fake = fakeTotp('alpha')
   const tools = boot(fake.service)
-  const generated = (await tools.get('totp code')?.handler({ label: 'github', at: 59 })) as Record<string, unknown>
+  const generated = (await tools.get('totp code')?.execute({ label: 'github', at: 59 })) as Record<string, unknown>
   assert.deepEqual(fake.calls[0], { label: 'github', at: 59 })
   assert.equal(generated.code, '287082')
   assert.equal(generated.digits, 6)
@@ -129,30 +125,30 @@ test('totp code forwards the label and `at`, and returns the capability code obj
 test('an omitted `at` is forwarded as NO option: the capability uses its own clock', async () => {
   const fake = fakeTotp('alpha')
   const tools = boot(fake.service)
-  await tools.get('totp code')?.handler({ label: 'github' })
+  await tools.get('totp code')?.execute({ label: 'github' })
   assert.deepEqual(fake.calls[0], { label: 'github', at: undefined })
 })
 
 test('a missing or blank label is refused by the handler with a readable message', async () => {
   const fake = fakeTotp('alpha')
   const tools = boot(fake.service)
-  await assert.rejects(async () => await tools.get('totp code')?.handler({}), /the 'label' parameter must be a non-empty entry label/)
-  await assert.rejects(async () => await tools.get('totp code')?.handler({ label: '   ' }), /the 'label' parameter must be a non-empty entry label/)
+  await assert.rejects(async () => await tools.get('totp code')?.execute({}), /label: missing required parameter/)
+  await assert.rejects(async () => await tools.get('totp code')?.execute({ label: '   ' }), /the 'label' parameter must be a non-empty entry label/)
   assert.deepEqual(fake.calls, [], 'the capability is never reached without a label')
 })
 
 test('an unknown label and a not-configured entry surface the capability error unchanged', async () => {
   const tools = boot(fakeTotp('alpha').service)
-  await assert.rejects(async () => await tools.get('totp code')?.handler({ label: 'nope' }), /totp: unknown entry 'nope' \(configured: github\)/)
-  await assert.rejects(async () => await tools.get('totp code')?.handler({ label: 'aws-root' }), /totp: entry 'aws-root' is not configured/)
+  await assert.rejects(async () => await tools.get('totp code')?.execute({ label: 'nope' }), /totp: unknown entry 'nope' \(configured: github\)/)
+  await assert.rejects(async () => await tools.get('totp code')?.execute({ label: 'aws-root' }), /totp: entry 'aws-root' is not configured/)
 })
 
 test('reportEntryMetadata:false drops issuer/account from a code answer (totp list keeps them)', async () => {
   const tools = boot(fakeTotp('alpha').service, { reportEntryMetadata: false })
-  const generated = (await tools.get('totp code')?.handler({ label: 'github' })) as Record<string, unknown>
+  const generated = (await tools.get('totp code')?.execute({ label: 'github' })) as Record<string, unknown>
   assert.equal('issuer' in generated, false)
   assert.equal('account' in generated, false)
-  const listed = (await tools.get('totp list')?.handler({})) as { entries: Record<string, unknown>[] }
+  const listed = (await tools.get('totp list')?.execute({})) as { entries: Record<string, unknown>[] }
   assert.equal(listed.entries[0]?.issuer, 'alpha issuer')
 })
 
@@ -164,8 +160,8 @@ test('the consumer is provider agnostic: swapping ctx.totp leaves every tool unt
   assert.deepEqual([...toolsAlpha.keys()], [...toolsBeta.keys()])
   assert.deepEqual(toolsAlpha.get('totp code')?.parameters, toolsBeta.get('totp code')?.parameters, 'the tool contract does not depend on the provider')
   assert.deepEqual(toolsAlpha.get('totp list')?.parameters, toolsBeta.get('totp list')?.parameters)
-  const fromAlpha = (await toolsAlpha.get('totp code')?.handler({ label: 'github' })) as { code: string }
-  const fromBeta = (await toolsBeta.get('totp code')?.handler({ label: 'github' })) as { code: string }
+  const fromAlpha = (await toolsAlpha.get('totp code')?.execute({ label: 'github' })) as { code: string }
+  const fromBeta = (await toolsBeta.get('totp code')?.execute({ label: 'github' })) as { code: string }
   assert.equal(fromAlpha.code, '287082')
   assert.equal(fromBeta.code, '654321')
 })

@@ -22,6 +22,7 @@
 import { jobsOf, JobsError } from '../../definitions/jobs.ts'
 import type { JobsService } from '../../definitions/jobs.ts'
 import type { ParameterSchemaSpec } from '../../definitions/tools.ts'
+import { defineTool, renderValue, type ToolDefinition } from '../../definitions/tools.ts'
 
 export const name = 'jobs-tools'
 
@@ -32,12 +33,7 @@ type ToolParameter = ParameterSchemaSpec[string]
 type ToolParameters = ParameterSchemaSpec
 
 interface ToolsLike {
-  registerTool(def: {
-    name: string
-    description?: string
-    parameters?: ToolParameters
-    handler: (params: Record<string, unknown>) => unknown | Promise<unknown>
-  }): () => void
+  register(def: ToolDefinition): () => void
 }
 
 interface PluginContext {
@@ -174,12 +170,12 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
   }
 
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'jobs start',
       description:
         'Starts a background job on the workbench host and returns its STABLE job id plus the durable log path: argv-based (no shell unless shell:true), with cwd/env/envRefs, an optional deadline and an optional log ceiling; the job keeps running while the caller does something else, and its output lives in a file on disk, so a client disconnect does not lose it',
       parameters: START_PARAMETERS,
-      handler: async (params) =>
+      execute: async (params) =>
         jobs().start({
           ...(optionalStringArray(params, 'argv') !== undefined ? { argv: optionalStringArray(params, 'argv')! } : {}),
           ...(optionalString(params, 'command') !== undefined ? { command: optionalString(params, 'command')! } : {}),
@@ -191,32 +187,38 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
           ...(optionalInteger(params, 'timeoutMs') !== undefined ? { timeoutMs: optionalInteger(params, 'timeoutMs')! } : {}),
           ...(optionalInteger(params, 'maxLogBytes') !== undefined ? { maxLogBytes: optionalInteger(params, 'maxLogBytes')! } : {}),
         }),
-    }),
+      output: { schema: {}, render: renderValue },
+    })),
+
   )
 
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'jobs list',
       description:
         'Lists every job the provider owns, newest first: id, label, state (running/exited/failed/killed), pid, exit code, duration, log path and log size',
       parameters: {},
-      handler: () => jobs().list(),
-    }),
+      execute: () => jobs().list(),
+      output: { schema: {}, render: renderValue },
+    })),
+
   )
 
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'jobs status',
       description: 'Reports ONE job by id: state, exit code/signal, duration, log path and log size',
       parameters: {
         id: { type: 'string', required: true, description: 'the job id returned by `jobs start`' },
       },
-      handler: (params) => jobs().status(requiredString(params, 'id')),
-    }),
+      execute: (params) => jobs().status(requiredString(params, 'id')),
+      output: { schema: {}, render: renderValue },
+    })),
+
   )
 
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'jobs logs',
       description:
         'Reads ONE page of a job log by BYTE CURSOR: pass the `nextCursor` of the previous answer to get only the NEW lines, so a poller never re-reads the whole log; the answer carries `state`, `nextCursor`, `bytes`, complete `lines` and `eof`',
@@ -226,7 +228,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
         limit: { type: 'integer', description: 'maximum bytes returned in this page (provider default/cap applies)' },
         fromStart: { type: 'boolean', description: 'return the whole log from the start, ignoring the cursor' },
       },
-      handler: async (params) =>
+      execute: async (params) =>
         jobs().logs({
           id: requiredString(params, 'id'),
           ...(optionalInteger(params, 'cursor') !== undefined ? { cursor: optionalInteger(params, 'cursor')! } : {}),
@@ -235,11 +237,13 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
             : {}),
           ...(optionalBoolean(params, 'fromStart') !== undefined ? { fromStart: optionalBoolean(params, 'fromStart')! } : {}),
         }),
-    }),
+      output: { schema: {}, render: renderValue },
+    })),
+
   )
 
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'jobs stop',
       description:
         'Stops a job (SIGTERM to the WHOLE PROCESS GROUP, then SIGKILL after the grace) and returns its terminal state; stopping an already finished job is a normal answer, not an error',
@@ -248,17 +252,19 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
         signal: { type: 'string', description: 'signal sent first (default SIGTERM); SIGKILL skips the grace' },
         graceMs: { type: 'integer', description: 'grace in ms between the first signal and SIGKILL (default 500)' },
       },
-      handler: async (params) =>
+      execute: async (params) =>
         jobs().stop({
           id: requiredString(params, 'id'),
           ...(optionalString(params, 'signal') !== undefined ? { signal: optionalString(params, 'signal') as NodeJS.Signals } : {}),
           ...(optionalInteger(params, 'graceMs') !== undefined ? { graceMs: optionalInteger(params, 'graceMs')! } : {}),
         }),
-    }),
+      output: { schema: {}, render: renderValue },
+    })),
+
   )
 
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'jobs cleanup',
       description:
         'Removes finished jobs from the registry and (by default) their log files; `dryRun` reports what would go, `all` also stops and removes jobs that are still running',
@@ -268,7 +274,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
         dryRun: { type: 'boolean', description: 'report what would be removed without removing anything' },
         removeLogs: { type: 'boolean', description: 'also delete the log files (default true)' },
       },
-      handler: async (params) =>
+      execute: async (params) =>
         jobs().cleanup({
           ...(optionalBoolean(params, 'all') !== undefined ? { all: optionalBoolean(params, 'all')! } : {}),
           ...(optionalInteger(params, 'olderThanSeconds') !== undefined
@@ -277,17 +283,21 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
           ...(optionalBoolean(params, 'dryRun') !== undefined ? { dryRun: optionalBoolean(params, 'dryRun')! } : {}),
           ...(optionalBoolean(params, 'removeLogs') !== undefined ? { removeLogs: optionalBoolean(params, 'removeLogs')! } : {}),
         }),
-    }),
+      output: { schema: {}, render: renderValue },
+    })),
+
   )
 
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'jobs policy',
       description:
         'Reports the policy of the loaded jobs@1 provider: log directory, maximum job count, default log ceiling, default deadline, kill grace, whether a shell is allowed, default page size',
       parameters: {},
-      handler: () => jobs().policy(),
-    }),
+      execute: () => jobs().policy(),
+      output: { schema: {}, render: renderValue },
+    })),
+
   )
 }
 

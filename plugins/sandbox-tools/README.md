@@ -1,6 +1,6 @@
 # plugins/sandbox-tools - the inspectable `sandbox@1` surface
 
-One directory, one plugin, three TOOLS on the `tools@1` seam (`ctx.tools.registerTool`).
+One directory, one plugin, three TOOLS on the `tools@1` seam (`ctx.tools.register(defineTool(...))`).
 It CONSUMES the `sandbox` capability; it never implements a policy of its own and
 it imports `definitions/sandbox.ts`, never a provider.
 

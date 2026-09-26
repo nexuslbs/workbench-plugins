@@ -22,6 +22,7 @@ import type { SandboxAllow, SandboxConstraints, SandboxDeny, SandboxDecision, Sa
 import { subprocessOf } from '../../definitions/subprocess.ts'
 import type { SubprocessResult, SubprocessService } from '../../definitions/subprocess.ts'
 import type { ParameterSchemaSpec } from '../../definitions/tools.ts'
+import { defineTool, renderValue, type ToolDefinition } from '../../definitions/tools.ts'
 
 export const name = 'sandbox-consumer'
 
@@ -37,12 +38,7 @@ export interface SandboxPlannerLike {
 }
 
 interface ToolsLike {
-  registerTool(def: {
-    name: string
-    description?: string
-    parameters?: ToolParameters
-    handler: (params: Record<string, unknown>) => unknown | Promise<unknown>
-  }): () => void
+  register(def: ToolDefinition): () => void
 }
 
 interface PluginContext {
@@ -215,7 +211,7 @@ function requireLocalRun(ctx: PluginContext): SubprocessService {
 
 export function apply(ctx: PluginContext): void {
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'sandbox guarded run',
       description:
         'A GUARDED command: it asks the loaded sandbox@1 provider for a decision and runs the argv through the subprocess@1 seam ONLY when the decision allowed it. A DENY runs NOTHING and returns the raw decision with its machine-readable reason; without a provider loaded the call is refused (fail-closed) and the answer reports the missing seam',
@@ -230,7 +226,7 @@ export function apply(ctx: PluginContext): void {
         approvalGranted: { type: 'boolean', description: 'true when the caller already holds an approval for this call' },
         allowWithoutPolicy: { type: 'boolean', description: 'run anyway when NO sandbox@1 provider is loaded (the answer then reports the gap; default false = refuse)' },
       },
-      handler: async (params) => {
+      execute: async (params) => {
         const argv = requiredArgv(params)
         const request: SandboxRequest = { resource: optionalString(params, 'resource') ?? 'subprocess', operation: 'spawn', argv }
         const cwd = optionalString(params, 'cwd')
@@ -263,7 +259,9 @@ export function apply(ctx: PluginContext): void {
         }
         return outcome
       },
-    }),
+      output: { schema: {}, render: renderValue },
+    })),
+
   )
 }
 

@@ -575,7 +575,7 @@ no password in the workbench config at all.
 
 ## Tools (consumer surface)
 
-`plugins/email-tools` registers, through `ctx.tools.registerTool` (the `tools@1`
+`plugins/email-tools` registers, through `ctx.tools.register(defineTool(...))` (the `tools@1`
 seam: `POST /api/tools/<name>` and `POST /api/tool/call {"tool","params"}`):
 
 | tool | params |

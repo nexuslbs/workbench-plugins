@@ -3,7 +3,7 @@
 An **external consumer** of the workbench email capability (`email@1`): it turns
 the capability into the four operator-facing TOOLS below and never learns which
 backend answers. It imports nothing from the core and nothing from a provider -
-its whole seam is `ctx.email` plus `ctx.tools.registerTool`, which is what
+its whole seam is `ctx.email` plus `ctx.tools.register(defineTool(...))`, which is what
 keeps the provider swappable by config alone.
 
 ## Tools

@@ -5,7 +5,7 @@ External workbench plugin: the **CONSUMER** of the core contract **`sms@1`**
 
 It imports **nothing** from the core and **nothing** from a provider. The only
 seams it touches are `ctx.sms` (the capability, injected by name) and
-`ctx.tools.registerTool`. Swapping the provider - disable one `sms@1`
+`ctx.tools.register(defineTool(...))`. Swapping the provider - disable one `sms@1`
 provider, enable another - is a config edit: this plugin does not change and its
 tools keep working. That direction is enforced by `npm run check:seam` in the
 core repository.

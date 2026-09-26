@@ -1,3 +1,4 @@
+import { defineTool, renderValue, type ToolDefinition } from '../../definitions/tools.ts'
 // External workbench plugin: registers a TOOL with the tools service.
 //
 // It deliberately imports NOTHING from the core package: `ctx.tools` (the tools
@@ -22,12 +23,7 @@ interface ToolParameter {
 type ToolParameters = Record<string, ToolParameter>
 
 interface ToolsLike {
-  registerTool(def: {
-    name: string
-    description?: string
-    parameters?: ToolParameters
-    handler: (params: Record<string, unknown>) => unknown | Promise<unknown>
-  }): () => void
+  register(def: ToolDefinition): () => void
 }
 
 interface PluginContext {
@@ -45,7 +41,7 @@ export interface Config {
 export function apply(ctx: PluginContext, config: Config = {}): void {
   const fallback = config.greeting ?? 'Hello'
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'hello greet',
       description: 'greets one person: required name, optional greeting and times',
       parameters: {
@@ -53,7 +49,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
         greeting: { type: 'string', description: `greeting word (default: ${fallback})` },
         times: { type: 'integer', description: 'how many times to greet (default: 1)' },
       },
-      handler: (params) => {
+      execute: (params) => {
         const who = String(params.name)
         const greeting = typeof params.greeting === 'string' ? params.greeting : fallback
         const times = typeof params.times === 'number' ? params.times : 1
@@ -62,7 +58,9 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
           plugin: name,
         }
       },
-    }),
+      output: { schema: {}, render: renderValue },
+    })),
+
   )
 }
 

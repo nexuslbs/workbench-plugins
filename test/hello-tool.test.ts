@@ -4,6 +4,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { apply, default as plugin, name } from '../plugins/hello-tool/index.ts'
+import type { ToolDefinition } from '../definitions/tools.ts'
 
 interface ToolParameter {
   type: string
@@ -11,12 +12,7 @@ interface ToolParameter {
   required?: boolean
 }
 
-interface Registered {
-  name: string
-  description?: string
-  parameters?: Record<string, ToolParameter>
-  handler: (params: Record<string, unknown>) => unknown | Promise<unknown>
-}
+type Registered = ToolDefinition
 
 function makeContext() {
   const tools: Registered[] = []
@@ -25,7 +21,7 @@ function makeContext() {
     // the tools@1 service (Definition in definitions/tools.ts, provided by the
     // external `tools-impl` plugin): a consumer registers through `ctx.tools`.
     tools: {
-      registerTool(def: Registered): () => void {
+      register(def: Registered): () => void {
         tools.push(def)
         return () => {
           const index = tools.indexOf(def)
@@ -47,10 +43,10 @@ test('registers the hello greet tool with one required and two optional paramete
   const tool = tools[0] as Registered
   assert.equal(tool.name, 'hello greet')
   assert.ok(tool.description, 'a tool needs a description for the tool list')
-  const parameters = tool.parameters ?? {}
+  const parameters = tool.parameters?.properties ?? {}
   assert.deepEqual(Object.keys(parameters), ['name', 'greeting', 'times'])
   assert.equal(parameters.name?.type, 'string')
-  assert.equal(parameters.name?.required, true)
+  assert.equal(tool.parameters?.required?.includes('name'), true)
   assert.equal(parameters.greeting?.required, undefined, 'greeting is optional')
   assert.equal(parameters.times?.type, 'integer')
   assert.equal(parameters.times?.required, undefined, 'times is optional')
@@ -59,12 +55,12 @@ test('registers the hello greet tool with one required and two optional paramete
 test('the handler greets with the parameters and the config fallback', async () => {
   const { ctx, tools } = makeContext()
   apply(ctx, {})
-  assert.deepEqual(await tools[0]?.handler({ name: 'Ada' }), { message: 'Hello, Ada!', plugin: 'hello-tool' })
-  assert.deepEqual(await tools[0]?.handler({ name: 'Ada', greeting: 'Hi', times: 2 }), { message: 'Hi, Ada! Hi, Ada!', plugin: 'hello-tool' })
+  assert.deepEqual(await tools[0]?.execute({ name: 'Ada' }), { message: 'Hello, Ada!', plugin: 'hello-tool' })
+  assert.deepEqual(await tools[0]?.execute({ name: 'Ada', greeting: 'Hi', times: 2 }), { message: 'Hi, Ada! Hi, Ada!', plugin: 'hello-tool' })
 
   const configured = makeContext()
   apply(configured.ctx, { greeting: 'Servus' })
-  assert.deepEqual(await configured.tools[0]?.handler({ name: 'Ada' }), { message: 'Servus, Ada!', plugin: 'hello-tool' })
+  assert.deepEqual(await configured.tools[0]?.execute({ name: 'Ada' }), { message: 'Servus, Ada!', plugin: 'hello-tool' })
 })
 
 test('disposing the plugin unregisters the tool', () => {

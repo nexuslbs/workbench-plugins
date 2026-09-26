@@ -8,6 +8,7 @@ import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { apply, name } from '../plugins/sms-tools/index.ts'
+import type { ToolDefinition } from '../definitions/tools.ts'
 
 const PLUGIN_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'plugins', 'sms-tools')
 
@@ -18,12 +19,7 @@ interface ToolParam {
   enum?: readonly (string | number | boolean)[]
 }
 
-interface ToolDef {
-  name: string
-  description?: string
-  parameters?: Record<string, ToolParam>
-  handler: (params: Record<string, unknown>) => unknown
-}
+type ToolDef = ToolDefinition
 
 interface Call {
   method: string
@@ -99,7 +95,7 @@ function makeContext(sms: Record<string, unknown>): { ctx: unknown; tools: Map<s
   const ctx = {
     sms,
     tools: {
-      registerTool(def: ToolDef): () => void {
+      register(def: ToolDefinition): () => void {
         tools.set(def.name, def)
         return () => tools.delete(def.name)
       },
@@ -124,14 +120,14 @@ test('the consumer registers the four sms tools with typed parameter schemas', (
   assert.deepEqual([...tools.keys()].sort(), [...EXPECTED].sort())
   for (const tool of tools.values()) {
     assert.ok(tool.description && tool.description.length > 20, `${tool.name} documents itself`)
-    assert.ok(tool.parameters && Object.keys(tool.parameters).length > 0, `${tool.name} declares typed parameters`)
+    assert.ok(tool.parameters && Object.keys(tool.parameters.properties).length > 0, `${tool.name} declares typed parameters`)
   }
   // `sms numbers` needs no input; its only parameter is optional and enumerated.
-  assert.deepEqual(Object.keys(tools.get('sms numbers')?.parameters ?? {}), ['format'])
-  assert.equal(tools.get('sms numbers')?.parameters?.format?.required, undefined)
-  assert.deepEqual(tools.get('sms numbers')?.parameters?.format?.enum, ['labels', 'full'])
+  assert.deepEqual(Object.keys(tools.get('sms numbers')?.parameters?.properties ?? {}), ['format'])
+  assert.equal(tools.get('sms numbers')?.parameters?.properties?.format?.required, undefined)
+  assert.deepEqual(tools.get('sms numbers')?.parameters?.properties?.format?.enum, ['labels', 'full'])
   // `sms list`: every parameter optional, typed.
-  const list = tools.get('sms list')?.parameters ?? {}
+  const list = tools.get('sms list')?.parameters?.properties ?? {}
   assert.deepEqual(Object.keys(list).sort(), ['from', 'limit', 'number', 'since', 'unreadOnly'])
   assert.equal(list.number?.type, 'string')
   assert.equal(list.limit?.type, 'integer')
@@ -139,12 +135,12 @@ test('the consumer registers the four sms tools with typed parameter schemas', (
   assert.equal(list.since?.type, 'string')
   assert.equal(list.from?.type, 'string')
   // `sms get`: the ONE required parameter of the tool set.
-  const get = tools.get('sms get')?.parameters ?? {}
+  const get = tools.get('sms get')?.parameters?.properties ?? {}
   assert.equal(get.id?.type, 'string')
-  assert.equal(get.id?.required, true)
+  assert.equal(tools.get('sms get')?.parameters?.required?.includes('id'), true)
   assert.equal(get.number?.required, undefined)
   // `sms code`: the operator's headline tool.
-  const code = tools.get('sms code')?.parameters ?? {}
+  const code = tools.get('sms code')?.parameters?.properties ?? {}
   assert.deepEqual(Object.keys(code).sort(), ['id', 'maxAgeSeconds', 'number', 'occurrences', 'pattern', 'query'])
   assert.equal(code.maxAgeSeconds?.type, 'integer')
   assert.equal(code.occurrences?.type, 'integer')
@@ -152,11 +148,11 @@ test('the consumer registers the four sms tools with typed parameter schemas', (
 
 test('sms numbers reports the labels, the default and the metadata, never a secret', async () => {
   const tools = boot(fakeSms('alpha').service)
-  const labels = (await tools.get('sms numbers')?.handler({})) as { count: number; default?: string; numbers: unknown[] }
+  const labels = (await tools.get('sms numbers')?.execute({})) as { count: number; default?: string; numbers: unknown[] }
   assert.equal(labels.count, 2)
   assert.equal(labels.default, 'personal')
   assert.deepEqual(labels.numbers, ['personal', 'work'])
-  const full = (await tools.get('sms numbers')?.handler({ format: 'full' })) as { numbers: Record<string, unknown>[] }
+  const full = (await tools.get('sms numbers')?.execute({ format: 'full' })) as { numbers: Record<string, unknown>[] }
   assert.equal(full.numbers[0]?.description, 'alpha personal')
   assert.equal(full.numbers[1]?.configured, false)
   const payload = JSON.stringify(full)
@@ -166,10 +162,10 @@ test('sms numbers reports the labels, the default and the metadata, never a secr
 test('sms list forwards the label and the bounded options, and defaults the limit', async () => {
   const fake = fakeSms('alpha')
   const tools = boot(fake.service)
-  const first = (await tools.get('sms list')?.handler({})) as { number: string; count: number }
+  const first = (await tools.get('sms list')?.execute({})) as { number: string; count: number }
   assert.equal(first.number, '(default)')
   assert.deepEqual(fake.calls[0], { method: 'list', label: undefined, options: { limit: 10 } })
-  const named = (await tools.get('sms list')?.handler({
+  const named = (await tools.get('sms list')?.execute({
     number: ' work ',
     limit: 3,
     since: '2026-09-01T00:00:00.000Z',
@@ -183,17 +179,17 @@ test('sms list forwards the label and the bounded options, and defaults the limi
     options: { limit: 3, since: '2026-09-01T00:00:00.000Z', from: 'BankAlert', unreadOnly: true },
   })
   // The client can never exceed the configured cap (and never the contract's 100).
-  await tools.get('sms list')?.handler({ limit: 5000 })
+  await tools.get('sms list')?.execute({ limit: 5000 })
   assert.deepEqual((fake.calls[2]?.options as { limit: number }).limit, 50)
   const tiny = boot(fakeSms('alpha').service, { defaultListLimit: 4, maxListLimit: 6 })
-  await tiny.get('sms list')?.handler({ limit: 99 })
-  const bounded = (await tiny.get('sms list')?.handler({})) as { count: number }
+  await tiny.get('sms list')?.execute({ limit: 99 })
+  const bounded = (await tiny.get('sms list')?.execute({})) as { count: number }
   assert.equal(bounded.count, 1)
 })
 
 test('sms list can drop the bodies when the operator asks for metadata only', async () => {
   const tools = boot(fakeSms('alpha').service, { includeBodies: false })
-  const listed = (await tools.get('sms list')?.handler({})) as { messages: Record<string, unknown>[] }
+  const listed = (await tools.get('sms list')?.execute({})) as { messages: Record<string, unknown>[] }
   assert.equal('body' in (listed.messages[0] ?? {}), true)
   assert.equal(listed.messages[0]?.body, undefined)
   assert.equal(listed.messages[0]?.id, 'alpha-SM1', 'the metadata survives')
@@ -202,10 +198,10 @@ test('sms list can drop the bodies when the operator asks for metadata only', as
 test('sms get requires an id and returns the full message of the referenced number', async () => {
   const fake = fakeSms('alpha')
   const tools = boot(fake.service)
-  await assert.rejects(async () => await tools.get('sms get')?.handler({}), /the 'id' parameter must be a non-empty string/)
-  await assert.rejects(async () => await tools.get('sms get')?.handler({ id: '   ' }), /the 'id' parameter must be a non-empty string/)
+  await assert.rejects(async () => await tools.get('sms get')?.execute({}), /id: missing required parameter/)
+  await assert.rejects(async () => await tools.get('sms get')?.execute({ id: '   ' }), /the 'id' parameter must be a non-empty string/)
   assert.deepEqual(fake.calls, [], 'the capability is never reached without an id')
-  const message = (await tools.get('sms get')?.handler({ id: 'SM1', number: 'work' })) as Record<string, unknown>
+  const message = (await tools.get('sms get')?.execute({ id: 'SM1', number: 'work' })) as Record<string, unknown>
   assert.deepEqual(fake.calls[0], { method: 'get', label: 'work', options: undefined, id: 'SM1' })
   assert.equal(message.number, 'work')
   assert.equal(message.segments, 1)
@@ -215,12 +211,12 @@ test('sms get requires an id and returns the full message of the referenced numb
 test('sms code forwards only the options the caller gave, and reports the message it came from', async () => {
   const fake = fakeSms('alpha')
   const tools = boot(fake.service)
-  const plain = (await tools.get('sms code')?.handler({})) as Record<string, unknown>
+  const plain = (await tools.get('sms code')?.execute({})) as Record<string, unknown>
   assert.deepEqual(fake.calls[0], { method: 'code', label: undefined, options: {} })
   assert.equal(plain.code, '483920')
   assert.equal(plain.messageId, 'alpha-SM1')
   assert.equal(plain.from, '+15550001111')
-  const targeted = (await tools.get('sms code')?.handler({
+  const targeted = (await tools.get('sms code')?.execute({
     number: 'personal',
     id: 'SM1',
     query: 'Verify',
@@ -238,9 +234,9 @@ test('sms code forwards only the options the caller gave, and reports the messag
 
 test('a capability error surfaces unchanged (unknown number, missing message)', async () => {
   const tools = boot(fakeSms('alpha').service)
-  await assert.rejects(async () => await tools.get('sms list')?.handler({ number: 'nope' }), /sms: unknown number 'nope' \(configured: personal, work\)/)
-  await assert.rejects(async () => await tools.get('sms get')?.handler({ id: 'missing' }), /sms: message 'missing' was not found/)
-  await assert.rejects(async () => await tools.get('sms code')?.handler({ id: 'missing' }), /no code found in 1 message\(s\)/)
+  await assert.rejects(async () => await tools.get('sms list')?.execute({ number: 'nope' }), /sms: unknown number 'nope' \(configured: personal, work\)/)
+  await assert.rejects(async () => await tools.get('sms get')?.execute({ id: 'missing' }), /sms: message 'missing' was not found/)
+  await assert.rejects(async () => await tools.get('sms code')?.execute({ id: 'missing' }), /no code found in 1 message\(s\)/)
 })
 
 test('the consumer is provider agnostic: swapping ctx.sms leaves every tool untouched and working', async () => {
@@ -252,8 +248,8 @@ test('the consumer is provider agnostic: swapping ctx.sms leaves every tool unto
   assert.deepEqual(toolsAlpha.get('sms list')?.parameters, toolsBeta.get('sms list')?.parameters, 'the tool contract does not depend on the provider')
   assert.deepEqual(toolsAlpha.get('sms get')?.parameters, toolsBeta.get('sms get')?.parameters)
   assert.deepEqual(toolsAlpha.get('sms code')?.parameters, toolsBeta.get('sms code')?.parameters)
-  const fromAlpha = (await toolsAlpha.get('sms code')?.handler({})) as { code: string }
-  const fromBeta = (await toolsBeta.get('sms code')?.handler({})) as { code: string }
+  const fromAlpha = (await toolsAlpha.get('sms code')?.execute({})) as { code: string }
+  const fromBeta = (await toolsBeta.get('sms code')?.execute({})) as { code: string }
   assert.equal(fromAlpha.code, '483920')
   assert.equal(fromBeta.code, '111111')
 })

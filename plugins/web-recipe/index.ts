@@ -2,7 +2,7 @@
 // a repeated site ONE cheap call.
 //
 // It is an external workbench plugin with three seams, nothing else:
-//   - `ctx.tools.registerTool` (tools@1, public plugins repo): the five
+//   - `ctx.tools.register(defineTool(...))` (tools@1, public plugins repo): the five
 //     `recipe *` tools an agent/operator drives;
 //   - `ctx.provide('web-recipe', service)`: the consumer contract web-page looks
 //     up (`ctx.inject(['web-recipe'], ...)`), so the read-through is a SERVICE
@@ -28,6 +28,7 @@ import {
 import type { Recipe, RecipePatch, RecipePolicy, RecipeSummary } from './schema.ts'
 import { verifyRecipe } from './verify.ts'
 import type { RecipeVerifier, VerifyOutcome, VerifyOptions } from './verify.ts'
+import { defineTool, renderValue, type ToolDefinition } from '../../definitions/tools.ts'
 
 export const name = 'web-recipe'
 
@@ -108,11 +109,11 @@ interface ToolDef {
   name: string
   description?: string
   parameters?: ToolParameters
-  handler: (params: Record<string, unknown>) => unknown | Promise<unknown>
+  execute: (params: Record<string, unknown>) => unknown | Promise<unknown>
 }
 
 interface ToolsLike {
-  registerTool(def: ToolDef): () => void
+  register(def: ToolDefinition): () => void
 }
 
 interface CredentialsLike {
@@ -371,7 +372,7 @@ export function apply(ctx: PluginContext, config: WebRecipeConfig = {}, deps: We
   }
 
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'recipe get',
       description:
         'returns the stored per-domain recipe (read path, named selectors, discovered API endpoints, login flow, quirks, provenance) or a structured not-found; a recipe is durable knowledge every thread can reuse',
@@ -379,7 +380,7 @@ export function apply(ctx: PluginContext, config: WebRecipeConfig = {}, deps: We
         domain: domainParameter,
         raw: { type: 'boolean', description: 'include the stored document verbatim (default: the validated recipe)' },
       },
-      handler: async (params): Promise<Record<string, unknown>> => {
+      execute: async (params): Promise<Record<string, unknown>> => {
         const domain = str(params.domain)
         if (domain === undefined) return { status: 'invalid', violations: ["domain: a non-empty domain is required"] }
         try {
@@ -398,11 +399,13 @@ export function apply(ctx: PluginContext, config: WebRecipeConfig = {}, deps: We
           return failure(error)
         }
       },
-    }),
+      output: { schema: {}, render: renderValue },
+    })),
+
   )
 
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'recipe save',
       description:
         'creates or MERGES a per-domain recipe (read path, selectors, discovered endpoints, login flow, quirks, confidence); provenance is updated, a replacement read path resets verification, and a credential is stored by NAME only',
@@ -420,7 +423,7 @@ export function apply(ctx: PluginContext, config: WebRecipeConfig = {}, deps: We
         lastVerifiedAt: { type: 'string', description: 'ISO-8601 timestamp of an external verification' },
         replace: { type: 'boolean', description: 'replace the recipe instead of merging into it (default false)' },
       },
-      handler: async (params): Promise<Record<string, unknown>> => {
+      execute: async (params): Promise<Record<string, unknown>> => {
         const domain = str(params.domain)
         if (domain === undefined) return { status: 'invalid', violations: ["domain: a non-empty domain is required"] }
         const { domain: _domain, replace, ...fields } = params
@@ -437,17 +440,19 @@ export function apply(ctx: PluginContext, config: WebRecipeConfig = {}, deps: We
           return failure(error)
         }
       },
-    }),
+      output: { schema: {}, render: renderValue },
+    })),
+
   )
 
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'recipe list',
       description: 'lists the stored recipes: domain, read path kind, counts, confidence, lastVerifiedAt and parked state, plus any unreadable file',
       parameters: {
         limit: { type: 'integer', description: 'cap the number of entries (default 100)' },
       },
-      handler: async (params): Promise<Record<string, unknown>> => {
+      execute: async (params): Promise<Record<string, unknown>> => {
         try {
           const listed = await store.list()
           const limit = clamp(params.limit, 100, 1, 1000)
@@ -462,11 +467,13 @@ export function apply(ctx: PluginContext, config: WebRecipeConfig = {}, deps: We
           return failure(error)
         }
       },
-    }),
+      output: { schema: {}, render: renderValue },
+    })),
+
   )
 
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'recipe delete',
       description:
         "parks a recipe (`mode: disable`, default: the file and its provenance stay, reads stop using it) or removes it from disk (`mode: purge`)",
@@ -474,7 +481,7 @@ export function apply(ctx: PluginContext, config: WebRecipeConfig = {}, deps: We
         domain: domainParameter,
         mode: { type: 'string', description: 'disable (park, default) or purge (delete the file)', enum: ['disable', 'purge'] },
       },
-      handler: async (params): Promise<Record<string, unknown>> => {
+      execute: async (params): Promise<Record<string, unknown>> => {
         const domain = str(params.domain)
         if (domain === undefined) return { status: 'invalid', violations: ["domain: a non-empty domain is required"] }
         const mode: DeleteMode = params.mode === 'purge' ? 'purge' : 'disable'
@@ -485,11 +492,13 @@ export function apply(ctx: PluginContext, config: WebRecipeConfig = {}, deps: We
           return failure(error)
         }
       },
-    }),
+      output: { schema: {}, render: renderValue },
+    })),
+
   )
 
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'recipe verify',
       description:
         "re-runs a recipe's read path (an API endpoint is probed directly; a rendered page needs a consumer verifier such as web-page), updates lastVerifiedAt/confidence and reports whether the stored knowledge still holds",
@@ -497,7 +506,7 @@ export function apply(ctx: PluginContext, config: WebRecipeConfig = {}, deps: We
         domain: domainParameter,
         timeoutMs: { type: 'integer', description: `HTTP timeout of the probe (default ${String(verifyTimeoutMs)} ms)` },
       },
-      handler: async (params): Promise<Record<string, unknown>> => {
+      execute: async (params): Promise<Record<string, unknown>> => {
         const domain = str(params.domain)
         if (domain === undefined) return { status: 'invalid', violations: ["domain: a non-empty domain is required"] }
         try {
@@ -512,7 +521,9 @@ export function apply(ctx: PluginContext, config: WebRecipeConfig = {}, deps: We
           return failure(error)
         }
       },
-    }),
+      output: { schema: {}, render: renderValue },
+    })),
+
   )
 }
 

@@ -59,18 +59,13 @@ import { createBrowserUseService, validateBrowserUseConfig } from '../core/brows
 import { createPlaywrightProvider } from '../core/browser-use-playwright/index.ts'
 import { resolveProviderConfig } from '../core/browser-use-playwright/config.ts'
 import * as browserTools from '../plugins/browser-use-tools/index.ts'
-import { validateArgs } from '../definitions/tools.ts'
+import { validateArgs , type ToolDefinition } from '../definitions/tools.ts'
 
 // ---------------------------------------------------------------------------
 // Harness: a fake `tools` service plus a structural cordis context.
 // ---------------------------------------------------------------------------
 
-interface ToolDef {
-  name: string
-  description?: string
-  parameters?: Record<string, unknown>
-  handler: (params: Record<string, unknown>) => unknown
-}
+type ToolDef = ToolDefinition
 
 function harness(services: Record<string, unknown> = {}): {
   ctx: never
@@ -83,7 +78,7 @@ function harness(services: Record<string, unknown> = {}): {
     ...services,
     get: (name: string) => services[name],
     tools: {
-      registerTool: (def: ToolDef): (() => void) => {
+      register: (def: ToolDefinition): (() => void) => {
         tools.set(def.name, def)
         return () => tools.delete(def.name)
       },
@@ -409,7 +404,7 @@ test('contract: the seam is browser-use@1 and the tool is registered under its s
   assert.ok(tool !== undefined, 'the tool is registered under the seam name')
   assert.match(String(tool?.description), /browser-use\.no-browser/)
   assert.match(String(tool?.description), /stale/)
-  const body = await tool?.handler({ action: 'not-an-action' })
+  const body = await tool?.execute({ action: 'not-an-action' })
   assert.equal(toolReason(body), 'browser-use.not-implemented')
   unload()
 })
@@ -497,7 +492,7 @@ test('no browser: the typed no-browser error reaches the caller AND the tool bod
 
   const { ctx, tools } = harness({ 'browser-use': service })
   browserTools.apply(ctx)
-  const body = await tools.get(BROWSER_USE_TOOL_NAME)?.handler({ action: 'open', session: 's1' })
+  const body = await tools.get(BROWSER_USE_TOOL_NAME)?.execute({ action: 'open', session: 's1' })
   assert.equal(toolReason(body), 'browser-use.no-browser')
 })
 
@@ -506,9 +501,9 @@ test('tool: a missing session, an unknown action and an unknown parameter are ty
   const { ctx, tools } = harness({ 'browser-use': service })
   browserTools.apply(ctx)
   const tool = tools.get(BROWSER_USE_TOOL_NAME)
-  assert.equal(toolReason(await tool?.handler({ action: 'snapshot' })), 'browser-use.not-implemented')
-  assert.equal(toolReason(await tool?.handler({ action: 'open', nonsense: 1 })), 'browser-use.not-implemented')
-  assert.equal(toolReason(await tool?.handler({})), 'browser-use.not-implemented')
+  assert.equal(toolReason(await tool?.execute({ action: 'snapshot' })), 'browser-use.not-implemented')
+  await assert.rejects(async () => await tool?.execute({ action: 'open', nonsense: 1 }), /nonsense: unknown parameter/)
+  await assert.rejects(async () => await tool?.execute({}), /action: missing required parameter/)
 })
 
 test('tool: the whole session lifecycle answers through one action-enum tool', async () => {
@@ -516,7 +511,7 @@ test('tool: the whole session lifecycle answers through one action-enum tool', a
   const { ctx, tools } = harness({ 'browser-use': service })
   browserTools.apply(ctx)
   const tool = tools.get(BROWSER_USE_TOOL_NAME)
-  const opened = (await tool?.handler({ action: 'open', session: 's1', url: 'http://127.0.0.1:1/' })) as Record<string, unknown>
+  const opened = (await tool?.execute({ action: 'open', session: 's1', url: 'http://127.0.0.1:1/' })) as Record<string, unknown>
   assert.equal(opened.ok, true)
   assert.equal(opened.id, 's1')
   // F2: the top-level url/title of `open { url }` are the POST-navigation values,
@@ -524,19 +519,19 @@ test('tool: the whole session lifecycle answers through one action-enum tool', a
   assert.equal(opened.url, 'http://127.0.0.1:1/')
   assert.equal(opened.title, 'Fixture page')
   assert.equal((opened.navigated as Record<string, unknown> | undefined)?.httpStatus, 200)
-  const snapshot = (await tool?.handler({ action: 'snapshot', session: 's1' })) as { ok: boolean; nodes: { ref: string; tag: string }[] }
+  const snapshot = (await tool?.execute({ action: 'snapshot', session: 's1' })) as { ok: boolean; nodes: { ref: string; tag: string }[] }
   assert.equal(snapshot.ok, true)
   assert.ok(snapshot.nodes.length > 0)
-  const acted = (await tool?.handler({ action: 'act', session: 's1', kind: 'click', ref: snapshot.nodes[2]?.ref })) as Record<string, unknown>
+  const acted = (await tool?.execute({ action: 'act', session: 's1', kind: 'click', ref: snapshot.nodes[2]?.ref })) as Record<string, unknown>
   assert.equal(acted.ok, true)
   assert.equal(acted.ref, snapshot.nodes[2]?.ref)
-  const extracted = (await tool?.handler({ action: 'extract', session: 's1', mode: 'text' })) as Record<string, unknown>
+  const extracted = (await tool?.execute({ action: 'extract', session: 's1', mode: 'text' })) as Record<string, unknown>
   assert.equal(extracted.ok, true)
   assert.equal(extracted.text, 'Fixture page')
-  const sessions = (await tool?.handler({ action: 'sessions' })) as { ok: boolean; sessions: unknown[] }
+  const sessions = (await tool?.execute({ action: 'sessions' })) as { ok: boolean; sessions: unknown[] }
   assert.equal(sessions.ok, true)
   assert.equal(sessions.sessions.length, 1)
-  const closed = (await tool?.handler({ action: 'close', session: 's1' })) as Record<string, unknown>
+  const closed = (await tool?.execute({ action: 'close', session: 's1' })) as Record<string, unknown>
   assert.equal(closed.ok, true)
   assert.equal(closed.live, false)
 })
@@ -739,7 +734,7 @@ test('schema: the tool publishes the FULL per-action contract (names, types, req
   const { ctx, tools, unload } = harness({ 'browser-use': service })
   browserTools.apply(ctx)
   const tool = tools.get(BROWSER_USE_TOOL_NAME)
-  const body = (await tool?.handler({ action: 'schema' })) as {
+  const body = (await tool?.execute({ action: 'schema' })) as {
     ok?: boolean
     durationUnits?: string
     aliasPolicy?: string
@@ -761,42 +756,43 @@ test('schema: the tool publishes the FULL per-action contract (names, types, req
   assert.equal(byAction.get('open')?.aliases.storageStateFile, 'stateFile')
   assert.equal(byAction.get('open')?.aliases.storageState, 'stateFile')
   // The schema cannot drift from the parameters the tools provider publishes.
-  assert.equal((tool?.parameters?.value as { type?: string } | undefined)?.type, 'string')
+  assert.equal((tool?.parameters?.properties?.value as { type?: string } | undefined)?.type, 'string')
   // ALIASES ARE PUBLISHED TOO, and that is LOAD-BEARING (measured live, task 2592):
   // the tools surface REJECTS a key that is not in the parameter map
   // (`invalid-params`, naming it) BEFORE the handler runs, so an alias missing
   // from the map can never reach the rewrite. `action: schema` documents the
   // rewrite under `aliases`; the map is what makes it reachable.
-  assert.equal((tool?.parameters?.storageStateFile as { type?: string } | undefined)?.type, 'string')
+  assert.equal((tool?.parameters?.properties?.storageStateFile as { type?: string } | undefined)?.type, 'string')
   for (const entry of actions) {
     for (const alias of Object.keys(entry.aliases)) {
       assert.ok(
-        tool?.parameters?.[alias] !== undefined,
+        tool?.parameters?.properties?.[alias] !== undefined,
         `alias '${alias}' of '${entry.action}' is declared in the published parameter map`,
       )
     }
   }
-  const one = (await tool?.handler({ action: 'schema', schemaFor: 'wait' })) as { actions?: Array<{ action: string }> }
+  const one = (await tool?.execute({ action: 'schema', schemaFor: 'wait' })) as { actions?: Array<{ action: string }> }
   assert.deepEqual(one.actions?.map((entry) => entry.action), ['wait'])
-  assert.equal(toolReason(await tool?.handler({ action: 'schema', schemaFor: 'nope' })), 'browser-use.not-implemented')
+  assert.equal(toolReason(await tool?.execute({ action: 'schema', schemaFor: 'nope' })), 'browser-use.not-implemented')
   unload()
 })
 
 test('aliases: the tools SURFACE accepts every alias (an undeclared key is rejected before the handler runs)', async () => {
-  const { ctx, tools, unload } = harness({})
+  const { service, acts, waits, opens } = spyService()
+  const { ctx, tools, unload } = harness({ 'browser-use': service })
   browserTools.apply(ctx)
   const tool = tools.get(BROWSER_USE_TOOL_NAME)
-  const spec = tool?.parameters as never
-  assert.deepEqual(validateArgs(spec, { action: 'wait', session: 's1', milliseconds: 150 }), [], '`milliseconds` passes the surface')
-  assert.deepEqual(validateArgs(spec, { action: 'act', session: 's1', kind: 'fill', text: 'x' }), [], '`text` passes the surface')
-  assert.deepEqual(validateArgs(spec, { action: 'open', session: 's1', storageStateFile: '/tmp/x.json' }), [], '`storageStateFile` passes the surface')
-  assert.deepEqual(validateArgs(spec, { action: 'open', session: 's1', storageState: '/tmp/x.json' }), [], '`storageState` passes the surface')
-  assert.deepEqual(validateArgs(spec, { action: 'navigate', session: 's1', url: 'https://x.test/', timeout: 1000 }), [], '`timeout` passes the surface')
-  const typos = validateArgs(spec, { action: 'act', session: 's1', kind: 'click', textt: 'typo' })
-    assert.equal(typos.length, 1, 'a genuine typo is still rejected BY THE SURFACE')
-    assert.ok(typos[0]?.startsWith('textt: unknown parameter'), typos[0])
-    // The accepted keys travel WITH the violation: no second roundtrip to learn them.
-    assert.ok(typos[0]?.includes('accepted here:') && typos[0]?.includes('value') && typos[0]?.includes('ref'), typos[0])
+  // every alias passes the surface and reaches the seam
+  await tool?.execute({ action: 'wait', session: 's1', milliseconds: 150 })
+  assert.equal(waits[0]?.ms, 150, '`milliseconds` passes the surface')
+  await tool?.execute({ action: 'act', session: 's1', kind: 'fill', text: 'x' })
+  assert.equal(acts[0]?.value, 'x', '`text` passes the surface')
+  await tool?.execute({ action: 'open', session: 's1', storageStateFile: '/tmp/x.json' })
+  assert.equal(opens[0]?.storageStateFile, '/tmp/x.json', '`storageStateFile` passes the surface')
+  await tool?.execute({ action: 'open', session: 's1', storageState: '/tmp/x.json' })
+  assert.equal(opens[1]?.storageStateFile, '/tmp/x.json', '`storageState` passes the surface')
+  // a genuine typo is rejected BY THE SURFACE before the handler runs
+  await assert.rejects(async () => await tool?.execute({ action: 'act', session: 's1', kind: 'click', textt: 'typo' }), /textt: unknown parameter/)
   unload()
 })
 
@@ -848,17 +844,17 @@ test('aliases: `text` on act reaches the seam as `value`, `milliseconds` on wait
   const { ctx, tools, unload } = harness({ 'browser-use': service })
   browserTools.apply(ctx)
   const tool = tools.get(BROWSER_USE_TOOL_NAME)
-  await tool?.handler({ action: 'open', session: 's1', storageStateFile: '/tmp/alias-state.json' })
+  await tool?.execute({ action: 'open', session: 's1', storageStateFile: '/tmp/alias-state.json' })
   assert.equal(opens[0]?.storageStateFile, '/tmp/alias-state.json', '`storageStateFile` is the `stateFile` of the open spec')
-  await tool?.handler({ action: 'act', session: 's1', kind: 'type', ref: 'e1', text: 'Ada' })
+  await tool?.execute({ action: 'act', session: 's1', kind: 'type', ref: 'e1', text: 'Ada' })
   assert.equal(acts[0]?.value, 'Ada', '`text` is the `value` of act')
-  await tool?.handler({ action: 'act', session: 's1', kind: 'type', ref: 'e1', value: 'canonical', text: 'ignored' })
+  await tool?.execute({ action: 'act', session: 's1', kind: 'type', ref: 'e1', value: 'canonical', text: 'ignored' })
   assert.equal(acts[1]?.value, 'canonical', 'the canonical name WINS when both are given')
-  await tool?.handler({ action: 'wait', session: 's1', milliseconds: 250 })
+  await tool?.execute({ action: 'wait', session: 's1', milliseconds: 250 })
   assert.equal(waits[0]?.ms, 250, '`milliseconds` is the wait duration')
-  await tool?.handler({ action: 'wait', session: 's1', ms: 99, milliseconds: 250 })
+  await tool?.execute({ action: 'wait', session: 's1', ms: 99, milliseconds: 250 })
   assert.equal(waits[1]?.ms, 99, 'the canonical name WINS when both are given')
-  await tool?.handler({ action: 'act', session: 's1', kind: 'click', ref: 'e1', timeout: 1500 })
+  await tool?.execute({ action: 'act', session: 's1', kind: 'click', ref: 'e1', timeout: 1500 })
   assert.equal(acts[2]?.timeoutMs, 1500, '`timeout` is the ms budget of act')
   unload()
 })
@@ -868,15 +864,13 @@ test('aliases: a genuinely unknown parameter is a typed answer that LISTS the ac
   const { ctx, tools, unload } = harness({ 'browser-use': service })
   browserTools.apply(ctx)
   const tool = tools.get(BROWSER_USE_TOOL_NAME)
-  const body = await tool?.handler({ action: 'act', session: 's1', kind: 'click', textt: 'typo' })
-  assert.equal(toolReason(body), 'browser-use.not-implemented')
-  const message = String((body as { error?: { message?: string } }).error?.message)
-  assert.match(message, /unknown parameter\(s\) for 'action: act': textt/)
-  assert.match(message, /accepted: .*value/)
-  assert.match(message, /aliases: .*text/)
-  const details = (body as { error?: { details?: { accepted?: string[]; aliases?: Record<string, string> } } }).error?.details
-  assert.ok((details?.accepted ?? []).includes('value'), 'the accepted keys are in the details an agent reads')
-  assert.equal(details?.aliases?.text, 'value')
+  await assert.rejects(async () => await tool?.execute({ action: 'act', session: 's1', kind: 'click', textt: 'typo' }), (err: unknown) => {
+    const message = err instanceof Error ? err.message : String(err)
+    assert.match(message, /textt: unknown parameter/)
+    assert.match(message, /accepted here:.*value/)
+    assert.match(message, /accepted here:.*text/)
+    return true
+  })
   unload()
 })
 
@@ -1237,7 +1231,7 @@ test('tool: frames/mouse/challenge are published (required params, aliases) and 
   const { ctx, tools, unload } = harness({ 'browser-use': service })
   browserTools.apply(ctx)
   const tool = tools.get(BROWSER_USE_TOOL_NAME)
-  const body = (await tool?.handler({ action: 'schema' })) as {
+  const body = (await tool?.execute({ action: 'schema' })) as {
     ok?: boolean
     actions?: Array<{ action: string; parameters: Record<string, unknown>; required: string[]; aliases: Record<string, string> }>
   }
@@ -1257,20 +1251,12 @@ test('tool: frames/mouse/challenge are published (required params, aliases) and 
   assert.ok(byAction.get('mouse')?.parameters.steps !== undefined)
   assert.ok(byAction.get('frames')?.parameters.frameId !== undefined)
   // The published tool surface accepts the canonical AND the aliased spellings.
-  const spec = tool?.parameters as never
-  assert.deepEqual(validateArgs(spec, { action: 'frames', session: 's1' }), [], '`frames` needs only a session')
-  assert.deepEqual(
-    validateArgs(spec, { action: 'frames', session: 's1', frameAction: 'select', frameUrl: 'https://widget.test/x' }),
-    [],
-    '`frameAction: select` + `frameUrl`',
-  )
-  assert.deepEqual(
-    validateArgs(spec, { action: 'frames', session: 's1', frameAction: 'select', url: 'https://widget.test/x', index: 0, name: 'w' }),
-    [],
-    'the frames aliases (`url`/`index`/`name`) pass the surface',
-  )
-  assert.deepEqual(validateArgs(spec, { action: 'mouse', session: 's1', mouseAction: 'click', x: 100, y: 220 }), [], 'coordinate mouse')
-  assert.ok(validateArgs(spec, { action: 'mouse', session: 's1', x: 1 }).length > 0 === false, 'x without y stays a runtime check')
+  await tool?.execute({ action: 'frames', session: 's1' })
+  await tool?.execute({ action: 'frames', session: 's1', frameAction: 'select', frameUrl: 'https://widget.test/x' })
+  await tool?.execute({ action: 'frames', session: 's1', frameAction: 'select', url: 'https://widget.test/x', index: 0, name: 'w' })
+  await tool?.execute({ action: 'mouse', session: 's1', mouseAction: 'click', x: 100, y: 220 })
+  // x without y stays a runtime check (the schema accepts x alone)
+  assert.equal(toolReason(await tool?.execute({ action: 'mouse', session: 's1', x: 1 })), 'browser-use.not-implemented')
   unload()
 })
 
@@ -1281,17 +1267,17 @@ test('tool: a `frames` select WITHOUT a target is invalid-input, WITH an alias t
   const tool = tools.get(BROWSER_USE_TOOL_NAME)
   await service.open({ session: 'tf' })
   assert.equal(
-    toolReason(await tool?.handler({ action: 'frames', session: 'tf', frameAction: 'select' })),
+    toolReason(await tool?.execute({ action: 'frames', session: 'tf', frameAction: 'select' })),
     'browser-use.invalid-input',
     'a select with no frame target is refused, never silently the main frame',
   )
   assert.equal(
-    toolReason(await tool?.handler({ action: 'frames', session: 'tf', frameAction: 'select', url: 'https://widget.test/x' })),
+    toolReason(await tool?.execute({ action: 'frames', session: 'tf', frameAction: 'select', url: 'https://widget.test/x' })),
     'browser-use.not-implemented',
     'the `url` alias RESOLVED into a frame target and the call was forwarded (the fake provider has no frames)',
   )
   assert.equal(
-    toolReason(await tool?.handler({ action: 'mouse', session: 'tf', x: 10, y: 20 })),
+    toolReason(await tool?.execute({ action: 'mouse', session: 'tf', x: 10, y: 20 })),
     'browser-use.not-implemented',
     'the coordinate mouse is forwarded too',
   )
@@ -1346,4 +1332,82 @@ test('host: frames/mouse FORWARD to a provider that implements them (session + v
   assert.equal(seen[1]?.request.mouseAction, 'click', `the mouse action defaults are applied before forwarding: ${JSON.stringify(seen[1])}`)
   assert.equal(seen[1]?.request.x, 12)
   await service.close('fw')
+})
+// ---------------------------------------------------------------------------
+// BACKEND SELECTOR (the browser is a transparent compose service, like himalaya
+// in the toolbox): `backend` decides WHERE the browser runs (local | container |
+// ssh | ssh+container | http), the plugin stays location-agnostic, and every
+// non-local backend reaches the browser through the `general-service@1` seam.
+// The OLD config shape keeps working unchanged (backwards compatible).
+// ---------------------------------------------------------------------------
+
+test('backend: omitted is inferred from the config (browserService -> container, wsEndpoint -> http, else local)', () => {
+  // The DEPLOYED shape: browserService present, no backend -> container.
+  const deployed = resolveProviderConfig({ browserService: { endpoint: 'http://browser:9222', image: 'local/workbench-browser:latest' } })
+  assert.equal(deployed.backend, 'container')
+  assert.equal(deployed.wsEndpoint, 'http://browser:9222')
+  assert.deepEqual(deployed.browserService?.generalService, { type: 'container', params: {} })
+  // A bare wsEndpoint -> http (plain CDP attach).
+  const attached = resolveProviderConfig({ wsEndpoint: 'http://remote:9222' })
+  assert.equal(attached.backend, 'http')
+  assert.equal(attached.wsEndpoint, 'http://remote:9222')
+  // Nothing -> local.
+  const local = resolveProviderConfig({ executablePath: '/usr/bin/chromium' })
+  assert.equal(local.backend, 'local')
+  assert.equal(local.wsEndpoint, undefined)
+  assert.equal(local.browserService, undefined)
+})
+
+test('backend: the explicit selector wins and the seam instance is built FROM the backend', () => {
+  const ssh = resolveProviderConfig({
+    backend: 'ssh',
+    wsEndpoint: 'http://remote-host:9222',
+    ssh: { host: 'remote-host', user: 'agent', keyName: 'workbench' },
+  })
+  assert.equal(ssh.backend, 'ssh')
+  assert.deepEqual(ssh.browserService?.generalService, {
+    type: 'ssh',
+    params: { host: 'remote-host', user: 'agent', keyName: 'workbench' },
+  })
+  const remote = resolveProviderConfig({
+    backend: 'ssh+container',
+    browserService: { endpoint: 'http://remote-host:9222' },
+    ssh: { host: 'remote-host' },
+    container: { engine: 'docker-compose', compose: { project_dir: '/srv', service: 'browser' } },
+  })
+  assert.equal(remote.backend, 'ssh+container')
+  assert.deepEqual(remote.browserService?.generalService, {
+    type: 'ssh+container',
+    params: {
+      ssh: { host: 'remote-host' },
+      container: { engine: 'docker-compose', compose: { project_dir: '/srv', service: 'browser' } },
+    },
+  })
+  const http = resolveProviderConfig({
+    backend: 'http',
+    wsEndpoint: 'http://browser.example:9222',
+    http: { baseUrl: 'http://browser.example:9222' },
+  })
+  assert.equal(http.backend, 'http')
+  assert.deepEqual(http.browserService?.generalService, { type: 'http', params: { baseUrl: 'http://browser.example:9222' } })
+})
+
+test('backend: an explicit browserService.generalService WINS over the backend default', () => {
+  const resolved = resolveProviderConfig({
+    backend: 'ssh',
+    browserService: {
+      endpoint: 'http://remote-host:9222',
+      generalService: { type: 'container', params: { container: 'workbench-browser' } },
+    },
+  })
+  assert.equal(resolved.backend, 'ssh')
+  assert.deepEqual(resolved.browserService?.generalService, { type: 'container', params: { container: 'workbench-browser' } })
+})
+
+test('backend: invalid selectors and contradictions are LOUD invalid-config', () => {
+  assert.throws(() => resolveProviderConfig({ backend: 'carrier-pigeon' } as never), /backend.*one of/)
+  assert.throws(() => resolveProviderConfig({ backend: 'container' }), /needs an endpoint/)
+  assert.throws(() => resolveProviderConfig({ backend: 'ssh+container', wsEndpoint: 'http://x:9222' }), /ssh.*container.*params/)
+  assert.throws(() => resolveProviderConfig({ backend: 'local', wsEndpoint: 'http://x:9222' }), /cannot be combined/)
+  assert.throws(() => resolveProviderConfig({ backend: 'local', browserService: { endpoint: 'http://x:9222' } }), /cannot be combined/)
 })

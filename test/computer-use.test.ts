@@ -50,17 +50,14 @@ import { createComputerUseService, validateComputerUseConfig } from '../core/com
 import { X11_TOOLS, X11Provider, createX11Provider, spawnExec, validateX11Config } from '../core/computer-use-x11/index.ts'
 import type { ExecRequest, ExecResult, X11Runner } from '../core/computer-use-x11/index.ts'
 import * as computerTools from '../plugins/computer-use-tools/index.ts'
+import type { ToolDefinition } from '../definitions/tools.ts'
+import { ToolArgsError } from '../definitions/tools.ts'
 
 // ---------------------------------------------------------------------------
 // Harness: a fake `tools` service plus a structural cordis context.
 // ---------------------------------------------------------------------------
 
-interface ToolDef {
-  name: string
-  description?: string
-  parameters?: Record<string, unknown>
-  handler: (params: Record<string, unknown>) => unknown
-}
+type ToolDef = ToolDefinition
 
 function harness(services: Record<string, unknown> = {}): {
   ctx: never
@@ -73,7 +70,7 @@ function harness(services: Record<string, unknown> = {}): {
     ...services,
     get: (name: string) => services[name],
     tools: {
-      registerTool: (def: ToolDef): (() => void) => {
+      register: (def: ToolDefinition): (() => void) => {
         tools.set(def.name, def)
         return () => tools.delete(def.name)
       },
@@ -658,8 +655,8 @@ test('tools: the consumer registers ONE action-enum tool named `computer`', () =
   const def = toolOf(built.ctx)
   assert.equal(def.name, 'computer')
   assert.match(String(def.description), /screenshot/)
-  const params = def.parameters as Record<string, { type: string; required?: boolean }>
-  assert.equal(params.action.required, true)
+  const params = def.parameters.properties as Record<string, { type: string; required?: boolean }>
+  assert.equal(def.parameters.required?.includes('action'), true)
   assert.equal(params.screenshot, undefined, 'the actions are ONE enum parameter, not one parameter per action')
   built.unload()
   assert.equal(built.tools.size, 0, 'the tool must be released by the disposer')
@@ -671,31 +668,31 @@ test('tools: every action routes to the capability and answers ok:true', async (
   harnessServices = { tools: built.tools }
   const def = toolOf(built.ctx)
 
-  const providers = (await def.handler({ action: 'providers' })) as { ok: boolean; providers: unknown[] }
+  const providers = (await def.execute({ action: 'providers' })) as { ok: boolean; providers: unknown[] }
   assert.equal(providers.ok, true)
   assert.equal(providers.providers.length, 1)
 
-  assert.equal(((await def.handler({ action: 'open' })) as { ok: boolean }).ok, true)
-  assert.equal(((await def.handler({ action: 'screen' })) as { width: number }).width, 1024)
+  assert.equal(((await def.execute({ action: 'open' })) as { ok: boolean }).ok, true)
+  assert.equal(((await def.execute({ action: 'screen' })) as { width: number }).width, 1024)
 
-  const shot = (await def.handler({ action: 'screenshot', format: 'jpeg', regionWidth: 100, regionHeight: 50, regionX: 5, regionY: 6 })) as { path: string; bytes: number }
+  const shot = (await def.execute({ action: 'screenshot', format: 'jpeg', regionWidth: 100, regionHeight: 50, regionX: 5, regionY: 6 })) as { path: string; bytes: number }
   assert.equal(shot.path, '/tmp/tool.png')
   assert.equal(shot.bytes, 42)
 
-  assert.equal(((await def.handler({ action: 'act', kind: 'move', x: 3, y: 4 })) as { action: string }).action, 'mouse.move')
-  assert.equal(((await def.handler({ action: 'act', kind: 'click', x: 3, y: 4, clicks: 2 })) as { action: string }).action, 'mouse.click')
-  assert.equal(((await def.handler({ action: 'act', kind: 'drag', fromX: 0, fromY: 0, toX: 9, toY: 9 })) as { action: string }).action, 'mouse.drag')
-  assert.equal(((await def.handler({ action: 'act', kind: 'scroll', direction: 'down' })) as { action: string }).action, 'mouse.scroll')
-  assert.equal(((await def.handler({ action: 'act', kind: 'type', text: 'hi' })) as { action: string }).action, 'keyboard.type')
-  assert.equal(((await def.handler({ action: 'act', kind: 'key', chord: 'Return' })) as { action: string }).action, 'keyboard.key')
-  assert.equal(((await def.handler({ action: 'act', kind: 'copy', text: 'x' })) as { action: string }).action, 'clipboard.read')
-  assert.equal(((await def.handler({ action: 'act', kind: 'paste' })) as { action: string }).action, 'clipboard.read')
+  assert.equal(((await def.execute({ action: 'act', kind: 'move', x: 3, y: 4 })) as { action: string }).action, 'mouse.move')
+  assert.equal(((await def.execute({ action: 'act', kind: 'click', x: 3, y: 4, clicks: 2 })) as { action: string }).action, 'mouse.click')
+  assert.equal(((await def.execute({ action: 'act', kind: 'drag', fromX: 0, fromY: 0, toX: 9, toY: 9 })) as { action: string }).action, 'mouse.drag')
+  assert.equal(((await def.execute({ action: 'act', kind: 'scroll', direction: 'down' })) as { action: string }).action, 'mouse.scroll')
+  assert.equal(((await def.execute({ action: 'act', kind: 'type', text: 'hi' })) as { action: string }).action, 'keyboard.type')
+  assert.equal(((await def.execute({ action: 'act', kind: 'key', chord: 'Return' })) as { action: string }).action, 'keyboard.key')
+  assert.equal(((await def.execute({ action: 'act', kind: 'copy', text: 'x' })) as { action: string }).action, 'clipboard.read')
+  assert.equal(((await def.execute({ action: 'act', kind: 'paste' })) as { action: string }).action, 'clipboard.read')
 
-  assert.equal(((await def.handler({ action: 'window', windowAction: 'list' })) as { action: string }).action, 'list')
-  assert.equal(((await def.handler({ action: 'window', windowAction: 'focus', title: 'xterm' })) as { action: string }).action, 'focus')
-  assert.equal(((await def.handler({ action: 'window', windowAction: 'launch', command: 'xterm' })) as { action: string }).action, 'launch')
-  assert.equal(((await def.handler({ action: 'wait', ms: 10 })) as { action: string }).action, 'wait')
-  assert.equal(((await def.handler({ action: 'close', title: 'xterm' })) as { action: string }).action, 'close')
+  assert.equal(((await def.execute({ action: 'window', windowAction: 'list' })) as { action: string }).action, 'list')
+  assert.equal(((await def.execute({ action: 'window', windowAction: 'focus', title: 'xterm' })) as { action: string }).action, 'focus')
+  assert.equal(((await def.execute({ action: 'window', windowAction: 'launch', command: 'xterm' })) as { action: string }).action, 'launch')
+  assert.equal(((await def.execute({ action: 'wait', ms: 10 })) as { action: string }).action, 'wait')
+  assert.equal(((await def.execute({ action: 'close', title: 'xterm' })) as { action: string }).action, 'close')
 
   assert.deepEqual(fake.calls, [
     'providers',
@@ -725,21 +722,27 @@ test('tools: a bad parameter is a TYPED body, never a thrown generic failure', a
   harnessServices = { tools: built.tools }
   const def = toolOf(built.ctx)
 
-  const cases: Array<[Record<string, unknown>, string]> = [
-    [{}, 'action'],
+  // SCHEMA-level violations are rejected BEFORE the handler (a typed ToolArgsError).
+  const schemaRejects: Array<[Record<string, unknown>, RegExp]> = [
+    [{}, /action: missing required parameter/],
+    [{ action: 'window', windowAction: 'list', windowAction2: 1 }, /windowAction2: unknown parameter/],
+  ]
+  for (const [params, pattern] of schemaRejects) {
+    await assert.rejects(async () => await def.execute(params), pattern, `${JSON.stringify(params)} must be rejected by the surface`)
+  }
+  // CONDITIONAL requirements (per action kind) are runtime checks of the handler:
+  // a typed body, never a thrown generic failure.
+  const handlerCases: Array<[Record<string, unknown>, string]> = [
     [{ action: 'teleport' }, 'action'],
     [{ action: 'act' }, 'kind'],
     [{ action: 'act', kind: 'type' }, 'text'],
     [{ action: 'act', kind: 'key' }, 'chord'],
     [{ action: 'act', kind: 'move', x: 1 }, 'y'],
-    [{ action: 'window', windowAction: 'list', windowAction2: 1 }, 'windowAction'],
     [{ action: 'wait' }, 'ms'],
     [{ action: 'close' }, 'title'],
-    [{ action: 'screenshot', x: 'nope', action2: 1 }, 'screenshot'],
   ]
-  for (const [params, expected] of cases) {
-    const answer = (await def.handler(params)) as { ok: boolean; error?: { reason: string; details?: { field?: string } } }
-    if (expected === 'screenshot') continue
+  for (const [params, expected] of handlerCases) {
+    const answer = (await def.execute(params)) as { ok: boolean; error?: { reason: string; details?: { field?: string } } }
     assert.equal(answer.ok, false, `${JSON.stringify(params)} must fail`)
     assert.equal(answer.error?.reason, 'computer-use.invalid-input')
     assert.equal(answer.error?.details?.field, expected, `${JSON.stringify(params)} must name the '${expected}' field`)
@@ -751,7 +754,7 @@ test('tools: a missing capability answers the typed missing-service body naming 
   const built = harness({})
   harnessServices = { tools: built.tools }
   const def = toolOf(built.ctx)
-  const answer = (await def.handler({ action: 'screen' })) as { ok: boolean; error?: { reason: string; hint?: string } }
+  const answer = (await def.execute({ action: 'screen' })) as { ok: boolean; error?: { reason: string; hint?: string } }
   assert.equal(answer.ok, false)
   assert.equal(answer.error?.reason, 'computer-use.missing-service')
   assert.match(String(answer.error?.hint), /computer-use/)
@@ -768,7 +771,7 @@ test('tools: a capability failure keeps its reason, code and hint', async () => 
   const built = harness({ 'computer-use': broken })
   harnessServices = { tools: built.tools }
   const def = toolOf(built.ctx)
-  const answer = (await def.handler({ action: 'screenshot' })) as { ok: boolean; error?: { reason: string; code: string; hint: string; stage: string } }
+  const answer = (await def.execute({ action: 'screenshot' })) as { ok: boolean; error?: { reason: string; code: string; hint: string; stage: string } }
   assert.equal(answer.ok, false)
   assert.equal(answer.error?.reason, 'computer-use.no-display')
   assert.equal(answer.error?.code, 'unreachable')

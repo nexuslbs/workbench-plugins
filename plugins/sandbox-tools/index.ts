@@ -27,6 +27,7 @@
 import { SandboxError, describeDecision, requireSandbox, sandboxOf } from '../../definitions/sandbox.ts'
 import type { SandboxRequest, SandboxService } from '../../definitions/sandbox.ts'
 import type { ParameterSchemaSpec } from '../../definitions/tools.ts'
+import { defineTool, renderValue, type ToolDefinition } from '../../definitions/tools.ts'
 
 export const name = 'sandbox-tools'
 
@@ -37,12 +38,7 @@ type ToolParameter = ParameterSchemaSpec[string]
 type ToolParameters = ParameterSchemaSpec
 
 interface ToolsLike {
-  registerTool(def: {
-    name: string
-    description?: string
-    parameters?: ToolParameters
-    handler: (params: Record<string, unknown>) => unknown | Promise<unknown>
-  }): () => void
+  register(def: ToolDefinition): () => void
 }
 
 interface PluginContext {
@@ -176,7 +172,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
   const reportPolicy = config.reportPolicy !== false
 
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'sandbox check',
       description:
         'Decides ONE sandbox request and returns the RAW decision (allow-with-constraints or deny with a machine-readable reason) plus the active policy: `resource` is fs | subprocess | jobs | computer-use | browser-use or a custom name, and the request names what the call wants (path, argv, cwd, envNames, network, bytes, wallTimeMs). It never touches the host: it is the decision tool other capabilities call',
@@ -194,7 +190,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
         approvalGranted: { type: 'boolean', description: 'true when the caller already holds an approval for this call' },
         metadata: { type: 'object', description: 'free-form context, echoed back in the decision' },
       },
-      handler: async (params) => {
+      execute: async (params) => {
         const request = requestFromParams(params)
         const approvalGranted = optionalBoolean(params, 'approvalGranted')
         const decision = await service().check(request, approvalGranted === undefined ? {} : { approvalGranted })
@@ -207,24 +203,28 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
           ...(reportPolicy ? { policy: service().activePolicy() } : {}),
         }
       },
-    }),
+      output: { schema: {}, render: renderValue },
+    })),
+
   )
 
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'sandbox policy',
       description:
         'Reports the ACTIVE sandbox policy of the loaded sandbox@1 provider: the source, the fail-open/closed default, one constraint view per configured resource (mode, read/write roots, env allow-list, network, limits, approval) and - for an enforcing provider - the MEASURED mechanism matrix with the gaps it cannot enforce',
       parameters: {},
-      handler: () => {
+      execute: () => {
         const active = service().activePolicy()
         return { contract: service().contract, provider: service().provider, policy: active }
       },
-    }),
+      output: { schema: {}, render: renderValue },
+    })),
+
   )
 
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'sandbox run',
       description:
         'Runs a command THROUGH an enforcing sandbox@1 provider: it decides the request first (a deny runs NOTHING and returns the decision) and then starts the command under the mechanisms the provider really has (filesystem/network namespaces where available, rlimits, a filtered env, a pinned cwd, a deadline that kills the process group, an output cap). Only an enforcing provider implements `exec`: a declarative policy provider answers with sandbox.exec-unavailable',
@@ -239,7 +239,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
         maxOutputBytes: { type: 'integer', description: 'inline byte cap the caller wants (the policy cap still wins)' },
         approvalGranted: { type: 'boolean', description: 'true when the caller already holds an approval for this call' },
       },
-      handler: async (params) => {
+      execute: async (params) => {
         const active = service()
         if (typeof active.exec !== 'function') {
           throw new SandboxError(
@@ -260,7 +260,9 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
           ...(optionalBoolean(params, 'approvalGranted') !== undefined ? { approvalGranted: optionalBoolean(params, 'approvalGranted')! } : {}),
         })
       },
-    }),
+      output: { schema: {}, render: renderValue },
+    })),
+
   )
 }
 

@@ -42,6 +42,7 @@ import type {
   WindowRequest,
 } from '../../definitions/computer-use.ts'
 import type { ParameterSchemaSpec } from '../../definitions/tools.ts'
+import { defineTool, renderValue, type ToolDefinition } from '../../definitions/tools.ts'
 
 export const name = 'computer-use-tools'
 
@@ -49,12 +50,7 @@ export const name = 'computer-use-tools'
 type ToolParameters = ParameterSchemaSpec
 
 interface ToolsLike {
-  registerTool(def: {
-    name: string
-    description?: string
-    parameters?: ToolParameters
-    handler: (params: Record<string, unknown>) => unknown | Promise<unknown>
-  }): () => void
+  register(def: ToolDefinition): () => void
 }
 
 interface PluginContext {
@@ -424,7 +420,7 @@ function waitRequest(params: Record<string, unknown>): WaitRequest {
 
 export function apply(ctx: PluginContext): void {
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'computer',
       description:
         'Drives a GUI desktop through the configured computer-use@1 driver: `action: providers` lists the drivers and the selection, ' +
@@ -484,7 +480,7 @@ export function apply(ctx: PluginContext): void {
         timeoutMs: { type: 'integer', description: 'the bound of the call in ms (also the bound of a launch/window wait)' },
         maxImageBytes: { type: 'integer', description: "'screenshot': the byte cap of the written file (default from the config)" },
       },
-      handler: async (params) => {
+      execute: async (params) => {
         const service = serviceOf(ctx)
         if (!isService(service)) return service
         // EVERYTHING runs inside the try: a parameter violation is a TYPED answer,
@@ -536,7 +532,9 @@ export function apply(ctx: PluginContext): void {
           return failureBody(error)
         }
       },
-    }),
+      output: { schema: {}, render: renderValue },
+    })),
+
   )
 }
 

@@ -15,6 +15,8 @@
 // no phone number appears anywhere in the executable code here: the number is
 // always a LABEL the operator configured, forwarded verbatim.
 
+import { defineTool, renderValue, type ToolDefinition } from '../../definitions/tools.ts'
+
 /** One declared tool parameter (the DSH-style property map the core publishes). */
 interface ToolParameter {
   type: 'string' | 'number' | 'integer' | 'boolean' | 'array' | 'object' | 'json'
@@ -77,12 +79,7 @@ interface SmsLike {
 }
 
 interface ToolsLike {
-  registerTool(def: {
-    name: string
-    description?: string
-    parameters?: ToolParameters
-    handler: (params: Record<string, unknown>) => unknown | Promise<unknown>
-  }): () => void
+  register(def: ToolDefinition): () => void
 }
 
 interface PluginContext {
@@ -151,7 +148,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
   // which of them are actually usable. The tool NEVER keeps a roster of its own:
   // it forwards the capability, so the operator's config decides.
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'sms numbers',
       description:
         'lists the configured SMS numbers by label (which one is the default, and whether each has usable credentials); never a secret',
@@ -162,7 +159,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
           enum: ['labels', 'full'],
         },
       },
-      handler: async (params) => {
+      execute: async (params) => {
         const numbers = await ctx.sms.numbers()
         const full = params.format === 'full'
         return {
@@ -171,12 +168,13 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
           numbers: full ? numbers : numbers.map((number) => number.label),
         }
       },
-    }),
+      output: { schema: {}, render: renderValue },
+    })),
   )
 
   // 2) The last N inbound messages of one number (default number when omitted).
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'sms list',
       description:
         'lists the newest inbound SMS of a number: optional number label (default number when omitted), limit, since, from and unreadOnly',
@@ -190,7 +188,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
         from: { type: 'string', description: 'only messages whose sender contains this (case-insensitive)' },
         unreadOnly: { type: 'boolean', description: 'only messages the backend reports as not read' },
       },
-      handler: async (params) => {
+      execute: async (params) => {
         const options: Record<string, unknown> = { limit: clampLimit(Number(params.limit ?? defaultListLimit), maxListLimit) }
         const since = str(params.since)
         if (since !== undefined) options.since = since
@@ -204,31 +202,33 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
           messages: includeBodies ? messages : messages.map((message) => ({ ...message, body: undefined })),
         }
       },
-    }),
+      output: { schema: {}, render: renderValue },
+    })),
   )
 
   // 3) One message, full (bounded) body included.
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'sms get',
       description: 'reads one inbound SMS of a number by id: the full body plus its sender, recipient, date and delivery metadata',
       parameters: {
         id: { type: 'string', description: 'message id, as reported by "sms list"', required: true },
         number: { type: 'string', description: 'number label (default: the configured default number)' },
       },
-      handler: async (params) => {
+      execute: async (params) => {
         const id = required(params.id, 'id')
         const message = await ctx.sms.get(refOf(params), id)
         return { number: labelOf(params), ...message }
       },
-    }),
+      output: { schema: {}, render: renderValue },
+    })),
   )
 
   // 4) The operator's headline use case: the verification code inside an SMS.
   // The extraction rule lives in the Definition (one place, every provider), so
   // this handler only picks the message and forwards the options.
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'sms code',
       description:
         'extracts a verification code from an SMS (a given message id, or the newest message matching query/pattern) and reports which message it came from',
@@ -240,7 +240,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
         occurrences: { type: 'integer', description: 'which code candidate to return when the message carries several (1 = the first, the default)' },
         maxAgeSeconds: { type: 'integer', description: 'ignore messages older than this many seconds' },
       },
-      handler: async (params) => {
+      execute: async (params) => {
         const options: Record<string, unknown> = {}
         const id = str(params.id)
         if (id !== undefined) options.id = id
@@ -260,7 +260,8 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
           body: found.body,
         }
       },
-    }),
+      output: { schema: {}, render: renderValue },
+    })),
   )
 
   // The four tools above ARE the plugin: nothing else to dispose (each

@@ -20,13 +20,9 @@ import { createJobsService } from '../core/jobs-local/index.ts'
 import * as spillTools from '../plugins/spill-tools/index.ts'
 import * as subprocessTools from '../plugins/subprocess-tools/index.ts'
 import * as jobsTools from '../plugins/jobs-tools/index.ts'
+import type { ToolDefinition } from '../definitions/tools.ts'
 
-interface ToolDef {
-  name: string
-  description?: string
-  parameters?: Record<string, unknown>
-  handler: (params: Record<string, unknown>) => unknown
-}
+type ToolDef = ToolDefinition
 
 /**
  * A fake `tools` service plus a structural cordis context: `effect` runs the
@@ -47,7 +43,7 @@ function harness(services: Record<string, unknown> = {}): {
       return value
     },
     tools: {
-      registerTool: (def: ToolDef) => {
+      register: (def: ToolDefinition) => {
         tools.set(def.name, def)
         const disposer = (): void => {
           tools.delete(def.name)
@@ -75,7 +71,7 @@ function harness(services: Record<string, unknown> = {}): {
 async function call(tools: Map<string, ToolDef>, name: string, params: Record<string, unknown> = {}): Promise<unknown> {
   const tool = tools.get(name)
   assert.notEqual(tool, undefined, `tool '${name}' was not registered`)
-  return await tool!.handler(params)
+  return await tool!.execute(params)
 }
 
 function space(): { dir: string; done: () => void } {

@@ -1,30 +1,23 @@
 /**
- * Credentials capability - the CONTRACT (service definition) of `credentials@1`,
- * re-homed into the PUBLIC plugins repository.
+ * Credentials capability - SERVICE DEFINITION in the DSH shape.
  *
- * Placement (operator rule 2026-09-19 + correction telegram thread 2477): the
- * core `nexuslbs/workbench` keeps AT MOST an interface for this capability and
- * the `${cred:...}` resolution path. The provider IMPLEMENTATIONS - the four
- * basic backends in `core/credentials-basic` - live HERE, in the PUBLIC
- * `nexuslbs/workbench-plugins` repo. A provider resolves credential NAMES
- * against the environment / credential store at RUNTIME, so this repository
- * holds no secret VALUE; being public is exactly what breaks the bootstrap
- * chicken-and-egg: the provider plugin is fetchable from a source that needs no
- * credential, and only after it is loaded do the `${cred:...}` sources and
- * plugins become loadable.
+ * The deepseek-harness ships its own credentials service
+ * (`@deepseek-ai/dsh-credentials-local`, registered as `ctx.credentials`), so
+ * this repository does NOT provide a provider backend for it: the file below
+ * carries the CONSUMER contract (the types/schemas a plugin of this repository
+ * relies on) and the structural view of the harness service, exactly like the
+ * other definitions of this repository are cordis-free and structural.
  *
- *   Provider  ->  Definition  <-  Consumer
+ *   Provider (the harness)  ->  Definition  <-  Consumer (a plugin here)
  *
- * - PROVIDERS (implementations) implement {@link CredentialProvider} and
- *   register themselves with the host's `credentials` service.
- * - CONSUMERS (the core `${cred:NAME}` expansion, a UI, any plugin) only ever
- *   call {@link CredentialConsumer}. A consumer never imports a provider; a
- *   provider never imports a consumer.
+ * The harness service resolves credential NAMEs at call time:
  *
- * This repository has NO cordis dependency: the service base and the context
- * slice below are STRUCTURAL, so the file compiles (and the providers work)
- * inside any host that exposes a `ctx.credentials` service with the published
- * shape.
+ *   const resolution = await ctx.credentials.resolve({ name: 'TWILIO_AUTH_TOKEN' })
+ *   // resolution = { value: '...', source: 'file' } | undefined
+ *
+ * There is NO `${cred:NAME}` kernel expansion in the harness: a config value
+ * that names a credential is a NAME and is resolved through `ctx.credentials`
+ * by the plugin that needs it, never by string substitution before `apply`.
  */
 
 /** Name of the service the host injects (`ctx.credentials`). */
@@ -44,85 +37,25 @@ export interface CredentialRef {
   scope?: string
 }
 
-/** A successful resolution: the value plus which provider answered. */
-export interface CredentialResolution {
-  ref: CredentialRef
+/** The credential key the harness record store addresses (`readRecord`). */
+export type CredentialKey = string
+
+/** A successful resolution: the value plus where it came from. */
+export interface ResolvedCredential {
   /** The credential value. Callers must not log, echo or persist it. */
   value: string
-  /** Id of the provider that answered. */
-  provider: string
-  /** Contract the answering provider implements. */
-  contract: string
+  /** Where the value came from (e.g. `file`, `env`, `store`). */
+  source?: string
 }
 
-/**
- * What a provider (implementation) must offer. Everything here is backend
- * agnostic: the definition does not know where a value comes from.
- */
-export interface CredentialProvider {
-  /** Provider id, unique among providers (e.g. `env`, `file`, `vault`). */
-  id: string
-  /** Contract version implemented; must equal {@link CREDENTIALS_VERSION}. */
-  version: number
-  /** Resolves a reference, or returns undefined when this provider cannot answer. */
-  resolve(ref: CredentialRef): string | undefined | Promise<string | undefined>
-  /** Optional: credential names this provider can answer (names only, no values). */
-  list?(): string[] | Promise<string[]>
-  /** Optional: human readable backend description (never contains values). */
-  describe?(): string
-}
-
-/**
- * A provider declaration: which plugin claims which provider id of which
- * contract version. Declarations come from plugin MANIFESTS (the `capabilities`
- * field, structured form); a provider whose id was never declared cannot
- * register.
- */
-export interface ProviderDeclaration {
-  /** Provider id claimed. */
-  provider: string
-  /** Contract version claimed. */
-  version: number
-  /** Plugin that claims it (manifest name). */
-  plugin: string
-  /** Source id the plugin came from. */
-  source: string
-  /** True when the declaring plugin came from an external source. */
-  external: boolean
-}
-
-/** Status of one enabled provider for one reference. Never carries a value. */
-export interface ResolutionAttempt {
-  provider: string
-  status: 'answered' | 'missing' | 'error' | 'not-registered'
-  /** Provider error message (provider authored; must never contain a value). */
-  error?: string
-}
-
-/** What resolution did, reference by reference: names and providers, no values. */
-export interface ResolutionTrace {
-  ref: CredentialRef
-  /** Provider id that answered, when one did. */
-  resolvedBy?: string
-  attempts: ResolutionAttempt[]
-  /** Errors raised by enabled providers, prefixed with their id. */
-  errors: string[]
-}
-
-/** Public view of a provider: who declared it, is it registered, is it enabled. */
-export interface ProviderInfo {
-  id: string
-  contract: string
-  /** Plugin that declared the provider id. */
-  plugin: string
-  source: string
-  external: boolean
-  /** True when the provider is in the enabled (precedence) list. */
-  enabled: boolean
-  /** True when a provider implementation registered for this declaration. */
-  registered: boolean
-  /** Provider backend description, when it offers one. */
-  describe?: string
+/** One stored credential record, as the harness record store reports it. */
+export interface CredentialRecord {
+  /** The record key (a NAME, never a value). */
+  key: CredentialKey
+  /** The credential value. Callers must not log, echo or persist it. */
+  value?: string
+  /** Record metadata (never contains a value). */
+  [field: string]: unknown
 }
 
 /** Reference label used in messages: `name` or `scope/name`. Never a value. */
@@ -154,305 +87,38 @@ export function parseCredentialRef(spec: string): CredentialRef {
   return { scope, name }
 }
 
-/** Normalises a reference: `NAME` may also be written `SCOPE/NAME`. */
-export function normalizeRef(ref: CredentialRef): CredentialRef {
-  assertRef(ref)
-  if (ref.scope === undefined && ref.name.includes('/')) return parseCredentialRef(ref.name)
-  return ref
-}
-
 /**
- * A request to build the git auth arguments of ONE source, from a credential
- * value that was resolved through this service. No value ever leaves the
- * handler: `value` is passed in memory only and must never be logged.
+ * The CONSUMER slice of the harness credentials capability: what a plugin of
+ * this repository calls. `resolve` returns the first value the harness can
+ * answer for the NAME; `readRecord` reads one stored record by key. A
+ * deployment without the capability is a `credential-unsupported` error at
+ * call time, never a load failure.
  */
-export interface GitAuthRequest {
-  /** The credential reference the value came from (names only). */
-  ref: CredentialRef
-  /** The resolved credential value. Never logged, echoed or persisted. */
-  value: string
-  /** The source's `auth` config block (backend-specific fields, by name). */
-  auth: Record<string, unknown>
+export interface CredentialsLike {
+  /** Resolves a reference through the harness providers (first answering wins). */
+  resolve(ref: CredentialRef): Promise<ResolvedCredential | undefined>
+  /** Reads one stored credential record by key (names only, never values). */
+  readRecord?(key: CredentialKey): Promise<CredentialRecord | undefined>
+  /** Credential NAMEs the deployment can answer (names only). */
+  list?(): Promise<string[]>
 }
 
-/**
- * A GIT AUTH STRATEGY for one `auth.type`, registered by a PLUGIN: it turns a
- * resolved credential value into the `git -c ...` arguments of a source fetch.
- *
- * The core knows ONE built-in type (`token`: the value IS the token) and NO
- * backend: every other type (`github-app`, and any future one) is a plugin that
- * registers a handler here, so no minting logic lives in the host.
- */
-export interface GitAuthHandler {
-  /** `auth.type` this handler answers, e.g. `github-app`. */
-  type: string
-  /** Builds the git arguments; may mint a short-lived token (async). */
-  args(request: GitAuthRequest): string[] | Promise<string[]>
-}
-
-interface ProviderEntry {
-  descriptor: CredentialProvider
-  declaration: ProviderDeclaration
-}
-
-/**
- * The service of the capability. The abstract part is the CONSUMER contract
- * (`resolve`, `explain`, `list`); the concrete part is the PROVIDER contract
- * (declarations, registration, selection), implemented once here so every
- * implementation of the definition shares it. It contains no backend logic.
- */
-export abstract class CredentialsService {
-  declarations = new Map<string, ProviderDeclaration>()
-  implementations = new Map<string, ProviderEntry>()
-  enabledIds: string[] | undefined
-  /** Git auth strategies by `auth.type`, registered by PROVIDER plugins. */
-  gitAuthHandlers = new Map<string, GitAuthHandler>()
-
-  /** Resolves a reference through the enabled providers (first answering wins). */
-  abstract resolve(ref: CredentialRef): Promise<CredentialResolution | undefined>
+/** The full service shape the HARNESS injects as `ctx.credentials`. */
+export interface CredentialsService extends CredentialsLike {
   /** What each enabled provider did for a reference (no values). */
-  abstract explain(ref: CredentialRef): Promise<ResolutionTrace>
-  /** Credential names the enabled providers can answer (names only). */
-  abstract list(): Promise<string[]>
-
-  /** Registers a provider declaration (from a manifest). */
-  declare(declaration: ProviderDeclaration): void {
-    if (!declaration.provider) throw new Error('credentials: a provider declaration needs a provider id')
-    if (declaration.version !== CREDENTIALS_VERSION) {
-      throw new Error(
-        `credentials: plugin '${declaration.plugin}' declares provider '${declaration.provider}' for contract version ` +
-          `${declaration.version}, but this deployment speaks ${CREDENTIALS_CONTRACT}`,
-      )
-    }
-    const existing = this.declarations.get(declaration.provider)
-    if (existing) {
-      if (existing.plugin === declaration.plugin) return
-      throw new Error(
-        `credentials: provider id '${declaration.provider}' is declared twice (by '${existing.plugin}' and ` +
-          `'${declaration.plugin}'); provider ids must be unique`,
-      )
-    }
-    this.declarations.set(declaration.provider, declaration)
-  }
-
-  /**
-   * Registers a provider implementation. Refuses providers whose id or contract
-   * version was not declared by a manifest, so the MANIFEST is what makes a
-   * provider resolvable. Returns the disposer.
-   */
-  register(descriptor: CredentialProvider): () => void {
-    if (!descriptor || typeof descriptor.id !== 'string' || descriptor.id.length === 0) {
-      throw new Error('credentials: register() needs a provider id')
-    }
-    if (typeof descriptor.resolve !== 'function') {
-      throw new Error(`credentials: provider '${descriptor.id}' must implement resolve()`)
-    }
-    const declaration = this.declarations.get(descriptor.id)
-    if (!declaration) {
-      throw new Error(
-        `credentials: provider '${descriptor.id}' is not declared; declare it in the plugin manifest: ` +
-          `"capabilities": [{ "id": "${CREDENTIALS}", "version": ${CREDENTIALS_VERSION}, "provider": "${descriptor.id}" }]`,
-      )
-    }
-    if (descriptor.version !== CREDENTIALS_VERSION) {
-      throw new Error(
-        `credentials: provider '${descriptor.id}' implements contract version ${descriptor.version}, ` +
-          `but this deployment speaks ${CREDENTIALS_CONTRACT}`,
-      )
-    }
-    if (this.implementations.has(descriptor.id)) {
-      throw new Error(`credentials: provider '${descriptor.id}' is already registered`)
-    }
-    const entry: ProviderEntry = { descriptor, declaration }
-    this.implementations.set(descriptor.id, entry)
-    return () => {
-      if (this.implementations.get(descriptor.id) === entry) this.implementations.delete(descriptor.id)
-    }
-  }
-
-  /**
-   * Registers a git auth strategy for one `auth.type` (`github-app`, ...). A
-   * plugin implements the backend; the host only dispatches by type. Returns the
-   * disposer.
-   */
-  registerGitAuth(handler: GitAuthHandler): () => void {
-    const type = typeof handler?.type === 'string' ? handler.type.trim() : ''
-    if (type.length === 0) throw new Error('credentials: a git auth handler needs a non-empty type')
-    if (typeof handler.args !== 'function') throw new Error(`credentials: git auth handler '${type}' must implement args()`)
-    if (type === 'token') throw new Error("credentials: the 'token' git auth type is built in and must not be registered")
-    if (this.gitAuthHandlers.has(type)) throw new Error(`credentials: a git auth handler for '${type}' is already registered`)
-    this.gitAuthHandlers.set(type, handler)
-    return () => {
-      if (this.gitAuthHandlers.get(type) === handler) this.gitAuthHandlers.delete(type)
-    }
-  }
-
-  /** The git auth strategy registered for one `auth.type`, or undefined. */
-  gitAuth(type: string): GitAuthHandler | undefined {
-    return this.gitAuthHandlers.get(type)
-  }
-
-  /** The `auth.type`s a plugin registered a strategy for (sorted). */
-  gitAuthTypes(): string[] {
-    return [...this.gitAuthHandlers.keys()].sort()
-  }
-
-  /** Fixes the enabled providers and their precedence order (configuration only). */
-  setEnabled(ids?: readonly string[]): void {
-    const requested = ids && ids.length > 0 ? [...ids] : [...this.declarations.keys()]
-    const seen = new Set<string>()
-    for (const id of requested) {
-      if (seen.has(id)) throw new Error(`credentials: provider '${id}' is listed twice in the enabled providers`)
-      seen.add(id)
-      if (!this.declarations.has(id)) {
-        const available = [...this.declarations.keys()]
-        throw new Error(
-          `credentials: provider '${id}' is not declared by any plugin (available: ` +
-            `${available.length ? available.join(', ') : 'none'}); a provider must declare the capability in its ` +
-            `manifest: "capabilities": [{ "id": "${CREDENTIALS}", "version": ${CREDENTIALS_VERSION}, "provider": "id" }]`,
-        )
-      }
-    }
-    this.enabledIds = requested
-  }
-
+  explain?(ref: CredentialRef): Promise<unknown>
   /** Enabled provider ids, in precedence order. */
-  enabled(): string[] {
-    return this.enabledIds ? [...this.enabledIds] : [...this.declarations.keys()]
-  }
-
-  /** Every known provider declaration, registered or not, enabled or not. */
-  providers(): ProviderInfo[] {
-    const enabled = new Set(this.enabled())
-    return [...this.declarations.values()].map((declaration) => {
-      const entry = this.implementations.get(declaration.provider)
-      const describe = entry?.descriptor.describe?.()
-      return {
-        id: declaration.provider,
-        contract: `${CREDENTIALS}@${declaration.version}`,
-        plugin: declaration.plugin,
-        source: declaration.source,
-        external: declaration.external,
-        enabled: enabled.has(declaration.provider),
-        registered: entry !== undefined,
-        ...(describe === undefined ? {} : { describe }),
-      }
-    })
-  }
-
-  /** Registered provider lookup, for implementations of {@link resolve}. */
-  entry(id: string): CredentialProvider | undefined {
-    return this.implementations.get(id)?.descriptor
-  }
+  enabled?(): string[]
 }
 
 /**
- * The reference implementation of the definition: it walks the enabled
- * providers in precedence order and returns the first value. The walk is the
- * definition's own logic (no backend knowledge), so providers stay replaceable.
- */
-export class Credentials extends CredentialsService {
-  /** Resolves through the enabled providers; the first one answering wins. */
-  async resolve(ref: CredentialRef): Promise<CredentialResolution | undefined> {
-    const lookup = await this.lookup(ref)
-    if (lookup.resolution === undefined) {
-      if (lookup.trace.errors.length > 0) {
-        throw new Error(`credentials: no provider resolved '${refLabel(ref)}' (${lookup.trace.errors.join('; ')})`)
-      }
-      return undefined
-    }
-    return lookup.resolution
-  }
-
-  /** Same walk as {@link resolve}, reported without any value. */
-  async explain(ref: CredentialRef): Promise<ResolutionTrace> {
-    return (await this.lookup(ref)).trace
-  }
-
-  /** Credential names the enabled providers can answer (names only, sorted). */
-  async list(): Promise<string[]> {
-    const names = new Set<string>()
-    for (const id of this.enabled()) {
-      const provider = this.entry(id)
-      if (!provider?.list) continue
-      for (const name of await provider.list()) {
-        if (typeof name === 'string' && name.length > 0) names.add(name)
-      }
-    }
-    return [...names].sort()
-  }
-
-  async lookup(input: CredentialRef): Promise<{ trace: ResolutionTrace; resolution?: CredentialResolution }> {
-    const ref = normalizeRef(input)
-    const attempts: ResolutionAttempt[] = []
-    const errors: string[] = []
-    const trace: ResolutionTrace = { ref, attempts, errors }
-    for (const id of this.enabled()) {
-      const provider = this.entry(id)
-      if (!provider) {
-        attempts.push({ provider: id, status: 'not-registered' })
-        continue
-      }
-      try {
-        const value = await provider.resolve(ref)
-        if (value === undefined || value === '') {
-          attempts.push({ provider: id, status: 'missing' })
-          continue
-        }
-        attempts.push({ provider: id, status: 'answered' })
-        trace.resolvedBy = id
-        return {
-          trace,
-          resolution: { ref, value, provider: id, contract: `${CREDENTIALS}@${provider.version}` },
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        attempts.push({ provider: id, status: 'error', error: message })
-        errors.push(`${id}: ${message}`)
-      }
-    }
-    return { trace }
-  }
-}
-
-/**
- * The CONSUMER slice of the capability: what a consumer is allowed to call.
- * {@link CredentialsService} satisfies it structurally.
- */
-export interface CredentialConsumer {
-  /** Resolves a reference through the enabled providers (first answering wins). */
-  resolve(ref: CredentialRef): Promise<CredentialResolution | undefined>
-  /** What each enabled provider did for a reference (no values). */
-  explain(ref: CredentialRef): Promise<ResolutionTrace>
-  /** Credential names the enabled providers can answer (names only). */
-  list(): Promise<string[]>
-  /** Enabled provider ids, in precedence order. */
-  enabled(): string[]
-}
-
-/**
- * The full service shape a PROVIDER plugin talks to (what the hosting core
- * injects as `ctx.credentials`).
- */
-export interface CredentialsLike extends CredentialConsumer {
-  declare(declaration: ProviderDeclaration): void
-  register(descriptor: CredentialProvider): () => void
-  providers(): ProviderInfo[]
-  setEnabled?(ids?: readonly string[]): void
-  /** Registers a git auth strategy for one `auth.type` (plugin side). */
-  registerGitAuth?(handler: GitAuthHandler): () => void
-  /** The git auth strategy registered for one `auth.type`, when the host offers it. */
-  gitAuth?(type: string): GitAuthHandler | undefined
-}
-
-/**
- * The slice of the HOSTING context a provider/service plugin needs. Structural
- * on purpose: this repository never imports the core's cordis, so the plugin is
- * usable with any core version that honours the published contract (the core
- * injects `credentials` and provides `effect` for disposables).
+ * The slice of the HOSTING context a consumer plugin needs. Structural on
+ * purpose: this repository never imports the harness's cordis, so the plugin
+ * is usable with any host that honours the published contract (the harness
+ * injects `credentials`).
  */
 export interface CredentialsContext {
-  credentials: CredentialsLike
-  effect(callback: () => () => void): void
-  log?(message: string): void
+  credentials?: CredentialsLike
+  get?(name: string, strict?: boolean): unknown
+  [key: string]: unknown
 }

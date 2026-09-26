@@ -23,6 +23,7 @@
 import { spillOf, SpillError } from '../../definitions/spill.ts'
 import type { SpillService } from '../../definitions/spill.ts'
 import type { ParameterSchemaSpec } from '../../definitions/tools.ts'
+import { defineTool, renderValue, type ToolDefinition } from '../../definitions/tools.ts'
 
 export const name = 'spill-tools'
 
@@ -33,12 +34,7 @@ type ToolParameter = ParameterSchemaSpec[string]
 type ToolParameters = ParameterSchemaSpec
 
 interface ToolsLike {
-  registerTool(def: {
-    name: string
-    description?: string
-    parameters?: ToolParameters
-    handler: (params: Record<string, unknown>) => unknown | Promise<unknown>
-  }): () => void
+  register(def: ToolDefinition): () => void
 }
 
 interface PluginContext {
@@ -117,7 +113,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
   }
 
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'spill write',
       description:
         'Writes an oversized payload to a SPILL file and returns { path, bytes, sha256, preview }: the durable half of a capped answer, so nothing an inline cap cut is lost; the file is content-addressed and read back in RANGES with `spill read`',
@@ -127,18 +123,20 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
         extension: { type: 'string', description: 'file extension of the spill file (default txt, no dot needed)' },
         source: { type: 'string', description: 'what wrote it, recorded in `spill info` (e.g. the plugin or job id)' },
       },
-      handler: async (params) =>
+      execute: async (params) =>
         spill().write({
           content: requiredString(params, 'content'),
           ...(optionalString(params, 'label') !== undefined ? { label: optionalString(params, 'label')! } : {}),
           ...(optionalString(params, 'extension') !== undefined ? { extension: optionalString(params, 'extension')! } : {}),
           ...(optionalString(params, 'source') !== undefined ? { source: optionalString(params, 'source')! } : {}),
         }),
-    }),
+      output: { schema: {}, render: renderValue },
+    })),
+
   )
 
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'spill read',
       description:
         'Reads a bounded RANGE of a spill file: pass `offset` and the `nextOffset` of the previous answer to page through it; the window is LINE-ALIGNED by default and the answer carries total bytes, the returned window, nextOffset, eof and the SHA-256 of the WHOLE file',
@@ -148,7 +146,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
         limit: { type: 'integer', description: 'maximum bytes returned (provider default/cap applies)' },
         align: { type: 'string', enum: ['line', 'byte'], description: "line (default) starts at the beginning of the line containing offset; byte returns exactly [offset, offset+limit)" },
       },
-      handler: async (params) =>
+      execute: async (params) =>
         spill().read({
           path: requiredString(params, 'path'),
           ...(optionalInteger(params, 'offset') !== undefined ? { offset: optionalInteger(params, 'offset')! } : {}),
@@ -157,33 +155,39 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
             : {}),
           ...(optionalString(params, 'align') !== undefined ? { align: optionalString(params, 'align') as 'line' | 'byte' } : {}),
         }),
-    }),
+      output: { schema: {}, render: renderValue },
+    })),
+
   )
 
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'spill info',
       description: 'Reports ONE spill file: size, SHA-256, modification time, age in seconds and whether the retention policy considers it expired',
       parameters: {
         path: { type: 'string', required: true, description: 'the spill file path' },
       },
-      handler: (params) => spill().info(requiredString(params, 'path')),
-    }),
+      execute: (params) => spill().info(requiredString(params, 'path')),
+      output: { schema: {}, render: renderValue },
+    })),
+
   )
 
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'spill list',
       description: 'Lists the spill files of this provider, newest first, with size, hash, age and the expired flag',
       parameters: {
         limit: { type: 'integer', description: 'maximum entries returned (provider default applies)' },
       },
-      handler: (params) => spill().list(optionalInteger(params, 'limit')),
-    }),
+      execute: (params) => spill().list(optionalInteger(params, 'limit')),
+      output: { schema: {}, render: renderValue },
+    })),
+
   )
 
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'spill purge',
       description:
         'Applies the retention policy: removes files older than maxAgeSeconds and/or trims the directory to maxTotalBytes (oldest first); `dryRun` reports what would go without deleting anything',
@@ -192,23 +196,27 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
         maxTotalBytes: { type: 'integer', description: 'trim the directory to this many bytes, oldest file first (default: the provider policy)' },
         dryRun: { type: 'boolean', description: 'report what WOULD be removed without removing anything' },
       },
-      handler: async (params) =>
+      execute: async (params) =>
         spill().purge({
           ...(optionalInteger(params, 'maxAgeSeconds') !== undefined ? { maxAgeSeconds: optionalInteger(params, 'maxAgeSeconds')! } : {}),
           ...(optionalInteger(params, 'maxTotalBytes') !== undefined ? { maxTotalBytes: optionalInteger(params, 'maxTotalBytes')! } : {}),
           ...(optionalBoolean(params, 'dryRun') !== undefined ? { dryRun: optionalBoolean(params, 'dryRun')! } : {}),
         }),
-    }),
+      output: { schema: {}, render: renderValue },
+    })),
+
   )
 
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'spill policy',
       description:
         'Reports the policy of the loaded spill@1 provider: directory, per-payload ceiling, directory ceiling, retention age, preview bytes',
       parameters: {},
-      handler: () => spill().policy(),
-    }),
+      execute: () => spill().policy(),
+      output: { schema: {}, render: renderValue },
+    })),
+
   )
 }
 

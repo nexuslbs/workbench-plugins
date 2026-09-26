@@ -1,42 +1,28 @@
 /**
- * Tools capability - SERVICE DEFINITION (registry + the single dispatch).
+ * Tools capability - SERVICE DEFINITION in the DSH shape.
  *
- * A CONSUMER plugin registers a named tool together with the parameters it
- * expects (a small, JSON-Schema-compatible spec) and a handler; the PROVIDER
- * plugin (`core/tools-impl`) exposes the tool set so a caller can invoke a
- * tool BY NAME - in process ({@link Tools.execute}), from the CLI and over HTTP
- * (`GET /api/tools`, `GET /api/tools/<name>`, `POST /api/tools/<name>`,
- * `POST /api/tools`, `POST /api/tool/call`). Workbench has no model and no agent
- * loop: the consumers are plugins and operators.
+ * This is the `tools@1` contract of the workstation plugins repository, written
+ * against the deepseek-harness tool API (the harness `ToolRuntime`):
  *
- *   Provider  ->  Definition  <-  Consumer
+ *   ctx.tools.register(defineTool({ name, description, parameters, execute, output }))
  *
- * Placement (operator rule 2026-09-19): the whole capability lives HERE, in the
- * PUBLIC `nexuslbs/workbench-plugins` repository. The core
- * (`nexuslbs/workbench`) holds no tool module, exports no tool Definition and
- * registers no `/api/tools*` route: it only loads this repository as a source.
- * A consumer registers through the SERVICE (`ctx.tools`), never by importing a
- * provider.
+ * The author form of `parameters` is the same per-property parameter map DSH
+ * uses (`ParameterSchemaSpec`): it COMPILES to plain JSON Schema
+ * (`parameterSchemaSpecToJsonSchema`, DSH `packages/core/tools/src/schema.ts`),
+ * `validateArgs(spec, args)` returns path-qualified violations BEFORE the
+ * handler runs (DSH `schema.ts:478`), and registration is fail-closed on a
+ * duplicate name exactly like the DSH `ToolRuntime` registry
+ * (`packages/core/tools/src/index.ts`).
  *
- * The shape follows DSH (`packages/core/tools/src/schema.ts`):
+ * The consumer slice a plugin calls is `ctx.tools.register(def)` returning the
+ * disposer that unregisters the tool. `output` is REQUIRED by the harness
+ * (`output.schema` + `output.render`): `renderValue` is the generic renderer
+ * every consumer of this repository uses (any canonical value -> one text
+ * content block), mirroring what the workbench compat adapter supplied.
  *
- * - the author form is a per-property parameter map with `required: true` on a
- *   property ({@link ParameterSpec}),
- * - it COMPILES to plain JSON Schema (`parameterSchemaSpecToJsonSchema`, DSH
- *   `packages/core/tools/src/schema.ts:449`),
- * - `validateArgs(spec, args): string[]` returns human-readable, path-qualified
- *   violations BEFORE the handler runs (DSH `schema.ts:478`), and
- * - registration is fail-closed on a duplicate name (`Tools.registerTool`
- *   rejects it), exactly like the DSH `ToolRuntime` registry
- *   (`packages/core/tools/src/index.ts:789`).
- *
- * What workbench deliberately does NOT take from DSH: prompt assembly, tool
- * schemas for a model, presentation/rendering, the agent loop, policy guards,
- * scoped layers. None of that exists here.
- *
- * This module is CORDIS-FREE and imports nothing: the service base is
- * STRUCTURAL, so the file compiles and runs inside any host that exposes a
- * `tools` service with the published shape.
+ * This module is CORDIS-FREE and imports nothing: the contract is STRUCTURAL,
+ * so the file compiles and runs inside any host that exposes a `tools` service
+ * with the published shape.
  */
 
 /** Name of the cordis service (`ctx.tools`). */
@@ -97,31 +83,6 @@ export interface ParameterJsonSchema {
   type: 'object'
   properties: Record<string, ParameterJsonSchemaProperty>
   required?: string[]
-}
-
-/** A tool a plugin registered with the tools service. */
-export interface ToolDefinition {
-  /** Unique tool name, e.g. `hello greet`. */
-  name: string
-  /** Runs the tool with validated parameters and returns its result. */
-  handler: (params: Record<string, unknown>) => unknown | Promise<unknown>
-  /** Human readable purpose. */
-  description?: string
-  /** The parameters the tool expects (author form). */
-  parameters?: ParameterSchemaSpec
-  /** Plugin that registered the tool (attributed by the provider/host). */
-  plugin?: string
-  /** The compiled parameter schema (snapshotted at registration). */
-  schema?: ParameterJsonSchema
-}
-
-/** A registered tool as the inventory/HTTP list reports it. */
-export interface ToolInfo {
-  name: string
-  description?: string
-  /** Plugin that registered the tool. */
-  plugin: string
-  parameters: ParameterJsonSchema
 }
 
 /** The body/param value did not satisfy the registered parameter schema. */
@@ -237,8 +198,6 @@ function validateProperties(
     const where = joinPath(path, name)
     const property = schema.properties[name]
     if (property === undefined) {
-      // The accepted keys are IN the message: a caller that guessed a parameter
-      // name must not need a second roundtrip to learn the contract (task 2592).
       violations.push(`${where}: unknown parameter (accepted here: ${accepted.join(', ')})`)
       continue
     }
@@ -279,8 +238,6 @@ function validateValue(
         violations.push(`${where}: expected an object, got ${kindOf(value)}`)
         break
       }
-      // `property.properties` IS the compiled JSON Schema root of the nested object
-      // (its own `required` array included), so it is passed through unchanged.
       validateProperties(property.properties ?? { type: 'object', properties: {} }, value, where, violations)
       break
     }
@@ -296,7 +253,7 @@ function validateValue(
  * Validates candidate parameters against a declared parameter map, DSH
  * `validateArgs` style: structural only (required, types, unknown keys, enum),
  * path-qualified and human readable; an empty array means the args are valid.
- * The registry calls this BEFORE the handler, so a handler only ever sees a body
+ * The harness calls this BEFORE `execute`, so a handler only ever sees a body
  * that satisfies its declared schema.
  */
 export function validateArgs(spec: ParameterSchemaSpec, args: unknown): string[] {
@@ -307,143 +264,111 @@ export function validateArgs(spec: ParameterSchemaSpec, args: unknown): string[]
   return violations
 }
 
-/** How the provider attributes a tool to the plugin that registered it. */
-export interface ToolsOptions {
-  /**
-   * Name of the plugin whose `apply` is running right now. The host answers this
-   * (it marks the plugin it is applying); it is what `GET /api/tools` reports per
-   * tool. Falls back to {@link ToolsOptions.fallbackOwner}.
-   */
-  owner?: () => string | undefined
-  /** Owner used when the host cannot attribute the registration. */
-  fallbackOwner?: string
-  /** Log sink (stderr by default at the provider). */
-  log?: (message: string) => void
-}
+// ---------------------------------------------------------------------------
+// The DSH output contract: every registered tool declares `output.schema`
+// (enforced against every successful value) plus a PURE `render` projection
+// (validated args + canonical value -> model/UI content blocks).
+// ---------------------------------------------------------------------------
 
 /**
- * The tool registry: what plugins register with and the SINGLE dispatch entry
- * point every caller (HTTP, CLI, in-process) goes through. It never touches a
- * socket and never builds a prompt.
+ * The canonical output schema of a tool (a structural subset of the DSH
+ * `ValueSchemaSpec`). `{}` accepts any JSON value - the generic choice of the
+ * consumer plugins of this repository.
  */
-export class Tools {
-  // Plain (runtime) properties, not `#private`: the registry is reachable
-  // through a cordis Proxy and a Proxy breaks private fields.
-  protected entries = new Map<string, { definition: ToolDefinition; schema: ParameterJsonSchema }>()
-  protected options: ToolsOptions
+export type ValueSchemaSpec = Record<string, unknown>
 
-  constructor(options: ToolsOptions = {}) {
-    this.options = options
+/** One content block of a rendered tool result (structural DSH `ContentBlock`). */
+export interface ContentBlock {
+  type: string
+  text?: string
+  [key: string]: unknown
+}
+
+/**
+ * The registered tool definition in the DSH shape: what `ctx.tools.register`
+ * accepts and what the harness executes.
+ */
+export interface ToolDefinition {
+  /** Unique tool name, e.g. `hello greet`. */
+  name: string
+  /** Human readable purpose (sent to the model). */
+  description: string
+  /** The compiled parameter JSON Schema (snapshotted at registration). */
+  parameters: ParameterJsonSchema
+  /** Canonical output schema plus the pure render projection (REQUIRED). */
+  output: {
+    /** Schema enforced against every successful value. */
+    schema: ValueSchemaSpec
+    /** Pure projection from validated args + value to content blocks. */
+    render(args: unknown, value: unknown): ContentBlock[]
   }
+  /** Runs the tool with validated parameters and returns its canonical value. */
+  execute(args: Record<string, unknown>, exec?: unknown): unknown | Promise<unknown>
+}
 
-  /** The plugin a registration made right now belongs to. */
-  owner(): string {
-    const fromHost = this.options.owner?.()
-    if (typeof fromHost === 'string' && fromHost.length > 0) return fromHost
-    return this.options.fallbackOwner ?? 'unknown'
+/**
+ * The DSH author form: `defineTool({ name, description, parameters, output,
+ * execute })` compiles the parameter map to JSON Schema and returns a
+ * registry-ready {@link ToolDefinition}. Structural and cordis-free: it does
+ * not import the harness package, it just builds the exact object the harness
+ * `ctx.tools.register` accepts.
+ */
+export function defineTool(options: {
+  name: string
+  description: string
+  parameters: ParameterSchemaSpec
+  output: { schema: ValueSchemaSpec; render(args: unknown, value: unknown): ContentBlock[] }
+  execute(args: Record<string, unknown>, exec?: unknown): unknown | Promise<unknown>
+}): ToolDefinition {
+  const name = typeof options.name === 'string' ? options.name.trim() : ''
+  if (name.length === 0) throw new Error('defineTool: a tool name is required')
+  if (options.name !== name) throw new Error(`defineTool('${options.name}'): a tool name must not start or end with whitespace`)
+  if (typeof options.execute !== 'function') throw new Error(`defineTool('${name}'): 'execute' must be a function`)
+  if (options.output === null || typeof options.output !== 'object' || typeof options.output.render !== 'function') {
+    throw new Error(`defineTool('${name}'): 'output' must declare { schema, render }`)
   }
-
-  /**
-   * Registers one tool; returns the disposer that unregisters it. A duplicate
-   * name is rejected (never a silent overwrite) and a malformed parameter
-   * declaration throws, so a plugin fails at load instead of at call time.
-   */
-  registerTool(def: Omit<ToolDefinition, 'plugin' | 'schema'> & { plugin?: string }): () => void {
-    const raw = def?.name
-    const name = typeof raw === 'string' ? raw.trim() : ''
-    if (name.length === 0) throw new Error('registerTool: a tool name is required')
-    if (name !== raw) throw new Error(`registerTool('${raw}'): a tool name must not start or end with whitespace`)
-    if (name.includes('/')) {
-      throw new Error(`registerTool('${name}'): a tool name must not contain '/'; names with a slash are only reachable through the POST /api/tools alias body`)
-    }
-    if (typeof def.handler !== 'function') throw new Error(`registerTool('${name}'): 'handler' must be a function`)
-    if (def.description !== undefined && typeof def.description !== 'string') {
-      throw new Error(`registerTool('${name}'): 'description' must be a string`)
-    }
-    if (this.entries.has(name)) throw new Error(`tool '${name}' is already registered`)
-    const spec = def.parameters ?? {}
-    const schema = parameterSchemaSpecToJsonSchema(spec)
-    const definition: ToolDefinition = {
-      name,
-      handler: def.handler,
-      ...(def.description === undefined ? {} : { description: def.description }),
-      parameters: spec,
-      schema,
-      plugin: def.plugin ?? this.owner(),
-    }
-    const entry = { definition, schema }
-    this.entries.set(name, entry)
-    return () => {
-      if (this.entries.get(name) === entry) this.entries.delete(name)
-    }
-  }
-
-  /** The registered tool names (registration order). */
-  toolNames(): Set<string> {
-    return new Set(this.entries.keys())
-  }
-
-  /** Every registered tool with its compiled parameter schema, sorted by name. */
-  tools(): ToolInfo[] {
-    return [...this.entries.values()]
-      .map(({ definition, schema }) => ({
-        name: definition.name,
-        ...(definition.description === undefined ? {} : { description: definition.description }),
-        plugin: definition.plugin ?? 'unknown',
-        parameters: schema,
-      }))
-      .sort((a, b) => a.name.localeCompare(b.name))
-  }
-
-  /** One registered tool, or undefined. */
-  get(name: string): ToolDefinition | undefined {
-    return this.entries.get(name)?.definition
-  }
-
-  /**
-   * THE dispatch: resolve the tool by name, validate the parameters against its
-   * registered schema, then run the handler. Throws {@link ToolUnknownError}
-   * (unknown/unloaded tool) or {@link ToolArgsError} (validation) before the
-   * handler runs; a handler error propagates unchanged (the caller maps it).
-   */
-  async execute(name: string, params?: unknown): Promise<unknown> {
-    const entry = this.entries.get(name)
-    if (!entry) throw new ToolUnknownError(name)
-    const args = params === undefined ? {} : params
-    const violations = validateArgs(entry.definition.parameters ?? {}, args)
-    if (violations.length > 0) throw new ToolArgsError(name, violations)
-    return await entry.definition.handler(args as Record<string, unknown>)
-  }
-
-  /** Log sink shared with the host. */
-  logLine(message: string): void {
-    const sink = this.options.log
-    if (sink) sink(message)
-  }
-
-  /**
-   * The CONSUMER slice of the capability: what a consumer is allowed to call.
-   * {@link Tools} satisfies it structurally; `ctx.tools` is an instance of it.
-   */
-  consumer(): ToolConsumer {
-    return {
-      registerTool: (def) => this.registerTool(def),
-      toolNames: () => this.toolNames(),
-      tools: () => this.tools(),
-    }
+  return {
+    name,
+    description: options.description,
+    parameters: parameterSchemaSpecToJsonSchema(options.parameters),
+    output: {
+      schema: options.output.schema,
+      render: (args: unknown, value: unknown): ContentBlock[] => options.output.render(args, value),
+    },
+    execute: async (args: Record<string, unknown>, exec?: unknown): Promise<unknown> => {
+      const violations = validateArgs(options.parameters, args)
+      if (violations.length > 0) throw new ToolArgsError(name, violations)
+      return await options.execute(args ?? {}, exec)
+    },
   }
 }
 
 /**
- * The CONSUMER slice of the capability: what a consumer plugin is allowed to
- * call (`ctx.tools`). It registers a named tool and can read the registry; it
- * never runs a tool (that is the caller/provider surface).
+ * The generic renderer of this repository: any canonical value becomes ONE
+ * text content block (a string stays verbatim; anything else is pretty-printed
+ * JSON). This is the `output.render` every consumer plugin supplies, mirroring
+ * what the workbench compat adapter used.
+ */
+export function renderValue(_args: unknown, value: unknown): ContentBlock[] {
+  let text: string
+  if (typeof value === 'string') text = value
+  else if (value === undefined || value === null) text = ''
+  else {
+    try {
+      text = JSON.stringify(value, null, 2)
+    } catch {
+      text = String(value)
+    }
+  }
+  return [{ type: 'text', text }]
+}
+
+/**
+ * The CONSUMER slice of the capability: what a consumer plugin calls
+ * (`ctx.tools`). It registers a named tool and can read the registry; it never
+ * runs a tool (that is the caller/provider surface).
  */
 export interface ToolConsumer {
-  /** Registers a tool (name + parameter schema + handler); returns the disposer. */
-  registerTool(def: Omit<ToolDefinition, 'plugin' | 'schema'>): () => void
-  /** The registered tool names. */
-  toolNames(): Set<string>
-  /** Every registered tool with its compiled parameter schema, sorted by name. */
-  tools(): ToolInfo[]
+  /** Registers a tool (name + parameter schema + execute + output); returns the disposer. */
+  register(def: ToolDefinition): () => void
 }

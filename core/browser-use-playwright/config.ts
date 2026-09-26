@@ -27,6 +27,20 @@ import {
 } from '../../definitions/browser-use.ts'
 import { ServiceError } from '../../definitions/support.ts'
 
+/**
+ * The LOCATIONS a browser may run in, mirroring the `general-service@1` types
+ * (definitions/general-service.ts): the plugin is AGNOSTIC about where the
+ * browser runs - `backend` and its params decide it, exactly like the himalaya
+ * impl plugin's `general` config row. `local` launches chromium in this
+ * process; every other backend ATTACHES over CDP to the endpoint the config
+ * names and reaches the browser's machine through the `general-service@1` seam
+ * (probe/start), never through a hard-wired docker/ssh/http call.
+ */
+export const BROWSER_BACKENDS = ['local', 'container', 'ssh', 'ssh+container', 'http'] as const
+
+/** One of {@link BROWSER_BACKENDS}. */
+export type BrowserBackend = (typeof BROWSER_BACKENDS)[number]
+
 /** The `plugins: browser-use-playwright:` row, exactly as an operator writes it. */
 export interface BrowserUsePlaywrightConfig {
   /** Run headless (default true). */
@@ -75,6 +89,38 @@ export interface BrowserUsePlaywrightConfig {
    * fetch while a browser service is configured.
    */
   browserService?: BrowserServiceConfig
+  /**
+   * WHERE the browser runs. `local` launches a chromium in this process;
+   * `container` attaches over CDP to a compose browser service (the DEPLOYED
+   * default: `browserService.endpoint`, e.g. `http://browser:9222`);
+   * `ssh` / `ssh+container` reach a browser on a REMOTE machine (the remote
+   * shell / remote docker through the general-service@1 seam); `http` attaches
+   * to a remote CDP endpoint over http. Absent: inferred from the other fields
+   * (`browserService` -> `container`, a bare `wsEndpoint`/`cdpEndpoint` ->
+   * `http`, otherwise `local`), so every EXISTING config keeps working
+   * unchanged.
+   */
+  backend?: BrowserBackend
+  /**
+   * The `ssh` backend params: the remote machine the browser runs on (host,
+   * user, key name, binary). They become the `general-service@1` instance
+   * params of type `ssh` when `browserService.generalService` does not name an
+   * instance itself.
+   */
+  ssh?: Record<string, unknown>
+  /**
+   * The `container` backend params: the compose/docker target the browser
+   * service lives in (engine, compose project/service). They become the
+   * `general-service@1` instance params of type `container` when
+   * `browserService.generalService` does not name an instance itself.
+   */
+  container?: Record<string, unknown>
+  /**
+   * The `http` backend params: the control endpoint of the remote browser.
+   * They become the `general-service@1` instance params of type `http` when
+   * `browserService.generalService` does not name an instance itself.
+   */
+  http?: Record<string, unknown>
   /** Extra chromium argv shared by every session. */
   browserArgs?: string[]
   /** Where storage-state files live (default `<tmp>/workbench-browser-use/state`). */
@@ -125,26 +171,110 @@ export interface ResolvedBrowserService {
 }
 
 /**
- * Resolves the `browserService` block. A block that is PRESENT must be usable:
- * silently ignoring a broken browser-service config would leave an operator with
- * a provider that launches a local browser they never asked for, so a missing or
- * non-URL `endpoint` is a LOUD `invalid-config` naming the field.
+ * The params of the ATTACH backends, as a `general-service@1` params object:
+ * the `ssh` / `container` / `http` blocks of the plugin config ARE the params
+ * of the seam instance that reaches the browser's machine, so a deployment
+ * writes the target ONCE (the backend block) and the seam does the transport.
  */
-export function resolveBrowserService(raw: BrowserServiceConfig | undefined): ResolvedBrowserService | undefined {
-  if (raw === undefined) return undefined
-  if (!plainRecord(raw)) {
+function paramsForBackend(backend: BrowserBackend, config: BrowserUsePlaywrightConfig): Record<string, unknown> {
+  switch (backend) {
+    case 'container':
+      return plainRecord(config.container) ? config.container : {}
+    case 'ssh':
+      return plainRecord(config.ssh) ? config.ssh : {}
+    case 'ssh+container': {
+      const ssh = plainRecord(config.ssh) ? config.ssh : undefined
+      const container = plainRecord(config.container) ? config.container : undefined
+      if (ssh === undefined || container === undefined) {
+        throw new ServiceError(
+          'invalid-config',
+          "browser-use-playwright: the 'ssh+container' backend needs 'ssh' and 'container' params (they become the general-service@1 params)",
+          { stage: 'config', details: { field: 'backend', got: 'ssh+container' } },
+        )
+      }
+      return { ssh, container }
+    }
+    case 'http':
+      return plainRecord(config.http) ? config.http : {}
+    default:
+      return {}
+  }
+}
+
+/**
+ * WHERE the browser runs. The explicit `backend` selector wins; without it the
+ * mode is inferred from the other fields so every EXISTING config keeps working
+ * unchanged: `browserService` -> `container` (the deployed default), a bare
+ * `wsEndpoint`/`cdpEndpoint` -> `http` (plain CDP attach over http), otherwise
+ * `local` (a chromium launched by this provider).
+ */
+export function resolveBackend(config: BrowserUsePlaywrightConfig): BrowserBackend {
+  const explicit = config.backend
+  if (explicit !== undefined) {
+    if (!(BROWSER_BACKENDS as readonly string[]).includes(explicit)) {
+      throw new ServiceError(
+        'invalid-config',
+        `browser-use-playwright: 'backend' must be one of ${BROWSER_BACKENDS.join(', ')} (got ${JSON.stringify(explicit)})`,
+        { stage: 'config', details: { field: 'backend', got: explicit } },
+      )
+    }
+    return explicit
+  }
+  if (config.browserService !== undefined) return 'container'
+  if (textOf(config.wsEndpoint) !== undefined || textOf(config.cdpEndpoint) !== undefined) return 'http'
+  return 'local'
+}
+
+/**
+ * Resolves the `browserService` block (the ATTACH surface of every non-local
+ * backend). A block that is PRESENT must be usable: silently ignoring a broken
+ * browser-service config would leave an operator with a provider that launches
+ * a local browser they never asked for, so a missing or non-URL `endpoint` is a
+ * LOUD `invalid-config` naming the field.
+ *
+ * The `general-service@1` instance is the TRANSPORT of the backend: when the
+ * block does not name one, it is built from the backend itself (`type` =
+ * backend, `params` = the backend's params block), so `backend: ssh` reaches
+ * the browser's machine through the `ssh@1` transport by default - the seam
+ * decides the transport, this provider never hard-wires docker or ssh.
+ */
+export function resolveBrowserService(
+  raw: BrowserServiceConfig | undefined,
+  backend: BrowserBackend,
+  config: BrowserUsePlaywrightConfig,
+  explicitEndpoint?: string,
+): ResolvedBrowserService | undefined {
+  if (raw !== undefined && !plainRecord(raw)) {
     throw new ServiceError('invalid-config', "browser-use-playwright: 'browserService' must be an object with an 'endpoint'", {
       stage: 'config',
       details: { field: 'browserService' },
     })
   }
-  const endpoint = textOf(raw.endpoint)
+  const endpoint = raw === undefined ? explicitEndpoint : textOf(raw.endpoint)
   if (endpoint === undefined || !/^(https?|wss?):\/\//.test(endpoint)) {
+    if (raw === undefined) {
+      if (backend === 'local') return undefined
+      throw new ServiceError(
+        'invalid-config',
+        `browser-use-playwright: the '${backend}' backend needs an endpoint: set 'browserService.endpoint' or 'wsEndpoint' to the CDP URL of the browser (e.g. 'http://browser:9222')`,
+        { stage: 'config', details: { field: 'backend', got: backend } },
+      )
+    }
     throw new ServiceError(
       'invalid-config',
       "browser-use-playwright: 'browserService.endpoint' must be an http(s):// or ws(s):// URL, e.g. 'http://127.0.0.1:9222'",
       { stage: 'config', details: { field: 'browserService.endpoint', got: endpoint ?? null } },
     )
+  }
+  if (raw === undefined) {
+    // ATTACH without a named service: the endpoint IS the browser (plain CDP
+    // attach), and the seam instance that could probe/start it comes from the
+    // backend itself.
+    return {
+      endpoint,
+      generalService: { type: backend, params: paramsForBackend(backend, config) },
+      startTimeoutMs: 20_000,
+    }
   }
   const general = raw.generalService
   const type = plainRecord(general) ? textOf(general.type) : undefined
@@ -155,7 +285,7 @@ export function resolveBrowserService(raw: BrowserServiceConfig | undefined): Re
     endpoint,
     ...(image === undefined ? {} : { image }),
     ...(type === undefined
-      ? {}
+      ? { generalService: { type: backend, params: paramsForBackend(backend, config) } }
       : { generalService: { type, params: (plainRecord(general) && plainRecord(general.params) ? general.params : {}) as Record<string, unknown> } }),
     ...(start === undefined ? {} : { start }),
     ...(probe === undefined ? {} : { probe }),
@@ -170,6 +300,8 @@ function plainRecord(value: unknown): value is Record<string, unknown> {
 
 /** The config as the provider uses it (every field resolved, nothing optional). */
 export interface ResolvedProviderConfig {
+  /** The location of the browser (local | container | ssh | ssh+container | http). */
+  backend: BrowserBackend
   headless: boolean
   viewport: { width: number; height: number }
   userAgent?: string
@@ -238,13 +370,26 @@ export function resolveProviderConfig(
   const proxyUser = textOf(config.proxy?.username)
   const proxyCredential = textOf(config.proxy?.credential)
   const executablePath = textOf(config.executablePath)
+  // The BACKEND is the LOCATION decision of the deployment (local | container |
+  // ssh | ssh+container | http), mirroring the `general-service@1` types: this
+  // provider never decides where the browser runs - the config row does, and
+  // the seam (the browserService.generalService instance) is the transport.
+  const backend = resolveBackend(config)
+  const explicitEndpoint = textOf(config.wsEndpoint) ?? textOf(config.cdpEndpoint)
+  if (backend === 'local' && (config.browserService !== undefined || explicitEndpoint !== undefined)) {
+    throw new ServiceError(
+      'invalid-config',
+      "browser-use-playwright: 'backend: local' launches a chromium in this process, so it cannot be combined with 'browserService' or 'wsEndpoint' (drop one of them)",
+      { stage: 'config', details: { field: 'backend', got: 'local' } },
+    )
+  }
   // `wsEndpoint` and its `cdpEndpoint` alias name the same thing: a remote
   // browser this provider ATTACHES to. The `browserService.endpoint` (the
   // SEPARATE browser image) is the same ATTACH mode, only the service is then
   // named/started through the `general-service@1` seam. Resolved once here, so
   // every downstream check sees ONE endpoint.
-  const browserService = resolveBrowserService(config.browserService)
-  const wsEndpoint = textOf(config.wsEndpoint) ?? textOf(config.cdpEndpoint) ?? browserService?.endpoint
+  const browserService = resolveBrowserService(config.browserService, backend, config, explicitEndpoint)
+  const wsEndpoint = explicitEndpoint ?? browserService?.endpoint
   const userAgent = textOf(config.userAgent)
   const locale = textOf(config.locale)
   const timezoneId = textOf(config.timezoneId)
@@ -257,6 +402,7 @@ export function resolveProviderConfig(
     ...(proxyServer === undefined
       ? {}
       : { proxy: { server: proxyServer, ...(proxyUser === undefined ? {} : { username: proxyUser }), ...(proxyCredential === undefined ? {} : { credential: proxyCredential }) } }),
+    backend,
     ...(executablePath === undefined ? {} : { executablePath }),
     ...(wsEndpoint === undefined ? {} : { wsEndpoint }),
     ...(browserService === undefined ? {} : { browserService }),
@@ -358,7 +504,7 @@ export function browserBinary(config: ResolvedProviderConfig): BrowserBinary {
   if (config.wsEndpoint !== undefined) {
     // ATTACH mode: no local binary is used at all, and this is not a missing
     // browser - the endpoint IS the browser. `path` stays absent on purpose.
-    return { source: `the CDP endpoint ${config.wsEndpoint}`, found: true, certain: false }
+    return { source: `the CDP endpoint ${config.wsEndpoint} (backend: ${config.backend})`, found: true, certain: false }
   }
   if (config.executablePath !== undefined) {
     const exists = fs.existsSync(config.executablePath)
@@ -390,7 +536,10 @@ export function browserRequirement(config: ResolvedProviderConfig): string {
   }
   if (config.wsEndpoint !== undefined) return endpointRequirement(config)
   return (
-    'no chromium binary is visible in the workbench process. The RECOMMENDED deployment runs the browser from its OWN image: ' +
+    'no chromium binary is visible in the workbench process. WHERE the browser runs is a CONFIG decision: ' +
+    '`plugins.browser-use-playwright.backend` selects `local` (a chromium launched here), `container` (a compose browser service, the default), ' +
+    '`ssh` / `ssh+container` (a browser on a remote machine) or `http` (a remote CDP endpoint), and every non-local backend reaches the ' +
+    'browser through the general-service@1 seam. The RECOMMENDED deployment runs the browser from its OWN image: ' +
     'start a browser service (`mcr.microsoft.com/playwright:v1.63.0-noble`, or any chromium image), then set ' +
     '`plugins.browser-use-playwright.browserService = { endpoint: "http://127.0.0.1:9222", image: "mcr.microsoft.com/playwright:v1.63.0-noble", ' +
     'generalService: { type: "container", params: { container: "workbench-browser" } }, start: "<start chromium with --remote-debugging-port>" }` ' +
@@ -406,7 +555,7 @@ export function endpointRequirement(config: ResolvedProviderConfig): string {
   const service = config.browserService
   if (service === undefined) {
     return (
-      `no browser answers at the configured CDP endpoint '${config.wsEndpoint ?? ''}': start the browser service it names ` +
+      `no browser answers at the configured CDP endpoint '${config.wsEndpoint ?? ''}' (backend: ${config.backend}): start the browser service it names ` +
       '(e.g. a `mcr.microsoft.com/playwright` container running chromium with `--remote-debugging-port`, reachable from this ' +
       'process) or fix `plugins.browser-use-playwright.wsEndpoint`. This provider NEVER falls back to a local launch or to an ' +
       'HTTP fetch when `wsEndpoint` is set'
@@ -414,7 +563,7 @@ export function endpointRequirement(config: ResolvedProviderConfig): string {
   }
   return (
     `no browser answers at '${service.endpoint}', the endpoint of the browser SERVICE configured in ` +
-    '`plugins.browser-use-playwright.browserService`' +
+    `'plugins.browser-use-playwright.browserService' (backend: ${config.backend})` +
     (service.image === undefined ? '' : ` (image '${service.image}')`) +
     (service.generalService === undefined
       ? ''

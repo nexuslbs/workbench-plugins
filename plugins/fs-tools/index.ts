@@ -30,6 +30,7 @@
 import { fsOf, parseFsEdits, FsError } from '../../definitions/fs.ts'
 import type { FsGrepResult, FsService } from '../../definitions/fs.ts'
 import type { ParameterSchemaSpec } from '../../definitions/tools.ts'
+import { defineTool, renderValue, type ToolDefinition } from '../../definitions/tools.ts'
 
 export const name = 'fs-tools'
 
@@ -40,12 +41,7 @@ type ToolParameter = ParameterSchemaSpec[string]
 type ToolParameters = ParameterSchemaSpec
 
 interface ToolsLike {
-  registerTool(def: {
-    name: string
-    description?: string
-    parameters?: ToolParameters
-    handler: (params: Record<string, unknown>) => unknown | Promise<unknown>
-  }): () => void
+  register(def: ToolDefinition): () => void
 }
 
 interface PluginContext {
@@ -122,7 +118,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
   }
 
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'fs read',
       description:
         'READS a text file LINE BY LINE, numbered: offset/limit page the lines (default limit 2000), every line is byte-capped, and the answer carries totalLines/nextOffset/eof plus an end-of-file note',
@@ -132,18 +128,20 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
         limit: { type: 'integer', description: 'maximum number of lines to return (default and max 2000)' },
         maxLineBytes: { type: 'integer', description: 'byte cap of one returned line (default 2000)' },
       },
-      handler: (params) =>
+      execute: (params) =>
         fs().read({
           path: requiredPath(params),
           ...(optionalInteger(params, 'offset') !== undefined ? { offset: optionalInteger(params, 'offset') } : {}),
           ...(optionalInteger(params, 'limit') !== undefined ? { limit: optionalInteger(params, 'limit') } : {}),
           ...(optionalInteger(params, 'maxLineBytes') !== undefined ? { maxLineBytes: optionalInteger(params, 'maxLineBytes') } : {}),
         }),
-    }),
+      output: { schema: {}, render: renderValue },
+    })),
+
   )
 
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'fs write',
       description: 'WRITES a file with the given content (overwrite, creating parent directories): writes are confined to the provider roots',
       parameters: {
@@ -152,18 +150,20 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
         createParents: { type: 'boolean', description: 'create missing parent directories (default true)' },
         expectedVersion: { type: 'string', description: 'the version returned by a previous read/info: a mismatch fails with fs.edit-conflict instead of overwriting' },
       },
-      handler: (params) =>
+      execute: (params) =>
         fs().write({
           path: requiredPath(params),
           content: String(params.content ?? ''),
           ...(optionalBoolean(params, 'createParents') !== undefined ? { createParents: optionalBoolean(params, 'createParents') } : {}),
           ...(optionalString(params, 'expectedVersion') !== undefined ? { expectedVersion: optionalString(params, 'expectedVersion') } : {}),
         }),
-    }),
+      output: { schema: {}, render: renderValue },
+    })),
+
   )
 
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'fs append',
       description: 'APPENDS content to a file, creating it when it does not exist (writes are confined to the provider roots)',
       parameters: {
@@ -171,17 +171,19 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
         content: { type: 'string', description: 'the content appended at the end of the file', required: true },
         createParents: { type: 'boolean', description: 'create missing parent directories (default true)' },
       },
-      handler: (params) =>
+      execute: (params) =>
         fs().append({
           path: requiredPath(params),
           content: String(params.content ?? ''),
           ...(optionalBoolean(params, 'createParents') !== undefined ? { createParents: optionalBoolean(params, 'createParents') } : {}),
         }),
-    }),
+      output: { schema: {}, render: renderValue },
+    })),
+
   )
 
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'fs str_replace',
       description:
         'SURGICAL edit: replaces ONE exact occurrence of oldText with newText (literal, never a regex); when oldText occurs several times pass occurrence (1-based)',
@@ -192,7 +194,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
         occurrence: { type: 'integer', description: 'which occurrence to replace when oldText occurs several times (1-based)' },
         expectedVersion: { type: 'string', description: 'the version returned by a previous read/info: a mismatch fails with fs.edit-conflict' },
       },
-      handler: (params) =>
+      execute: (params) =>
         fs().edit({
           path: requiredPath(params),
           edits: [
@@ -205,11 +207,13 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
           ],
           ...(optionalString(params, 'expectedVersion') !== undefined ? { expectedVersion: optionalString(params, 'expectedVersion') } : {}),
         }),
-    }),
+      output: { schema: {}, render: renderValue },
+    })),
+
   )
 
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'fs insert',
       description: 'SURGICAL edit: inserts whole lines BEFORE the 1-based line number (line = totalLines + 1 appends at the end)',
       parameters: {
@@ -218,7 +222,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
         content: { type: 'string', description: 'the lines to insert (a trailing newline is optional)', required: true },
         expectedVersion: { type: 'string', description: 'the version returned by a previous read/info: a mismatch fails with fs.edit-conflict' },
       },
-      handler: (params) =>
+      execute: (params) =>
         fs().edit({
           path: requiredPath(params),
           edits: [
@@ -230,11 +234,13 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
           ],
           ...(optionalString(params, 'expectedVersion') !== undefined ? { expectedVersion: optionalString(params, 'expectedVersion') } : {}),
         }),
-    }),
+      output: { schema: {}, render: renderValue },
+    })),
+
   )
 
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'fs apply_patch',
       description:
         'ATOMIC batch edit: applies a list of edits (str_replace / insert) in order; when ANY edit fails NOTHING is written. Each edit reports the line it touched; the answer carries the new size',
@@ -248,43 +254,49 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
         },
         expectedVersion: { type: 'string', description: 'the version returned by a previous read/info: a mismatch fails with fs.edit-conflict' },
       },
-      handler: (params) =>
+      execute: (params) =>
         fs().edit({
           path: requiredPath(params),
           edits: parseFsEdits(params.edits),
           ...(optionalString(params, 'expectedVersion') !== undefined ? { expectedVersion: optionalString(params, 'expectedVersion') } : {}),
         }),
-    }),
+      output: { schema: {}, render: renderValue },
+    })),
+
   )
 
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'fs list',
       description: 'LISTS a directory: one entry per child with its type (file/dir/symlink), size and mtime, capped by limit',
       parameters: {
         path: { type: 'string', description: 'directory to list (default: the fs provider cwd)' },
         limit: { type: 'integer', description: `maximum entries returned (default ${config.listLimit ?? 1000})` },
       },
-      handler: (params) =>
+      execute: (params) =>
         fs().list(optionalString(params, 'path') ?? '.', {
           ...(optionalInteger(params, 'limit') !== undefined ? { limit: optionalInteger(params, 'limit') } : {}),
         }),
-    }),
+      output: { schema: {}, render: renderValue },
+    })),
+
   )
 
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'fs info',
       description: 'METADATA of a path: type, size, mtime, octal mode, permission booleans and the opaque version token a guarded write passes back',
       parameters: {
         path: { type: 'string', description: 'the path to observe', required: true },
       },
-      handler: (params) => fs().stat(requiredPath(params)),
-    }),
+      execute: (params) => fs().stat(requiredPath(params)),
+      output: { schema: {}, render: renderValue },
+    })),
+
   )
 
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'fs search',
       description:
         'Finds files by NAME: glob search (e.g. "**/*.rs", "*tsconfig*") over the tree, capped; a pattern without "/" matches a basename at any depth',
@@ -294,18 +306,20 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
         limit: { type: 'integer', description: 'maximum matches returned (default 200)' },
         includeDirs: { type: 'boolean', description: 'also return matching directories (default false)' },
       },
-      handler: (params) =>
+      execute: (params) =>
         fs().glob({
           pattern: requiredPath(params, 'pattern'),
           ...(optionalString(params, 'path') !== undefined ? { path: optionalString(params, 'path') } : {}),
           ...(optionalInteger(params, 'limit') !== undefined ? { limit: optionalInteger(params, 'limit') } : {}),
           ...(optionalBoolean(params, 'includeDirs') !== undefined ? { includeDirs: optionalBoolean(params, 'includeDirs') } : {}),
         }),
-    }),
+      output: { schema: {}, render: renderValue },
+    })),
+
   )
 
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'fs grep',
       description:
         'Searches file CONTENTS with a regular expression: returns path:line: text matches, capped inline (maxResults, default 250); when more matches exist the FULL list is written to a spill file and its path is returned, so nothing is lost',
@@ -317,7 +331,7 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
         maxLineBytes: { type: 'integer', description: 'byte cap on one matched-line preview (default 2000)' },
         ignoreCase: { type: 'boolean', description: 'case-insensitive match' },
       },
-      handler: async (params) =>
+      execute: async (params) =>
         grepAnswer(
           await fs().grep({
             pattern: requiredPath(params, 'pattern'),
@@ -328,7 +342,9 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
             ...(optionalBoolean(params, 'ignoreCase') !== undefined ? { ignoreCase: optionalBoolean(params, 'ignoreCase') } : {}),
           }),
         ),
-    }),
+      output: { schema: {}, render: renderValue },
+    })),
+
   )
 }
 

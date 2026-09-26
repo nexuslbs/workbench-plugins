@@ -7,7 +7,7 @@
 // the outline (headings, sections, links) so a caller can pick a slice cheaply.
 //
 // It is a CONSUMER plugin: it imports nothing from the core and nothing from a
-// provider, and touches only `ctx.tools.registerTool` (tools seam) plus
+// provider, and touches only `ctx.tools.register(defineTool(...))` (tools seam) plus
 // `ctx.credentials` (a credential NAME for a proxy is resolved at call time and
 // never logged). Omniagent, the core, and any model are NOT in the loop: one
 // call in, markdown out.
@@ -22,6 +22,7 @@ import { extractMain, parseSelector, renderOutline, sliceByQuery } from './extra
 import { BrowserPoolRenderer } from './render.ts'
 import type { Renderer } from './render.ts'
 import { capText, estimateTokens } from './spill.ts'
+import { defineTool, renderValue, type ToolDefinition } from '../../definitions/tools.ts'
 
 export const name = 'web-page'
 
@@ -38,12 +39,7 @@ interface ToolParameter {
 type ToolParameters = Record<string, ToolParameter>
 
 interface ToolsLike {
-  registerTool(def: {
-    name: string
-    description?: string
-    parameters?: ToolParameters
-    handler: (params: Record<string, unknown>) => unknown | Promise<unknown>
-  }): () => void
+  register(def: ToolDefinition): () => void
 }
 
 interface CredentialsLike {
@@ -438,7 +434,7 @@ export function apply(ctx: PluginContext, config: WebPageConfig = {}, deps: WebP
   }
 
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'page read',
       description:
         'reads ONE web page that needs JavaScript, in a single call: renders it in chromium, returns compact markdown of the main content (no HTML, no browser in the caller loop), capped with spill to a file, cached by URL with a content hash so an unchanged page answers "unchanged since <hash>" in a few tokens',
@@ -465,12 +461,14 @@ export function apply(ctx: PluginContext, config: WebPageConfig = {}, deps: WebP
           description: 'use a stored web-recipe for this domain (default auto) or ignore it (off)',
         },
       },
-      handler: readPage,
-    }),
+      execute: readPage,
+      output: { schema: {}, render: renderValue },
+    })),
+
   )
 
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'page map',
       description:
         'maps ONE web page without its body: renders it in chromium and returns the OUTLINE (title, headings, per-section char counts, links) so a caller can pick a slice cheaply, with the same cache and char cap as page read',
@@ -481,8 +479,10 @@ export function apply(ctx: PluginContext, config: WebPageConfig = {}, deps: WebP
           description: `cap of the returned outline (default ${String(resolved.mapMaxChars)}, hard max ${String(resolved.hardMaxChars)})`,
         },
       },
-      handler: mapPage,
-    }),
+      execute: mapPage,
+      output: { schema: {}, render: renderValue },
+    })),
+
   )
 }
 

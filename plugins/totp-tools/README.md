@@ -10,7 +10,7 @@ External plugin for the workbench `totp@1` capability seam (core
 | **Consumer** | **this plugin** | the tools `totp list` / `totp code` |
 
 It imports nothing from the core and nothing from a provider. The only seams it
-touches are `ctx.totp` (injected by name) and `ctx.tools.registerTool`, so
+touches are `ctx.totp` (injected by name) and `ctx.tools.register(defineTool(...))`, so
 swapping the provider is a config edit and this file never changes.
 
 ## Tools

@@ -30,6 +30,7 @@
 import { isWebSearchError, webSearchOf, SEARCH_CONFIG_ROW } from '../../definitions/web-search.ts'
 import type { WebSearchAnswer, WebSearchError, WebSearchRequest, WebSearchService } from '../../definitions/web-search.ts'
 import type { ParameterSchemaSpec } from '../../definitions/tools.ts'
+import { defineTool, renderValue, type ToolDefinition } from '../../definitions/tools.ts'
 
 export const name = 'web-search-tools'
 
@@ -37,12 +38,7 @@ export const name = 'web-search-tools'
 type ToolParameters = ParameterSchemaSpec
 
 interface ToolsLike {
-  registerTool(def: {
-    name: string
-    description?: string
-    parameters?: ToolParameters
-    handler: (params: Record<string, unknown>) => unknown | Promise<unknown>
-  }): () => void
+  register(def: ToolDefinition): () => void
 }
 
 interface PluginContext {
@@ -142,7 +138,7 @@ function isService(value: WebSearchService | Record<string, unknown>): value is 
 
 export function apply(ctx: PluginContext): void {
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'web search',
       description:
         'Searches the web through the engine the deployment configured and returns NORMALIZED results (rank, title, url, snippet, published, engine) plus the answer metadata (engine, took_ms, count, truncated, spill_path, ignored_filters). An engine that is missing or broken answers a TYPED error naming the config row to add, never an empty list; a capped result set is reported with truncated=true and written to a spill file that `spill read` pages back.',
@@ -155,7 +151,7 @@ export function apply(ctx: PluginContext): void {
         site: { type: 'string', description: 'restrict the search to one site/domain, e.g. docs.example.com' },
         engine: { type: 'string', description: 'force ONE engine id, e.g. stub or tavily (default: the configured engine + fallback chain)' },
       },
-      handler: async (params) => {
+      execute: async (params) => {
         const service = serviceOf(ctx)
         if (!isService(service)) return service
         // EVERYTHING runs inside the try: a parameter violation is a TYPED answer,
@@ -192,16 +188,17 @@ export function apply(ctx: PluginContext): void {
           return failureBody(error)
         }
       },
-    }),
+      output: { schema: {}, render: renderValue },
+    })),
   )
 
   ctx.effect(() =>
-    ctx.tools.registerTool({
+    ctx.tools.register(defineTool({
       name: 'web search providers',
       description:
         'Lists the registered web-search engines with their configured/available state and the reason an engine cannot run (missing credential, disabled engine), plus the selection in effect (default engine, fallback chain, count/maxChars caps). Use it to tell a CONFIGURATION GAP from a query that legitimately found nothing.',
       parameters: {},
-      handler: async () => {
+      execute: async () => {
         const service = serviceOf(ctx)
         if (!isService(service)) return service
         try {
@@ -218,7 +215,8 @@ export function apply(ctx: PluginContext): void {
           return failureBody(error)
         }
       },
-    }),
+      output: { schema: {}, render: renderValue },
+    })),
   )
 }
 
