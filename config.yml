@@ -375,17 +375,14 @@ plugins:
   # config, and keeping it would let a local chromium hide a stopped service.
   browser-use-playwright:
     # WHERE the browser runs is a CONFIG decision (the plugin is location-
-    # agnostic, exactly like the himalaya impl plugin): `backend` selects
-    # `container` (a compose browser service, CDP attach - the deployed default
-    # below), `local` (a chromium launched by the provider), `ssh` /
-    # `ssh+container` (a browser on a remote machine) or `http` (a remote CDP
-    # endpoint). Every non-local backend reaches the browser through the
-    # `general-service@1` seam (the `browserService.generalService` instance),
-    # so the transport is config, never a hard-wired docker/ssh/http call.
-    # Omitted, `backend` is inferred (`browserService` -> `container`, a bare
-    # `wsEndpoint` -> `http`, otherwise `local`), so the old shape keeps working
-    # unchanged.
-    backend: container
+    # agnostic, exactly like the himalaya impl plugin): the `browserService`
+    # block names the CDP endpoint this provider ATTACHES to, and the
+    # `browserService.generalService` instance (type + params) is passed
+    # through to the `general-service@1` seam UNCHANGED to start/probe the
+    # service - the transport types (container / ssh / http / ...) are the
+    # GENERAL SERVICE's concern, never this plugin's, so a new transport type
+    # needs no plugin change. The transport is config, never a hard-wired
+    # docker/ssh/http call.
     # HEADFUL is the DEPLOYED default. `headless` is a LAUNCH-time setting, and in
     # this attach deployment the browser service image owns the launch: it runs a
     # REAL headful chromium on its own Xvfb display (browser/start-browser.sh),

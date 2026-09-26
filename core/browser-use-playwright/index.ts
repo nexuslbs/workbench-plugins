@@ -405,8 +405,7 @@ export class PlaywrightProvider implements BrowserUseProvider {
         engine: ENGINE,
         ...(version === undefined ? {} : { version }),
         headless: this.config.headless,
-        source:
-          `playwright-core + the remote CDP endpoint ${endpoint} (backend: ${this.config.backend})` +
+        source: `playwright-core + the remote CDP endpoint ${endpoint}` +
           (this.config.browserService?.image === undefined
             ? ''
             : ` (browser service image ${this.config.browserService.image})`),
@@ -878,12 +877,11 @@ export class PlaywrightProvider implements BrowserUseProvider {
           : ` - the browser service start was NOT attempted: ${started.reason ?? 'unknown reason'}`
     return new BrowserUseError(
       'browser-use.endpoint-unreachable',
-      `no browser is reachable at the configured CDP endpoint '${endpoint}' (backend: ${this.config.backend}): ${firstLine(messageOf(cause))}${startNote} - ${endpointRequirement(this.config)}`,
+      `no browser is reachable at the configured CDP endpoint '${endpoint}': ${firstLine(messageOf(cause))}${startNote} - ${endpointRequirement(this.config)}`,
       {
         stage: 'open',
         details: {
           provider: providerId,
-          backend: this.config.backend,
           endpoint,
           ...(service?.image === undefined ? {} : { image: service.image }),
           ...(service?.generalService === undefined ? {} : { generalService: service.generalService }),

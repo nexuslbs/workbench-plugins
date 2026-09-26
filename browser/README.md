@@ -113,24 +113,27 @@ The upstream `mcr.microsoft.com/playwright:v1.63.0-noble` image is an equally va
 service if you prefer the vendor artifact - but then YOU must provide the
 reachability (it listens on loopback only, see above).
 
-## The backend selector: the browser is a transparent service, like himalaya in the toolbox
+## The browser is a transparent service, like himalaya in the toolbox
 
 `browser-use-playwright` is LOCATION-AGNOSTIC: it never decides where the browser
-runs. The plugin config row selects the `backend` - `local` | `container` |
-`ssh` | `ssh+container` | `http` - exactly like the himalaya impl plugin's
-`general` row selects the transport of the toolbox himalaya. The browser stays a
-regular compose service of the stack (this project); the plugin does not need to
-know whether the service is local, in a container or on a remote host, the
-config tells it where, and every non-local backend reaches the browser through
-the `general-service@1` seam under the hood.
+runs and it does NOT know what transport types the `general-service@1` seam
+supports (local / container / ssh / http are the GENERAL SERVICE's concern,
+never this plugin's) - exactly like the himalaya impl plugin's `general` row
+selects the transport of the toolbox himalaya. The browser stays a regular
+compose service of the stack (this project); the plugin does not need to know
+whether the service is local, in a container or on a remote host: the config
+row names the `browserService.generalService` instance (`type` + `params`) and
+the plugin passes it through UNCHANGED, so a new transport type needs no plugin
+change.
 
 ```yaml
 plugins:
   browser-use-playwright:
-    # container: a compose browser service, CDP attach (THE DEPLOYED DEFAULT).
+    # The browser is a SEPARATE service (its own image), CDP attach.
     # The endpoint is where the service answers; the `generalService` instance
     # is the seam that probes/starts it when the endpoint does not answer yet.
-    backend: container
+    # The instance is passed through UNCHANGED: its `type` (container / ssh /
+    # http / ...) is the GENERAL SERVICE's vocabulary, not this plugin's.
     browserService:
       endpoint: http://browser:9222
       image: ghcr.io/nexuslbs/workbench-plugins/browser:0.0.3
@@ -143,30 +146,10 @@ plugins:
       startTimeoutMs: 20000
 ```
 
-The five backends:
-
-| backend | where the browser runs | how the plugin reaches it |
-| --- | --- | --- |
-| `local` | a chromium launched by the provider process (`executablePath` or the playwright cache) | playwright launch, no seam |
-| `container` | a compose browser service of the stack (this project) | CDP attach to `browserService.endpoint`; probe/start through the seam (`container`) |
-| `ssh` | a browser on a REMOTE machine | CDP attach to the endpoint the config names; probe/start through the seam (`ssh`) |
-| `ssh+container` | a browser in a container on a REMOTE machine | CDP attach; probe/start through the seam (`ssh+container`, remote docker) |
-| `http` | a remote CDP endpoint over http | CDP attach; probe/start through the seam (`http`) |
-
-Per-backend params: `local` uses the existing `executablePath`/`headless`/
-`browserArgs`; `container` uses `browserService` plus an optional `container`
-block; `ssh` uses an `ssh` block (host, user, key name, binary); `ssh+container`
-uses `ssh` + `container` blocks; `http` uses an `http` block. When
-`browserService.generalService` is absent the seam instance is built FROM the
-backend (`type` = backend, `params` = the backend's block), so `backend: ssh`
-reaches the remote machine through the `ssh@1` transport by default - the seam
-decides the transport, the plugin never hard-wires docker or ssh.
-
-BACKWARDS COMPATIBLE: `backend` may be omitted. It is then inferred -
-`browserService` present -> `container`, a bare `wsEndpoint`/`cdpEndpoint` ->
-`http`, otherwise `local` - so the existing
-`browserService: { endpoint: http://browser:9222, image: ... }` config keeps
-working unchanged as the container-mode default.
+A bare `wsEndpoint`/`cdpEndpoint` (no `browserService`) is plain CDP attach: the
+endpoint IS the browser, and no seam instance is involved. With no endpoint at
+all, the provider launches a local chromium (`executablePath` or the playwright
+cache).
 
 An unreachable browser is a TYPED error (`browser-use.endpoint-unreachable`
 naming the endpoint, the image and the seam instance; `browser-use.no-browser`

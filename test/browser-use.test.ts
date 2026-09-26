@@ -1334,80 +1334,62 @@ test('host: frames/mouse FORWARD to a provider that implements them (session + v
   await service.close('fw')
 })
 // ---------------------------------------------------------------------------
-// BACKEND SELECTOR (the browser is a transparent compose service, like himalaya
-// in the toolbox): `backend` decides WHERE the browser runs (local | container |
-// ssh | ssh+container | http), the plugin stays location-agnostic, and every
-// non-local backend reaches the browser through the `general-service@1` seam.
-// The OLD config shape keeps working unchanged (backwards compatible).
+// LOCATION-AGNOSTIC (the browser is a transparent service, like himalaya in the
+// toolbox): the plugin does NOT know what transport types the general-service@1
+// seam supports - `browserService.generalService` (type + params) is passed
+// through UNCHANGED, so a NEW transport type needs no plugin change. `wsEndpoint`
+// / `browserService.endpoint` name the CDP endpoint this provider ATTACHES to.
 // ---------------------------------------------------------------------------
 
-test('backend: omitted is inferred from the config (browserService -> container, wsEndpoint -> http, else local)', () => {
-  // The DEPLOYED shape: browserService present, no backend -> container.
-  const deployed = resolveProviderConfig({ browserService: { endpoint: 'http://browser:9222', image: 'local/workbench-browser:latest' } })
-  assert.equal(deployed.backend, 'container')
+test('config: browserService.endpoint is the attach endpoint; generalService passes through UNCHANGED (any type)', () => {
+  // The DEPLOYED shape: a compose browser service, CDP attach.
+  const deployed = resolveProviderConfig({
+    browserService: {
+      endpoint: 'http://browser:9222',
+      image: 'local/workbench-browser:latest',
+      generalService: { type: 'container', params: { engine: 'docker-compose' } },
+    },
+  })
   assert.equal(deployed.wsEndpoint, 'http://browser:9222')
-  assert.deepEqual(deployed.browserService?.generalService, { type: 'container', params: {} })
-  // A bare wsEndpoint -> http (plain CDP attach).
+  assert.deepEqual(deployed.browserService?.generalService, { type: 'container', params: { engine: 'docker-compose' } })
+  // A transport type this plugin has never heard of is passed through as-is:
+  // the type vocabulary is the general service's concern, not this plugin's.
+  const future = resolveProviderConfig({
+    browserService: {
+      endpoint: 'http://browser:9222',
+      generalService: { type: 'quantum-tunnel', params: { node: 'browser-1' } },
+    },
+  })
+  assert.deepEqual(future.browserService?.generalService, { type: 'quantum-tunnel', params: { node: 'browser-1' } })
+  // No generalService named -> none is invented (nothing to start/probe through).
+  const noInstance = resolveProviderConfig({ browserService: { endpoint: 'http://browser:9222' } })
+  assert.equal(noInstance.browserService?.generalService, undefined)
+})
+
+test('config: a bare wsEndpoint is plain CDP attach (no seam instance involved)', () => {
   const attached = resolveProviderConfig({ wsEndpoint: 'http://remote:9222' })
-  assert.equal(attached.backend, 'http')
   assert.equal(attached.wsEndpoint, 'http://remote:9222')
-  // Nothing -> local.
+  // The attach endpoint is resolved; no seam INSTANCE is invented (nothing to
+  // start/probe through - the endpoint IS the browser).
+  assert.equal(attached.browserService?.generalService, undefined)
+  // cdpEndpoint is an alias of wsEndpoint.
+  const cdp = resolveProviderConfig({ cdpEndpoint: 'ws://remote:3000/' })
+  assert.equal(cdp.wsEndpoint, 'ws://remote:3000/')
+})
+
+test('config: no endpoint at all -> the provider launches a local chromium', () => {
   const local = resolveProviderConfig({ executablePath: '/usr/bin/chromium' })
-  assert.equal(local.backend, 'local')
   assert.equal(local.wsEndpoint, undefined)
   assert.equal(local.browserService, undefined)
+  assert.equal(local.executablePath, '/usr/bin/chromium')
 })
 
-test('backend: the explicit selector wins and the seam instance is built FROM the backend', () => {
-  const ssh = resolveProviderConfig({
-    backend: 'ssh',
-    wsEndpoint: 'http://remote-host:9222',
-    ssh: { host: 'remote-host', user: 'agent', keyName: 'workbench' },
-  })
-  assert.equal(ssh.backend, 'ssh')
-  assert.deepEqual(ssh.browserService?.generalService, {
-    type: 'ssh',
-    params: { host: 'remote-host', user: 'agent', keyName: 'workbench' },
-  })
-  const remote = resolveProviderConfig({
-    backend: 'ssh+container',
-    browserService: { endpoint: 'http://remote-host:9222' },
-    ssh: { host: 'remote-host' },
-    container: { engine: 'docker-compose', compose: { project_dir: '/srv', service: 'browser' } },
-  })
-  assert.equal(remote.backend, 'ssh+container')
-  assert.deepEqual(remote.browserService?.generalService, {
-    type: 'ssh+container',
-    params: {
-      ssh: { host: 'remote-host' },
-      container: { engine: 'docker-compose', compose: { project_dir: '/srv', service: 'browser' } },
-    },
-  })
-  const http = resolveProviderConfig({
-    backend: 'http',
-    wsEndpoint: 'http://browser.example:9222',
-    http: { baseUrl: 'http://browser.example:9222' },
-  })
-  assert.equal(http.backend, 'http')
-  assert.deepEqual(http.browserService?.generalService, { type: 'http', params: { baseUrl: 'http://browser.example:9222' } })
-})
-
-test('backend: an explicit browserService.generalService WINS over the backend default', () => {
-  const resolved = resolveProviderConfig({
-    backend: 'ssh',
-    browserService: {
-      endpoint: 'http://remote-host:9222',
-      generalService: { type: 'container', params: { container: 'workbench-browser' } },
-    },
-  })
-  assert.equal(resolved.backend, 'ssh')
-  assert.deepEqual(resolved.browserService?.generalService, { type: 'container', params: { container: 'workbench-browser' } })
-})
-
-test('backend: invalid selectors and contradictions are LOUD invalid-config', () => {
-  assert.throws(() => resolveProviderConfig({ backend: 'carrier-pigeon' } as never), /backend.*one of/)
-  assert.throws(() => resolveProviderConfig({ backend: 'container' }), /needs an endpoint/)
-  assert.throws(() => resolveProviderConfig({ backend: 'ssh+container', wsEndpoint: 'http://x:9222' }), /ssh.*container.*params/)
-  assert.throws(() => resolveProviderConfig({ backend: 'local', wsEndpoint: 'http://x:9222' }), /cannot be combined/)
-  assert.throws(() => resolveProviderConfig({ backend: 'local', browserService: { endpoint: 'http://x:9222' } }), /cannot be combined/)
+test('config: broken attach shapes are LOUD invalid-config', () => {
+  assert.throws(() => resolveProviderConfig({ browserService: {} }), /browserService\.endpoint/)
+  assert.throws(() => resolveProviderConfig({ browserService: { endpoint: 'not-a-url' } }), /browserService\.endpoint/)
+  assert.throws(() => resolveProviderConfig({ wsEndpoint: 'not-a-url' }), /wsEndpoint.*URL/)
+  assert.throws(
+    () => resolveProviderConfig({ browserService: { endpoint: 'http://browser:9222', generalService: { params: {} } } }),
+    /generalService.*type/,
+  )
 })

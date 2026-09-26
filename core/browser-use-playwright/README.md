@@ -12,28 +12,26 @@ this plugin owns a chromium and the sessions a caller drives.
 ## WHERE the browser runs is CONFIG, never code (the himalaya pattern)
 
 The plugin is **location-agnostic**, exactly like the himalaya impl plugin:
-it never decides where the browser runs. The config row selects the `backend` -
-`local` | `container` | `ssh` | `ssh+container` | `http` - and every non-local
-backend reaches the browser THROUGH the `general-service@1` seam under the hood
-(probe/start), never through a hard-wired docker/ssh/http call.
-
-| backend | where the browser runs | how the plugin reaches it |
-| --- | --- | --- |
-| `local` | a chromium launched by the provider process (`executablePath` or the playwright cache) | playwright launch, no seam |
-| `container` | a compose browser service of the stack (the DEPLOYED default) | CDP attach to `browserService.endpoint`; probe/start through the seam (`container`) |
-| `ssh` | a browser on a REMOTE machine | CDP attach to the endpoint the config names; probe/start through the seam (`ssh`) |
-| `ssh+container` | a browser in a container on a REMOTE machine | CDP attach; probe/start through the seam (`ssh+container`, remote docker) |
-| `http` | a remote CDP endpoint over http | CDP attach; probe/start through the seam (`http`) |
+it never decides where the browser runs and it does NOT know what transport
+types the `general-service@1` seam supports (local / container / ssh / http
+are the GENERAL SERVICE's concern, never this plugin's). The config row names
+the `browserService.generalService` instance (`type` + `params`) and the plugin
+passes it through UNCHANGED - if the general service starts supporting a new
+transport type, this plugin needs NO change. `wsEndpoint` /
+`browserService.endpoint` name the CDP endpoint the provider ATTACHES to; a
+browser service that does not answer yet is started/probed through the seam
+instance the config names. The provider never hard-wires docker, ssh or http.
 
 ## Config
 
 ```yaml
 plugins:
   browser-use-playwright:
-    # container: a compose browser service, CDP attach (THE DEPLOYED DEFAULT).
+    # The browser is a SEPARATE service (its own image), CDP attach.
     # The endpoint is where the service answers; the `generalService` instance
     # is the seam that probes/starts it when the endpoint does not answer yet.
-    backend: container
+    # The instance is passed through UNCHANGED: its `type` (container / ssh /
+    # http / ...) is the GENERAL SERVICE's vocabulary, not this plugin's.
     browserService:
       endpoint: http://browser:9222
       image: ghcr.io/nexuslbs/workstation-plugins/browser:0.0.3
@@ -46,20 +44,10 @@ plugins:
       startTimeoutMs: 20000
 ```
 
-Per-backend params: `local` uses the existing `executablePath`/`headless`/
-`browserArgs`; `container` uses `browserService` plus an optional `container`
-block; `ssh` uses an `ssh` block (host, user, key name, binary); `ssh+container`
-uses `ssh` + `container` blocks; `http` uses an `http` block. When
-`browserService.generalService` is absent the seam instance is built FROM the
-backend (`type` = backend, `params` = the backend's block), so `backend: ssh`
-reaches the remote machine through the `ssh@1` transport by default - the seam
-decides the transport, the plugin never hard-wires docker or ssh.
-
-**BACKWARDS COMPATIBLE**: `backend` may be omitted. It is then inferred -
-`browserService` present -> `container`, a bare `wsEndpoint`/`cdpEndpoint` ->
-`http`, otherwise `local` - so the existing
-`browserService: { endpoint: http://browser:9222, image: ... }` config keeps
-working unchanged as the container-mode default.
+A bare `wsEndpoint`/`cdpEndpoint` (no `browserService`) is plain CDP attach: the
+endpoint IS the browser, and no seam instance is involved. With no endpoint at
+all, the provider launches a local chromium (`executablePath` or the playwright
+cache).
 
 ## Honesty
 
