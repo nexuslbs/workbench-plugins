@@ -34,7 +34,7 @@ plugins:
     # http / ...) is the GENERAL SERVICE's vocabulary, not this plugin's.
     browserService:
       endpoint: http://browser:9222
-      image: ghcr.io/nexuslbs/workstation-plugins/browser:0.0.3
+      image: ghcr.io/nexuslbs/omni-images/browser:0.0.4
       generalService:
         type: container
         params:

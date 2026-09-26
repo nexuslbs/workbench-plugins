@@ -361,11 +361,11 @@ plugins:
   # THE DEPLOYMENT SHAPE (thread 2632): the browser is a SEPARATE SERVICE of the
   # stack, never part of the workbench image. `docker compose --profile browser
   # up -d browser` starts the compose service `browser` (published image
-  # ghcr.io/nexuslbs/workbench-plugins/browser:<tag>; the DEV overlay builds the
-  # SAME Dockerfile from this repository's `browser/` directory and tags it
-  # local/workbench-browser:latest, which is why `image` below names that local
-  # tag). The provider ATTACHES to the service's CDP endpoint, reachable as
-  # `browser:9222` on the stack network.
+  # ghcr.io/nexuslbs/omni-images/browser:<tag>, built in the omni-images repo;
+  # the DEV overlay builds the SAME Dockerfile from the omni-images `browser/`
+  # checkout and tags it local/workbench-browser:latest, which is why `image`
+  # below names that local tag). The provider ATTACHES to the service's CDP
+  # endpoint, reachable as `browser:9222` on the stack network.
   #
   # With `browserService` set the provider NEVER launches a local browser and
   # NEVER falls back to an HTTP fetch: when nothing answers at the endpoint a call
