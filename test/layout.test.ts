@@ -77,6 +77,7 @@ const PLUGINS = [
   'hello-otherworld',
   'hello-tool',
   'hello-world',
+  'http-surface',
   'jobs-tools',
   'logger-demo',
   'plugin-inventory',
